@@ -1,4 +1,5 @@
 #include "../function.hpp"
+#include "../kernel_utils.hpp"
 #include <components/types/operations_helper.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -91,7 +92,7 @@ namespace {
     core::result_wrapper_t<complex_logical_type> sum_result_type(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"the aggregate takes exactly one argument", resource});
         }
         const auto& input = inputs.front();
@@ -116,7 +117,7 @@ namespace {
     core::result_wrapper_t<complex_logical_type> avg_result_type(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"the aggregate takes exactly one argument", resource});
         }
         switch (accumulation_of(inputs.front())) {
@@ -150,7 +151,7 @@ namespace {
     template<typename in_t, typename state_t, typename add_t>
     bool fold(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states, add_t add) {
         const auto* data = input.data<in_t>();
-        const bool all_valid = input.validity().all_valid();
+        const bool all_valid = column_all_valid(input);
         for (uint64_t row = 0; row < groups.size(); row++) {
             if (!all_valid && input.is_null(row)) {
                 continue;
@@ -317,7 +318,7 @@ namespace {
         core::error_t
         operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
             const auto* data = input.data<T>();
-            const bool all_valid = input.validity().all_valid();
+            const bool all_valid = column_all_valid(input);
             for (uint64_t row = 0; row < groups.size(); row++) {
                 if (!all_valid && input.is_null(row)) {
                     continue;
@@ -391,7 +392,7 @@ namespace {
                         fits = fold<int128_t, sum128_t>(column, groups, states, add128);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"sum does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                 }
@@ -400,7 +401,7 @@ namespace {
                 return arithmetic_dispatch<sum_update_t>(
                     column.type(),
                     [&ctx] {
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"sum does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                     },
@@ -409,7 +410,7 @@ namespace {
                     states);
         }
         if (!fits) {
-            return core::error_t(core::error_code_t::arithmetics_failure,
+            return core::error_t(core::error_code_t::numeric_value_out_of_range,
                                  std::pmr::string{"sum overflow: the total leaves the range of its result type",
                                                   ctx.exec_context().resource()});
         }
@@ -420,7 +421,7 @@ namespace {
     // current winner, and when it wins, copy it in. `wants_greater` picks max.
     template<bool wants_greater>
     core::error_t min_max_update(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) {
-        const bool all_valid = input.validity().all_valid();
+        const bool all_valid = column_all_valid(input);
         for (uint64_t row = 0; row < groups.size(); row++) {
             if (!all_valid && input.is_null(row)) {
                 continue;
@@ -533,18 +534,18 @@ namespace {
                         fits = fold<int128_t, avg_wide_state_t>(column, groups, states, add_decimal);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"avg does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                 }
                 break;
             default:
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"avg does not accumulate the type it was given", ctx.exec_context().resource()});
         }
         if (!fits) {
-            return core::error_t(core::error_code_t::arithmetics_failure,
+            return core::error_t(core::error_code_t::numeric_value_out_of_range,
                                  std::pmr::string{"avg overflow: the total leaves the range of its result type",
                                                   ctx.exec_context().resource()});
         }
@@ -557,7 +558,7 @@ namespace {
                                core::span<const uint32_t> groups,
                                aggregate_states_t states) {
         const auto& column = input.data.front();
-        const bool all_valid = column.validity().all_valid();
+        const bool all_valid = column_all_valid(column);
         for (uint64_t row = 0; row < groups.size(); row++) {
             if (!all_valid && column.is_null(row)) {
                 continue;
@@ -599,7 +600,7 @@ namespace {
             output.type(),
             [&ctx] {
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"sum does not accumulate the type it was given", ctx.exec_context().resource()});
             },
             states,
@@ -674,13 +675,13 @@ namespace {
                     case physical_type::INT128:
                         return emit_averages<int128_t>(states, first, count, output, decimal_average);
                     default:
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"avg does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                 }
             default:
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"avg does not accumulate the type it was given", ctx.exec_context().resource()});
         }
     }
@@ -728,7 +729,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},
@@ -751,7 +753,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -774,7 +777,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -797,7 +801,8 @@ namespace {
                                                                          arity::var_args(0),
                                                                          doc,
                                                                          available_kernel_slots + 1,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -825,7 +830,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},
@@ -863,5 +869,7 @@ namespace components::compute {
         register_string_functions(r);
         register_expand_functions(r);
         register_math_functions(r);
+        register_internal_functions(r);
+        register_place_functions(r);
     }
 } // namespace components::compute

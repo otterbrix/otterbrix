@@ -1,6 +1,5 @@
 #include "path_utils.hpp"
 #include <algorithm>
-#include <memory>
 #include <sstream>
 
 namespace core::filesystem::path_utils {
@@ -144,50 +143,4 @@ namespace core::filesystem::path_utils {
         goto main_loop;
     }
     }
-
-#ifdef PLATFORM_WINDOWS
-
-    std::wstring UTF8_to_Unicode(const char* input) {
-        uint64_t result_size;
-
-        result_size = MultiByteToWideChar(CP_UTF8, 0, input, -1, nullptr, 0);
-        if (result_size == 0) {
-            throw std::runtime_error("Failure in MultiByteToWideChar");
-        }
-        auto buffer = std::make_unique<wchar_t[]>(result_size);
-        result_size = MultiByteToWideChar(CP_UTF8, 0, input, -1, buffer.get(), result_size);
-        if (result_size == 0) {
-            throw std::runtime_error("Failure in MultiByteToWideChar");
-        }
-        return std::wstring(buffer.get(), result_size);
-    }
-
-    std::string wchar_to_MultiByteWrapper(LPCWSTR input, uint32_t code_page) {
-        uint64_t result_size;
-
-        result_size = WideCharToMultiByte(code_page, 0, input, -1, 0, 0, 0, 0);
-        if (result_size == 0) {
-            throw std::runtime_error("Failure in WideCharToMultiByte");
-        }
-        auto buffer = std::make_unique<char[]>(result_size);
-        result_size = WideCharToMultiByte(code_page, 0, input, -1, buffer.get(), result_size, 0, 0);
-        if (result_size == 0) {
-            throw std::runtime_error("Failure in WideCharToMultiByte");
-        }
-        return std::string(buffer.get(), result_size - 1);
-    }
-
-    std::string Unicode_to_UTF8(LPCWSTR input) { return wchar_to_MultiByteWrapper(input, CP_UTF8); }
-
-    std::string windows_Unicode_to_MBCS(LPCWSTR unicode_text, int use_ansi) {
-        uint32_t code_page = use_ansi ? CP_ACP : CP_OEMCP;
-        return wchar_to_MultiByteWrapper(unicode_text, code_page);
-    }
-
-    std::string UTF8_to_MBCS(const char* input, bool use_ansi) {
-        auto unicode = UTF8_to_Unicode(input);
-        return windows_Unicode_to_MBCS(unicode.c_str(), use_ansi);
-    }
-
-#endif
 } // namespace core::filesystem::path_utils

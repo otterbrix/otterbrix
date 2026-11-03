@@ -130,7 +130,7 @@ namespace core::b_plus_tree {
         }
     }
 
-    segment_tree_t::segment_tree_t(std::pmr::memory_resource* resource,
+    segment_tree_t::segment_tree_t(core::pmr::budget_resource_t* resource,
                                    index_t (*func)(const item_data&),
                                    std::unique_ptr<filesystem::file_handle_t> file)
         : resource_(resource)
@@ -139,7 +139,7 @@ namespace core::b_plus_tree {
         initialize_header_region_();
     }
 
-    segment_tree_t::segment_tree_t(std::pmr::memory_resource* resource,
+    segment_tree_t::segment_tree_t(core::pmr::budget_resource_t* resource,
                                    index_t (*func)(const item_data&),
                                    filesystem::local_file_system_t& fs,
                                    filesystem::path_t file_path)
@@ -299,10 +299,10 @@ namespace core::b_plus_tree {
                             }
                             append_node->last_used = std::chrono::system_clock::now();
                             std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>> split_result =
-                                split_append_nothrow(*append_node->block, index, item);
+                                append_node->block->split_append(index, item);
                             if (!split_result.first) {
                                 unload_old_segments_();
-                                split_result = split_append_nothrow(*append_node->block, index, item);
+                                split_result = append_node->block->split_append(index, item);
                             }
                             if (!split_result.first) {
                                 header_->unique_id_count_ -= !index_exists;
@@ -332,10 +332,10 @@ namespace core::b_plus_tree {
                     }
                     append_node->last_used = std::chrono::system_clock::now();
                     std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>> split_result =
-                        split_append_nothrow(*append_node->block, index, item);
+                        append_node->block->split_append(index, item);
                     if (!split_result.first) {
                         unload_old_segments_();
-                        split_result = split_append_nothrow(*append_node->block, index, item);
+                        split_result = append_node->block->split_append(index, item);
                     }
                     if (!split_result.first) {
                         header_->unique_id_count_ -= !index_exists;
@@ -588,10 +588,14 @@ namespace core::b_plus_tree {
                     break;
                 }
                 uint32_t item_count = node->block->count();
-                if (!splited_tree->insert_segment_(splited_tree->segments_.begin(),
-                                                   segment_tree_t::node_t{node->block->split_uniques(split_unique),
-                                                                          std::chrono::system_clock::now(),
-                                                                          true})) {
+                std::unique_ptr<block_t> moved = node->block->split_uniques(split_unique);
+                if (!moved) {
+                    report_failure_(load_failure_t::out_of_memory);
+                    break;
+                }
+                if (!splited_tree->insert_segment_(
+                        splited_tree->segments_.begin(),
+                        segment_tree_t::node_t{std::move(moved), std::chrono::system_clock::now(), true})) {
                     break;
                 }
                 item_count -= node->block->count(); // bytes changed; must be written or the split unwinds on reload
@@ -655,10 +659,14 @@ namespace core::b_plus_tree {
                         break;
                     }
                     uint32_t item_count = node->block->count();
-                    if (!insert_segment_(segments_.begin(),
-                                         segment_tree_t::node_t{node->block->split_uniques(split_unique),
-                                                                std::chrono::system_clock::now(),
-                                                                true})) {
+                    std::unique_ptr<block_t> moved = node->block->split_uniques(split_unique);
+                    if (!moved) {
+                        report_failure_(load_failure_t::out_of_memory);
+                        break;
+                    }
+                    if (!insert_segment_(
+                            segments_.begin(),
+                            segment_tree_t::node_t{std::move(moved), std::chrono::system_clock::now(), true})) {
                         break;
                     }
                     item_count -= node->block->count();
@@ -709,6 +717,10 @@ namespace core::b_plus_tree {
                     size_t item_count = node->block->count();
                     std::unique_ptr<block_t> temp_block_ptr =
                         node->block->split_uniques(static_cast<uint32_t>(count - rebalance_size));
+                    if (!temp_block_ptr) {
+                        report_failure_(load_failure_t::out_of_memory);
+                        break;
+                    }
                     assert(temp_block_ptr->count() != 0 && "incorrect node split");
                     assert(node->block->count() != 0 && "incorrect node split");
                     if (!insert_segment_(
@@ -1061,8 +1073,7 @@ namespace core::b_plus_tree {
                                       metadata->max_index.type() == physical_type::STRING;
             segments_.emplace_back(node_t{nullptr, std::chrono::system_clock::now(), false});
             string_storage_.emplace_back();
-            segments_.back().block =
-                create_initialize_nothrow(resource_, key_func_, static_cast<uint32_t>(metadata->size));
+            segments_.back().block = create_initialize(resource_, key_func_, static_cast<uint32_t>(metadata->size));
             if (!segments_.back().block) {
                 // no room: not corruption, but a caller that asked for a clean load didn't get one
                 if (string_keyed) {
@@ -1194,11 +1205,10 @@ namespace core::b_plus_tree {
 
     segment_tree_t::node_t segment_tree_t::construct_new_node_(const index_t& index, item_data item) {
         const uint32_t size = align_to_block_size(item.size + block_t::header_size + block_t::metadata_size);
-        // same shape as load_segment_(): ask, evict, ask again — no retry inside a `catch (...)`
-        std::unique_ptr<block_t> b_tree_ptr = create_initialize_nothrow(resource_, key_func_, size);
+        std::unique_ptr<block_t> b_tree_ptr = create_initialize(resource_, key_func_, size);
         if (!b_tree_ptr) {
             unload_old_segments_();
-            b_tree_ptr = create_initialize_nothrow(resource_, key_func_, size);
+            b_tree_ptr = create_initialize(resource_, key_func_, size);
         }
         if (!b_tree_ptr) {
             report_failure_(load_failure_t::out_of_memory);
@@ -1267,11 +1277,10 @@ namespace core::b_plus_tree {
         it node = segments_.begin() + (metadata - metadata_begin_);
 
         const auto block_size = static_cast<uint32_t>(metadata->size);
-        // if memory is short, write the oldest resident blocks out and ask again (refusal is a nullptr, not a throw)
-        node->block = create_initialize_nothrow(resource_, key_func_, block_size);
+        node->block = create_initialize(resource_, key_func_, block_size);
         if (!node->block) {
             unload_old_segments_();
-            node->block = create_initialize_nothrow(resource_, key_func_, block_size);
+            node->block = create_initialize(resource_, key_func_, block_size);
         }
         if (!node->block) { // leave the segment UNLOADED, the same state lazy_load() leaves it in
             report_failure_(load_failure_t::out_of_memory);

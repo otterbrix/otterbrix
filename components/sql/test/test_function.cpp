@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -16,7 +17,7 @@ using vec = std::vector<components::vector::vector_t>;
 #define TEST_SIMPLE_FUNCTION(QUERY, RESULT, PARAMS)                                                                    \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
-            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+            auto select = linitial(parse_ok(&arena_resource, QUERY));                                                  \
             auto result = ([](auto _w) {                                                                               \
                 REQUIRE_FALSE(_w.has_error());                                                                         \
                 return _w.value();                                                                                     \
@@ -98,15 +99,15 @@ TEST_CASE("components::sql::functions") {
                          vec({make_scalar(&resource, 5l), make_scalar(&resource, 10l)}));
 
     SECTION("a function name has no uid slot") {
-        auto select = linitial(raw_parser(&arena_resource, "SELECT u.d.s.some_udf(text) FROM some_table;"));
+        auto select = linitial(parse_ok(&arena_resource, "SELECT u.d.s.some_udf(text) FROM some_table;"));
         auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
         REQUIRE(result.has_error());
-        CHECK(result.error().type == core::error_code_t::invalid_parameter);
+        CHECK(result.error().type == core::error_code_t::sql_parse_error);
         CHECK(std::string{result.error().what}.find("u.d.s.some_udf") != std::string::npos);
     }
 
     SECTION("a name with more segments than uid.db.schema.name has no reading") {
-        auto select = linitial(raw_parser(&arena_resource, "SELECT a.b.c.d.some_udf(text) FROM some_table;"));
+        auto select = linitial(parse_ok(&arena_resource, "SELECT a.b.c.d.some_udf(text) FROM some_table;"));
         auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
         REQUIRE(result.has_error());
         CHECK(result.error().type == core::error_code_t::sql_parse_error);

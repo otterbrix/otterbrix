@@ -72,7 +72,10 @@ Or use the parser standalone (no instance), handing a registry straight to
 ```cpp
 parser_extension_registry_t registry;
 registry.add(make_demo_extension());
-List* tree = raw_parser(arena, "DEMO 7", registry);
+auto parsed = raw_parser(arena, "DEMO 7", registry); // core::result_wrapper_t<List*>
+if (!parsed.has_error()) {
+    List* tree = parsed.value();
+}
 ```
 
 See `components/sql/test/test_parser_extension.cpp` (parser-level) and

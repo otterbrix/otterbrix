@@ -62,7 +62,7 @@ namespace components::operators {
             co_return core::error_t::no_error();
         }
         if (!ctx->runner) {
-            co_return core::error_t{core::error_code_t::physical_plan_error,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"recursive_cte: no sub-plan runner", res}};
         }
 
@@ -161,7 +161,7 @@ namespace components::operators {
             std::size_t depth = 0;
             while (working_set_ && working_set_->size() > 0) {
                 if (++depth > kMaxRecursionDepth) {
-                    co_return core::error_t{core::error_code_t::physical_plan_error,
+                    co_return core::error_t{core::error_code_t::statement_too_complex,
                                             std::pmr::string{"recursive_cte: maximum recursion depth exceeded", res}};
                 }
 

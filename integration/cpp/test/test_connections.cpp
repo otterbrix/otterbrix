@@ -1,11 +1,12 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/log/test/test_log.hpp>
 #include <filesystem>
 #include <integration/cpp/connection.hpp>
 #include <unistd.h>
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 constexpr size_t doc_num = 1000;
 constexpr size_t num_threads = 4;
@@ -21,7 +22,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -91,7 +92,7 @@ TEST_CASE("integration::cpp::test_connectors") {
         auto* dispatcher = otterbrix->dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -157,7 +158,7 @@ TEST_CASE("integration::cpp::test_connectors") {
 namespace {
 
     void create_marks(otterbrix::connection_t& connection) {
-        REQUIRE(connection.execute("CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(connection.execute("CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(connection.execute("CREATE TABLE TestDatabase.marks (id bigint);")->is_success());
     }
 
@@ -236,4 +237,49 @@ TEST_CASE("integration::cpp::connection") {
 
         REQUIRE(connection.execute("SELECT 1;")->is_error());
     }
+}
+
+// close and the destructor after it end the session once, through the dispatcher's close_session.
+TEST_CASE("integration::cpp::connection::close_closes_its_session") {
+    auto config = test_create_config(integration_fixture_path("connection_close") / std::to_string(::getpid()));
+    test_clear_directory(config);
+    config.log.level = log_t::level::trace;
+    {
+        auto instance = test_make_otterbrix(config);
+        otterbrix::connection_t connection(instance);
+        REQUIRE(connection.execute("SET autocommit = off;")->is_success());
+        connection.close();
+    }
+    const std::string needle = "manager_dispatcher_t::close_session session:";
+    const auto log = log_text(config.log.path);
+    std::size_t closes = 0;
+    for (auto at = log.find(needle); at != std::string::npos; at = log.find(needle, at + 1)) {
+        ++closes;
+    }
+    CHECK(closes == 1);
+}
+
+TEST_CASE("integration::cpp::connection::a_closed_connection_refuses_on_its_engine_memory") {
+    auto config = test_create_config(integration_fixture_path("connection_refusal") / std::to_string(::getpid()));
+    test_clear_directory(config);
+    config.log.level = log_t::level::off;
+    otterbrix::connection_t connection(test_make_otterbrix(config));
+    REQUIRE(connection.execute("SELECT 1;")->is_success());
+    connection.close();
+    const auto refused = connection.execute("SELECT 1;");
+    REQUIRE(refused->is_error());
+    CHECK(refused->get_error().type == core::error_code_t::connection_closed);
+    CHECK(std::string{refused->get_error().what} == "the connection is closed");
+}
+
+// The connection holds the only reference to its engine: its last answer goes before the engine's memory.
+TEST_CASE("integration::cpp::connection::the_only_holder_of_its_engine_frees_its_answer_first") {
+    auto config = test_create_config(integration_fixture_path("connection_only_holder") / std::to_string(::getpid()));
+    test_clear_directory(config);
+    config.log.level = log_t::level::off;
+    {
+        otterbrix::connection_t connection(test_make_otterbrix(config));
+        REQUIRE(connection.execute("SELECT 1;")->is_success());
+    }
+    SUCCEED("the engine and its memory went after the connection's last answer");
 }

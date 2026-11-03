@@ -105,8 +105,8 @@ else:
 
 # BUILDING a relation on a closed connection is the same defect one step earlier, and the
 # guard added above does not reach it. `from_df` allocates its node and schema out of
-# `relation_factory_t::space` -- the copy close() deliberately LEAVES ALIVE so the scratch
-# tables can still be dropped -- while `py_relation_t::space_` is taken from the copy close()
+# `relation_factory_t::space` -- the copy close() LEAVES ALIVE -- while
+# `py_relation_t::space_` is taken from the copy close()
 # NULLS. The relation therefore came out holding memory from a live arena and no reference to
 # it, and freeing it at interpreter shutdown reached a resource that was already gone. Same
 # stack as the header, one allocation later:
@@ -136,8 +136,8 @@ else:
 """
 
 # The same road reached through an EXISTING relation. Chaining does not go near
-# `py_connection_t::space` at all -- `limit_relation` allocates from the factory copy and even
-# creates its scratch table -- so a closed connection kept handing out new relations with a
+# `py_connection_t::space` at all -- `limit_relation` allocates from the factory copy -- so a
+# closed connection kept handing out new relations with a
 # null `space_`.
 _CHAINED_AFTER_CLOSE = """
 import sys

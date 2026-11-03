@@ -148,8 +148,8 @@ namespace components::operators {
                 msg += " of ";
                 msg += std::to_string(tables_node_->entries().size());
                 msg += " resolved — the constraints it was to gather cannot be read";
-                set_error(core::error_t{core::error_code_t::physical_plan_error,
-                                        std::pmr::string{std::move(msg), resource_}});
+                set_error(
+                    core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
             const auto& target_md = tables_node_->entries()[entry.target].table_md;
@@ -160,7 +160,8 @@ namespace components::operators {
                 std::string msg = "constraint resolution: table \"";
                 msg += target_md->name;
                 msg += "\" resolved to no oid — its constraints cannot be read";
-                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                set_error(
+                    core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
             const catalog::oid_t table_oid = target_md->table_oid;
@@ -229,7 +230,7 @@ namespace components::operators {
                     msg += target_md->name;
                     msg += "\" cannot be decoded";
                     set_error(
-                        core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                        core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
                     co_return;
                 }
                 for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
@@ -245,7 +246,7 @@ namespace components::operators {
                                          con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
                         msg += ") has no readable contype — what it declares cannot be determined, so it cannot "
                                "be enforced or dismissed";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
@@ -273,7 +274,7 @@ namespace components::operators {
                             std::string msg = "foreign key constraint row in pg_constraint on table \"";
                             msg += target_md->name;
                             msg += "\" has no readable oid — it cannot be identified, enforced or dropped";
-                            set_error(core::error_t{core::error_code_t::schema_error,
+                            set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
                             co_return;
                         }
@@ -295,7 +296,7 @@ namespace components::operators {
                                          "cannot be identified"
                                        : "\": pg_constraint.conrelid is unreadable — the referencing table "
                                          "cannot be identified";
-                            set_error(core::error_t{core::error_code_t::schema_error,
+                            set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
                             co_return;
                         }
@@ -365,7 +366,7 @@ namespace components::operators {
                             msg += target_md->name;
                             msg += "\" has no expression in pg_constraint.conexpr — it cannot be enforced or "
                                    "dismissed";
-                            set_error(core::error_t{core::error_code_t::schema_error,
+                            set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
                             co_return;
                         }
@@ -403,7 +404,7 @@ namespace components::operators {
                                 msg += "\" and \"";
                                 msg += label;
                                 msg += "\"; drop one of them first";
-                                set_error(core::error_t{core::error_code_t::schema_error,
+                                set_error(core::error_t{core::error_code_t::invalid_table_definition,
                                                         std::pmr::string{std::move(msg), resource_}});
                                 co_return;
                             }
@@ -472,7 +473,7 @@ namespace components::operators {
                         std::string msg = "foreign key constraint \"";
                         msg += describe_constraint();
                         msg += "\": column list in pg_constraint cannot be read";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
@@ -483,7 +484,7 @@ namespace components::operators {
                                                        "pg_constraint.conkey — nothing to enforce"
                                                      : "\": referenced column list is empty in "
                                                        "pg_constraint.confkey — nothing to point at";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
@@ -498,7 +499,7 @@ namespace components::operators {
                         msg += describe_constraint();
                         msg += "\": referencing column list cannot be resolved — a column it is "
                                "declared on no longer exists";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
@@ -522,7 +523,7 @@ namespace components::operators {
                         msg += describe_constraint();
                         msg += "\": referenced column list cannot be resolved — a parent column it "
                                "points at no longer exists";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
@@ -553,7 +554,7 @@ namespace components::operators {
                             msg += "\": the referencing table (oid ";
                             msg += std::to_string(fk.child_table_oid);
                             msg += ") has no readable pg_class row — the cascade it governs cannot be evaluated";
-                            set_error(core::error_t{core::error_code_t::schema_error,
+                            set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
                             co_return;
                         }
@@ -587,7 +588,7 @@ namespace components::operators {
                             msg += "\" names namespace oid ";
                             msg += std::to_string(ns_oid);
                             msg += ", which has no readable pg_namespace row";
-                            set_error(core::error_t{core::error_code_t::schema_error,
+                            set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
                             co_return;
                         }
@@ -638,7 +639,7 @@ namespace components::operators {
                         msg += pending.conkey_readable
                                    ? ": key column list is empty in pg_constraint.conkey — nothing to enforce"
                                    : ": key column list in pg_constraint.conkey cannot be read";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
@@ -670,7 +671,7 @@ namespace components::operators {
                         std::string msg = describe_key();
                         msg += ": key column list cannot be resolved — a column it is declared on has no "
                                "live pg_attribute row";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }

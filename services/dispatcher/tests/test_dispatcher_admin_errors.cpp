@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "registry_statements.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -25,11 +27,11 @@
 #include <core/tests/wait_ready.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// Pins that the pool-admin API answers a typed error, not a bare `bool`; that an executor
-// refusing to drop an overload stops the catalog purge; and that txn_accumulate_msg on a session
-// with no active transaction is a refusal, not a silent drop.
+// Pins that a registration answers a typed error; that an unregistration nothing matches keeps the catalog; and that
+// txn_accumulate_msg on a session with no active transaction is a refusal, not a silent drop.
 
 using namespace services;
 using namespace services::dispatcher;
@@ -85,7 +87,12 @@ namespace {
     components::compute::function_ptr make_probe_func(std::pmr::memory_resource* resource, const std::string& name) {
         using namespace components::compute;
         function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
-        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::unary(), doc, size_t{1});
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      doc,
+                                                                      size_t{1},
+                                                                      components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});
@@ -108,7 +115,7 @@ namespace {
 } // namespace
 
 // Dispatcher + disk + WAL, driven by the non-threading test scheduler. Mirrors the fixture in
-// test_dispatcher_catalog.cpp but exposes the pool-admin entry points instead of SQL.
+// test_dispatcher_catalog.cpp but sends hand-built plans and messages instead of SQL.
 struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
     admin_fixture(std::pmr::memory_resource* resource, const std::string& disk_path)
         : actor_zeta::actor::actor_mixin<admin_fixture>()
@@ -139,10 +146,14 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
                                                                       manager_disk_->address(),
                                                                       components::pipeline::no_mailbox(),
                                                                       configuration::config_execution{},
-                                                                      components::planner::primitives_t{})) {
-        manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        manager_disk_->set_manager_wal_sync(manager_wal_->address());
-        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
+                                                                      components::planner::primitives_t{},
+                                                                      services::dispatcher::dispatcher_seed_t{})) {
+        const services::bootstrap_token_t token{};
+        manager_wal_replicate_t::bootstrap_t wal_boot{*manager_wal_, token};
+        manager_disk_t::bootstrap_t disk_boot{*manager_disk_, token};
+        wal_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
+        disk_boot.set_manager_wal_sync(manager_wal_->address());
+        REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
     }
 
     ~admin_fixture() {
@@ -193,8 +204,8 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
         return r.value();
     }
 
-    // Writes pg_proc directly, bypassing register_udf — reproduces the divergence a partial
-    // fan-out (or restart) leaves: catalog says the function exists, no executor registry holds it.
+    // Writes pg_proc directly, bypassing register_udf — reproduces what a restart leaves: catalog says the
+    // function exists, no executor registry holds it.
     void seed_pg_proc_row(const std::string& fname) {
         auto ctx = read_ctx();
         components::catalog::oid_batch_t batch;
@@ -237,17 +248,13 @@ TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_exec
 
     const std::string fname = "admin_probe_dup";
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), fname)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), fname));
         REQUIRE_FALSE(err.contains_error());
     }
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), fname)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), fname));
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::function_registry_error);
+        REQUIRE(err.type == core::error_code_t::duplicate_function);
         REQUIRE(mentions(err, "already registered"));
     }
 }
@@ -257,40 +264,27 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
     admin_fixture test(mr.get(), admin_dir("cast_reasons"));
 
     {
-        auto err =
-            test.dispatcher_invoke(&manager_dispatcher_t::unregister_cast, session_id_t{}, kCastSource, kCastTarget);
+        auto err = registry_statements::unregister_cast(test, kCastSource, kCastTarget);
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::schema_error);
+        REQUIRE(err.type == core::error_code_t::undefined_object);
         REQUIRE(mentions(err, "cast is not registered"));
     }
     {
         const auto udt = complex_logical_type::create_unknown("admin_probe_udt");
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                          session_id_t{},
-                                          udt,
-                                          kCastTarget,
-                                          make_cast_entry());
+        auto err = registry_statements::register_cast(test, udt, kCastTarget, make_cast_entry());
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::schema_error);
+        REQUIRE(err.type == core::error_code_t::undefined_object);
         REQUIRE(mentions(err, "not registered"));
         REQUIRE_FALSE(mentions(err, "cast is not registered"));
     }
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                          session_id_t{},
-                                          kCastSource,
-                                          kCastTarget,
-                                          make_cast_entry());
+        auto err = registry_statements::register_cast(test, kCastSource, kCastTarget, make_cast_entry());
         REQUIRE_FALSE(err.contains_error());
     }
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                          session_id_t{},
-                                          kCastSource,
-                                          kCastTarget,
-                                          make_cast_entry());
+        auto err = registry_statements::register_cast(test, kCastSource, kCastTarget, make_cast_entry());
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::schema_error);
+        REQUIRE(err.type == core::error_code_t::duplicate_object);
         REQUIRE(mentions(err, "already registered"));
     }
 }
@@ -323,9 +317,9 @@ TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_nam
     }
 }
 
-// An executor that refused to drop the overload stops the catalog purge.
+// An unregistration that matches no overload drops no pg_proc row.
 
-TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_keeps_pg_proc") {
+TEST_CASE("services::dispatcher::admin_errors::unregister_udf_of_no_overload_keeps_pg_proc") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("unreg_refusal"));
 
@@ -335,32 +329,24 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
     test.seed_pg_proc_row(fname);
     REQUIRE(test.pg_proc_rows(fname) == 1);
 
-    auto err = test.dispatcher_invoke(&manager_dispatcher_t::unregister_udf,
-                                      session_id_t{},
-                                      fname,
-                                      bigint_inputs(mr.get()),
-                                      components::catalog::drop_behavior_t::restrict_);
-    // Catalog asserted first — it's the actual damage if an ack is awaited but never checked;
-    // the typed refusal is only how the caller learns about it.
+    auto err = registry_statements::unregister_udf(test,
+                                                   fname,
+                                                   bigint_inputs(mr.get()),
+                                                   components::catalog::drop_behavior_t::restrict_);
+    // The catalog first: a dropped row is the damage, the typed refusal only how the caller learns of it.
     REQUIRE(test.pg_proc_rows(fname) == 1);
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::unrecognized_function);
     REQUIRE(mentions(err, "registered or in the catalog"));
 }
 
-// A per-executor divergence isn't constructible through the public API (all fan-outs share the
-// same registries), so this pins the success half: when every executor confirms, the pg_cast
-// row must actually go.
+// The pg_cast row goes with the cast.
 TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_pg_cast_row") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("unreg_cast"));
 
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                          session_id_t{},
-                                          kCastSource,
-                                          kCastTarget,
-                                          make_cast_entry());
+        auto err = registry_statements::register_cast(test, kCastSource, kCastTarget, make_cast_entry());
         REQUIRE_FALSE(err.contains_error());
     }
     const auto source_oid = components::catalog::well_known_oid::boolean_type;
@@ -368,8 +354,7 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_p
     REQUIRE(test.pg_cast_oid(source_oid, target_oid) != components::catalog::INVALID_OID);
 
     {
-        auto err =
-            test.dispatcher_invoke(&manager_dispatcher_t::unregister_cast, session_id_t{}, kCastSource, kCastTarget);
+        auto err = registry_statements::unregister_cast(test, kCastSource, kCastTarget);
         REQUIRE_FALSE(err.contains_error());
     }
     REQUIRE(test.pg_cast_oid(source_oid, target_oid) == components::catalog::INVALID_OID);
@@ -391,8 +376,10 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
     REQUIRE_FALSE(payload.empty());
 
     const uint64_t no_such_transaction = 1;
-    auto err =
-        test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg, orphan_session, no_such_transaction, payload);
+    auto err = test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg,
+                                      orphan_session,
+                                      no_such_transaction,
+                                      std::move(payload));
     REQUIRE(err.contains_error());
-    REQUIRE(err.type == core::error_code_t::transaction_inactive);
+    REQUIRE(err.type == core::error_code_t::internal_error);
 }

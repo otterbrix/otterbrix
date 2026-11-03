@@ -10,6 +10,21 @@ namespace services::collection {
         std::pmr::string make_pmr_string(std::string_view sv, std::pmr::memory_resource* mr) {
             return std::pmr::string(sv.data(), sv.size(), mr);
         }
+
+        // A scan names its table; a table of a connection by its full name, as PostgreSQL 18 EXPLAIN VERBOSE names
+        // a foreign table.
+        std::pmr::string relation_name(const components::logical_plan::resolved_table_metadata_t& md,
+                                       std::pmr::memory_resource* mr) {
+            if (md.connection.empty()) {
+                return make_pmr_string(md.name, mr);
+            }
+            std::pmr::string name{md.connection, mr};
+            for (const auto* part : {&md.database, &md.schema, &md.name}) {
+                name += '.';
+                name += *part;
+            }
+            return name;
+        }
     } // namespace
 
     // --- explain_name_collector: WRITES oid->name (pre-move, catalog still alive) ---
@@ -18,7 +33,7 @@ namespace services::collection {
         const auto oid = entry.oid;
         if (oid != components::catalog::INVALID_OID && out_.find(oid) == out_.end()) {
             if (const auto* md = cs_.table_metadata_for(oid)) {
-                out_.emplace(oid, make_pmr_string(md->name, out_.get_allocator().resource()));
+                out_.emplace(oid, relation_name(*md, out_.get_allocator().resource()));
             }
             // a miss (null metadata) is skipped: the IR builder's "t"+oid default names it
         }
@@ -48,7 +63,7 @@ namespace services::collection {
                 // Plan-only path: the catalog is still alive, so resolve the scan name straight from
                 // it (byte-identical to explain_name_collector, which this path then skips).
                 if (const auto* md = cs_->table_metadata_for(oid)) {
-                    n.relation = make_pmr_string(md->name, mr_);
+                    n.relation = relation_name(*md, mr_);
                 } else {
                     n.relation = make_pmr_string("t" + std::to_string(oid), mr_);
                 }

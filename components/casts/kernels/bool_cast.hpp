@@ -89,7 +89,7 @@ namespace components::casts::kernels {
             }
             const std::optional<bool> parsed = detail::parse_bool(source.get_value<std::string_view>(row));
             if (!parsed.has_value()) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::invalid_text_representation,
                                      std::pmr::string{"parse error", result->resource()}};
             }
             result->set_value(row, *parsed);

@@ -64,7 +64,7 @@ namespace components::operators {
             // nothing — same refusal as operator_fk_check_t's indices.empty().
             if (group.empty()) {
                 return core::error_t{
-                    core::error_code_t::invalid_constraint,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"UNIQUE constraint: key column list is empty — nothing to enforce", resource}};
             }
 
@@ -79,7 +79,7 @@ namespace components::operators {
                     std::pmr::string what{"UNIQUE constraint: key column \"", resource};
                     what.append(col_name.c_str());
                     what.append("\" has no position in the written row");
-                    return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+                    return core::error_t{core::error_code_t::internal_error, std::move(what)};
                 }
                 sources.push_back(col);
             }
@@ -107,7 +107,7 @@ namespace components::operators {
                         what.append(group[j].c_str());
                         what.append("\" is not at the same position in every chunk of the write-set — "
                                     "the chunks disagree about the table's shape");
-                        return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+                        return core::error_t{core::error_code_t::internal_error, std::move(what)};
                     }
                     keys_chunk.data.emplace_back(chunk.data[sources[j]]);
                 }
@@ -303,7 +303,7 @@ namespace components::operators {
             groups.push_back(&key_chunks);
             if (find_duplicates(resource_, groups, in_chunks, failed, true, nullptr, nullptr)) {
                 co_return core::error_t{
-                    core::error_code_t::other_error,
+                    core::error_code_t::unique_violation,
                     std::pmr::string{"UNIQUE constraint violated: duplicate key within write batch", resource_}};
             }
             row_flags_t held(resource_);
@@ -316,7 +316,7 @@ namespace components::operators {
                 co_return lookup;
             }
             if (any_flagged(held)) {
-                co_return core::error_t{core::error_code_t::other_error,
+                co_return core::error_t{core::error_code_t::unique_violation,
                                         std::pmr::string{"UNIQUE constraint violated: key already exists", resource_}};
             }
         }
@@ -356,7 +356,7 @@ namespace components::operators {
                                                   row_flags_t* held,
                                                   row_ids_t* holders) {
         if (table_oid_ == catalog::INVALID_OID) {
-            co_return core::error_t{core::error_code_t::invalid_constraint,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"UNIQUE constraint: the table it is declared on did not resolve "
                                                      "— stored rows cannot be checked",
                                                      resource_}};

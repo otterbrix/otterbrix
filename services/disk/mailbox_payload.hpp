@@ -4,9 +4,8 @@
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
 #include <components/execution_dag/execution_dag.hpp>
-#include <components/physical_plan/pushed_aggregate_spec.hpp>
+#include <components/logical_plan/detached_block.hpp>
 #include <components/table/column_state.hpp>
-#include <components/table/pushed_filter.hpp>
 
 #include <memory>
 #include <type_traits>
@@ -39,21 +38,10 @@ namespace services::disk::mailbox {
     template<>
     struct owns_its_payload<components::table::table_filter_t> : std::false_type {};
 
+    // A block's nodes are an intrusive tree, yet detach_block made them on the receiver's resource and nothing of
+    // the sender points into them (the precedent: detached_expression_t).
     template<>
-    struct owns_its_payload<components::table::pushed_filter_t>
-        : std::conjunction<owns_its_payload<decltype(std::declval<components::table::pushed_filter_t>().expression)>,
-                           owns_its_payload<decltype(std::declval<components::table::pushed_filter_t>().parameters)>> {
-    };
-
-    template<>
-    struct owns_its_payload<components::operators::pushed_aggregate_spec_t>
-        : std::conjunction<
-              owns_its_payload<decltype(std::declval<components::operators::pushed_aggregate_spec_t>().group_keys)>,
-              owns_its_payload<decltype(std::declval<components::operators::pushed_aggregate_spec_t>().aggregates)>,
-              owns_its_payload<decltype(std::declval<components::operators::pushed_aggregate_spec_t>().outputs)>,
-              owns_its_payload<decltype(std::declval<components::operators::pushed_aggregate_spec_t>().output_types)>,
-              owns_its_payload<decltype(std::declval<components::operators::pushed_aggregate_spec_t>().input_types)>> {
-    };
+    struct owns_its_payload<components::logical_plan::detached_block_t> : std::true_type {};
 
     template<class List>
     struct arguments_own_their_payload;

@@ -17,11 +17,19 @@
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/file_buffer.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/table/storage/temporary_spill_file.hpp>
 #include <core/file/local_file_system.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <array>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -104,4 +112,72 @@ TEST_CASE("buffer manager: transient buffers spill to disk instead of exhausting
         REQUIRE(pinned.value().is_valid());
         CHECK(check_pattern(pinned.value().ptr(), tiny_size, static_cast<uint64_t>(i) + 1));
     }
+}
+
+namespace {
+    class unusable_tmpdir_t final {
+    public:
+        explicit unusable_tmpdir_t(const std::string& name)
+            : path_(std::filesystem::temp_directory_path() / (name + "_" + std::to_string(::getpid()))) {
+            {
+                std::ofstream blocker(path_);
+                blocker << "x";
+            }
+            if (const char* value = std::getenv("TMPDIR"); value != nullptr) {
+                previous_.emplace(value);
+            }
+            ::setenv("TMPDIR", path_.c_str(), 1);
+        }
+        ~unusable_tmpdir_t() {
+            if (previous_.has_value()) {
+                ::setenv("TMPDIR", previous_->c_str(), 1);
+            } else {
+                ::unsetenv("TMPDIR");
+            }
+            std::error_code ec;
+            std::filesystem::remove(path_, ec);
+        }
+        unusable_tmpdir_t(const unusable_tmpdir_t&) = delete;
+        unusable_tmpdir_t& operator=(const unusable_tmpdir_t&) = delete;
+
+        const std::filesystem::path& path() const noexcept { return path_; }
+
+    private:
+        std::filesystem::path path_;
+        std::optional<std::string> previous_;
+    };
+} // namespace
+
+TEST_CASE("buffer pool: an unusable temporary directory is a construction error, not an exception", "[spill]") {
+    std::filesystem::path not_a_directory;
+    std::optional<spill_env_t> env;
+    {
+        unusable_tmpdir_t tmpdir("otterbrix_spill_tmpdir");
+        not_a_directory = tmpdir.path();
+        env.emplace(uint64_t(1) << 20);
+    }
+
+    const auto& refusal = env->buffer_pool.construction_error();
+    INFO("refusal: " << refusal.what.c_str());
+    REQUIRE(refusal.contains_error());
+    CHECK(refusal.type == core::error_code_t::io_error);
+    CHECK(std::string(refusal.what.c_str()).find(not_a_directory.string()) != std::string::npos);
+}
+
+TEST_CASE("temporary spill file: a write refused by the construction error answers it on the file's resource",
+          "[spill]") {
+    core::pmr::otterbrix_resource resource;
+    std::optional<temporary_spill_file_t> spill;
+    {
+        unusable_tmpdir_t tmpdir("otterbrix_spill_tmpdir_write");
+        spill.emplace(&resource);
+    }
+    REQUIRE(spill->construction_error().contains_error());
+
+    std::array<std::byte, 16> bytes{};
+    const auto written = spill->write(bytes.data(), bytes.size());
+    REQUIRE(written.has_error());
+    CHECK(written.error().type == core::error_code_t::io_error);
+    CHECK(written.error().what == spill->construction_error().what);
+    CHECK(written.error().what.get_allocator().resource() == &resource);
 }

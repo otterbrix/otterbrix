@@ -3,7 +3,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <string>
-#include <thread>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -23,20 +22,25 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/session_catalog.hpp>
+#include <components/catalog/session_settings.hpp>
 #include <components/compute/function.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/execution_plan.hpp>
+#include <components/logical_plan/node_transaction.hpp>
+#include <components/logical_plan/prepared_statement.hpp>
 #include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/collection/executor.hpp>
+#include <services/dispatcher/registry_changes.hpp>
 #include <services/dispatcher/txn_messages.hpp>
+#include <services/loop_thread.hpp>
 
 namespace services::disk {
     class manager_disk_t;
@@ -49,9 +53,18 @@ namespace services::dispatcher {
     std::uint64_t dev_statements_waited_turn() noexcept;
 #endif
 
+    struct dispatcher_seed_t final {
+        uint64_t commit_frontier{0};
+        uint64_t txn_id_high_water{0};
+        components::catalog::session_catalog_t settings{};
+        bool disk_has_dropped{false};
+        bool index_has_dropped{false};
+    };
+
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
-    // solely through the txn_*_msg handlers below), default_settings_, the executor pool, DROP-GC flags.
+    // solely through the txn_*_msg handlers below), the settings (shared defaults and each session's own), the
+    // executor pool, DROP-GC flags.
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
     public:
         template<typename T>
@@ -71,7 +84,8 @@ namespace services::dispatcher {
                              actor_zeta::address_t disk_address,
                              actor_zeta::address_t index_address,
                              const configuration::config_execution& execution,
-                             components::planner::primitives_t primitives);
+                             components::planner::primitives_t primitives,
+                             dispatcher_seed_t seed);
         ~manager_dispatcher_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.
@@ -84,14 +98,7 @@ namespace services::dispatcher {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // Direct sync call, safe only because the scheduler has not started yet; idempotent.
-        void seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water);
-
-        void cache_settings_sync(const components::catalog::session_catalog_t& settings);
-
-        // Sync twin of on_drop_resource_marked(), for use before scheduler.start. Idempotent.
-        void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
-        void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
                                                                      components::logical_plan::execution_plan_t plan);
@@ -99,20 +106,6 @@ namespace services::dispatcher {
         unique_future<components::cursor::cursor_t_ptr> refuse_statement(components::session::session_id_t session,
                                                                          core::error_t error);
 
-        unique_future<core::error_t> register_udf(components::session::session_id_t session,
-                                                  components::compute::function_ptr function);
-        unique_future<core::error_t> unregister_udf(components::session::session_id_t session,
-                                                    std::string function_name,
-                                                    std::pmr::vector<components::types::complex_logical_type> inputs,
-                                                    components::catalog::drop_behavior_t behavior);
-        // pg_cast is written/deleted only after every executor confirms, so none applies a stale cast.
-        unique_future<core::error_t> register_cast(components::session::session_id_t session,
-                                                   components::types::complex_logical_type source,
-                                                   components::types::complex_logical_type target,
-                                                   components::casts::cast_entry entry);
-        unique_future<core::error_t> unregister_cast(components::session::session_id_t session,
-                                                     components::types::complex_logical_type source,
-                                                     components::types::complex_logical_type target);
         // Fans a renderer to every executor at slot `id`; selection rides
         // execution_plan_t::explain_render_id.
         unique_future<core::error_t> set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn);
@@ -131,7 +124,6 @@ namespace services::dispatcher {
         unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
                                                         uint64_t transaction_id,
                                                         txn_accumulate_payload_t payload);
-        unique_future<void> txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id);
 
         unique_future<core::error_t>
         txn_savepoint_msg(components::session::session_id_t session, uint64_t transaction_id, std::string name);
@@ -150,21 +142,21 @@ namespace services::dispatcher {
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
-        // Shutdown: every statement arriving after this is refused, except CHECKPOINT.
+        // Shutdown: every portal is closed, and every statement arriving after this is refused, except CHECKPOINT, CLOSE
+        // and close_session.
         unique_future<void> begin_shutdown();
+
+        // After the statements sent before it: rolls the open transaction back, then forgets the session's settings.
+        // Statements sent after it, while it waits or runs, are refused with connection_closed.
+        unique_future<void> close_session(components::session::session_id_t session);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::refuse_statement,
-                                                            &manager_dispatcher_t::register_udf,
-                                                            &manager_dispatcher_t::unregister_udf,
-                                                            &manager_dispatcher_t::register_cast,
-                                                            &manager_dispatcher_t::unregister_cast,
                                                             &manager_dispatcher_t::set_explain_renderer,
                                                             &manager_dispatcher_t::txn_mark_explicit_msg,
                                                             &manager_dispatcher_t::txn_commit_drain_msg,
                                                             &manager_dispatcher_t::txn_abort_drain_msg,
                                                             &manager_dispatcher_t::txn_accumulate_msg,
-                                                            &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_savepoint_msg,
                                                             &manager_dispatcher_t::txn_release_savepoint_msg,
                                                             &manager_dispatcher_t::txn_rollback_to_drain_msg,
@@ -173,19 +165,14 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_compact_watermark_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty,
-                                                            &manager_dispatcher_t::begin_shutdown>;
+                                                            &manager_dispatcher_t::begin_shutdown,
+                                                            &manager_dispatcher_t::close_session>;
 
     private:
-        // Member coroutine, not a lambda, so `this` supplies the frame memory_resource.
-        unique_future<void>
-        unwind_udf_fanout_(components::session::session_id_t session,
-                           std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
-
-        // Runs a catalog write operator (UDF / cast register and unregister) to completion in the committed snapshot;
-        // its error, logged under `what`, is the answer.
-        unique_future<core::error_t> run_catalog_op_(components::session::session_id_t session,
-                                                     components::operators::operator_ptr op,
-                                                     std::string_view what);
+        // What a committed transaction registered and dropped, given to the master and sent to every executor before
+        // its commit is published.
+        void publish_registry_changes_(registry_changes_t changes);
+        registry_changes_t take_registry_changes_(components::session::session_id_t session);
 
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
@@ -196,20 +183,65 @@ namespace services::dispatcher {
 
         std::size_t next_executor_index() noexcept;
 
+        // `joins_held`: the statement runs in the statement transaction a portal of the session holds.
         core::result_wrapper_t<txn_session_context_t>
         create_session_context(components::session::session_id_t session,
-                               components::logical_plan::execution_plan_t* plan);
+                               components::logical_plan::execution_plan_t* plan,
+                               bool joins_held);
+
+        struct settings_statement_t {
+            bool is_transaction_control{false};
+            components::logical_plan::transaction_op op{};
+            std::pmr::string savepoint;
+            bool alter_system{false};
+        };
+        settings_statement_t settings_statement_of(const components::logical_plan::execution_plan_t& plan) const;
+
+        // A statement in its session's turn: through the executor, then the end of its transaction and settings.
+        unique_future<components::cursor::cursor_t_ptr> run_statement_(components::session::session_id_t session,
+                                                                       components::table::transaction_control_t control,
+                                                                       components::logical_plan::execution_plan_t plan);
+        core::error_t failed_transaction_() const;
+        bool is_closed_(components::session::session_id_t session) const;
+        core::error_t session_closed_() const;
+        components::cursor::cursor_t_ptr refuse_closed_(components::session::session_id_t session);
+
+        void finish_settings_(components::session::session_id_t session,
+                              const settings_statement_t& statement,
+                              bool commit_rolled_back,
+                              const collection::executor::execute_result_t& result);
+        // The savepoints of the transaction's registrations, and the end of those it did not commit.
+        void finish_registry_changes_(components::session::session_id_t session,
+                                      const settings_statement_t& statement,
+                                      const collection::executor::execute_result_t& result);
+        // The change a PREPARE or a DEALLOCATE ran, once it succeeded; not undone by a ROLLBACK (PostgreSQL 18 keeps
+        // prepared statements outside transactions).
+        void finish_prepared_(components::session::session_id_t session,
+                              const collection::executor::execute_result_t& result);
 
         unique_future<void> finish_failed_statement_(components::session::session_id_t session,
                                                      uint64_t transaction_id);
+        // PostgreSQL 18 finish_xact_command; work still held here aborts the process.
+        void end_statement_transaction_(components::session::session_id_t session, uint64_t transaction_id);
+
+        components::cursor::cursor_t_ptr stamp_transaction_status_(components::session::session_id_t session,
+                                                                   components::cursor::cursor_t_ptr cursor);
 
         components::table::txn_abort_drain_t drain_for_abort_(components::table::transaction_t& txn);
 
         components::table::transaction_t* statement_transaction_(components::session::session_id_t session,
                                                                  uint64_t transaction_id);
 
+        // A statement that runs alone in its session: the end of a transaction or a savepoint, the registration or
+        // drop of a function or a cast, a PREPARE or a DEALLOCATE, and a DECLARE or a CLOSE; the others of a transaction
+        // block may run beside one another.
+        enum class turn_t : bool
+        {
+            beside,
+            alone
+        };
         struct waiting_statement_t {
-            components::table::transaction_control_t control;
+            turn_t turn;
             actor_zeta::promise<void> admitted;
         };
         struct session_order_t {
@@ -217,35 +249,65 @@ namespace services::dispatcher {
                 : waiting(resource) {}
             std::size_t running{0};
             bool closing{false};
+            // close_session arrived: the statements sent after it are refused while this entry lives.
+            bool closed{false};
             // list for pointer stability
             std::pmr::list<waiting_statement_t> waiting;
         };
 
         class session_turn_t {
         public:
-            session_turn_t(manager_dispatcher_t* dispatcher,
-                           components::session::session_id_t session,
-                           components::table::transaction_control_t control)
+            session_turn_t(manager_dispatcher_t* dispatcher, components::session::session_id_t session, turn_t turn)
                 : dispatcher_(dispatcher)
                 , session_(session)
-                , control_(control) {}
-            ~session_turn_t() { dispatcher_->end_turn_(session_, control_); }
+                , turn_(turn) {}
+            ~session_turn_t() { dispatcher_->end_turn_(session_, turn_); }
             session_turn_t(const session_turn_t&) = delete;
             session_turn_t& operator=(const session_turn_t&) = delete;
 
         private:
             manager_dispatcher_t* dispatcher_;
             components::session::session_id_t session_;
-            components::table::transaction_control_t control_;
+            turn_t turn_;
         };
 
-        unique_future<void> take_turn_(components::session::session_id_t session,
-                                       components::table::transaction_control_t control);
-        void end_turn_(components::session::session_id_t session, components::table::transaction_control_t control);
-        bool may_start_(components::session::session_id_t session,
-                        const session_order_t& order,
-                        components::table::transaction_control_t control);
-        void start_(session_order_t* order, components::table::transaction_control_t control);
+        unique_future<void> take_turn_(components::session::session_id_t session, turn_t turn);
+        void end_turn_(components::session::session_id_t session, turn_t turn);
+        bool may_start_(components::session::session_id_t session, const session_order_t& order, turn_t turn);
+        void start_(session_order_t* order, turn_t turn);
+
+        // A portal of a session: the executor it runs in and what of the transaction it is part of. Its state is the
+        // executor's; the dispatcher only routes to it and ends it with its transaction.
+        struct portal_ref_t {
+            uint64_t portal_id;
+            // A SQL cursor's name; empty for a host's window.
+            std::pmr::string name;
+            std::size_t executor;
+            // The savepoint level it was opened at: ROLLBACK TO a savepoint taken before it closes it.
+            uint64_t sub_id;
+            // A window of an autocommit statement, whose statement transaction it holds: the session's next statement
+            // other than its FETCH, its CLOSE and a describe closes it first (PostgreSQL 18 ends it at Sync).
+            bool autocommit;
+            // A FETCH of it runs: a second one is refused (PostgreSQL 18 MarkPortalActive).
+            bool running{false};
+        };
+        enum class portals_t : uint8_t
+        {
+            all,
+            autocommit_windows,
+            after_savepoint
+        };
+        portal_ref_t*
+        find_portal_(components::session::session_id_t session, std::string_view name, uint64_t portal_id);
+        // A portal's statement transaction is held between the statements of its session.
+        bool holds_statement_transaction_(components::session::session_id_t session);
+        // CLOSE of the session's portals `which` (those opened at `sub_id` or later for after_savepoint), each by an
+        // ordinary CLOSE plan in its executor, inside the transaction they are part of; the first error.
+        unique_future<core::error_t>
+        close_portals_(components::session::session_id_t session, portals_t which, uint64_t sub_id);
+        // The statement reads the session's window of an autocommit statement: its FETCH, its CLOSE, or a describe.
+        bool reads_autocommit_window_(components::session::session_id_t session,
+                                      const components::logical_plan::execution_plan_t& plan);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -269,7 +331,8 @@ namespace services::dispatcher {
 
         // mutex_/pump_cv_ guard only the loop's idle sleep, woken early by enqueue.
         std::pmr::list<in_flight_entry_t> in_flight_{resource_};
-        std::thread loop_thread_;
+        void loop_body();
+        core::error_t construction_error_{core::error_t::no_error()};
         std::atomic<bool> loop_running_{true};
         // Raw message* since boost::lockfree requires trivially-copyable; re-wrapped by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
@@ -283,22 +346,40 @@ namespace services::dispatcher {
         // Their transaction failed and was rolled back; only ROLLBACK or COMMIT is accepted until one ends it.
         std::pmr::unordered_set<components::session::session_id_t> failed_sessions_{resource_};
         in_flight_entry_t* current_entry_{nullptr};
-        components::casts::cast_registry_t cast_registry_;
-        // The engine's master: builtins plus host UDFs. Executors hold copies, updated by fan-out.
+        // The engine's master: builtins plus host UDFs, the uids of which it reserves. Executors hold copies, updated
+        // by fan-out when a transaction commits.
         components::compute::function_registry_t function_registry_;
-        // global cached settings. updated on every set.
-        // TODO: settings for the session
+        // Only sessions inside a transaction that registered, dropped or set a savepoint have an entry.
+        std::pmr::unordered_map<components::session::session_id_t, pending_registry_changes_t> registry_changes_{
+            resource_};
+        // The changes of the commits between their drain and their publish, by commit_id.
+        std::pmr::unordered_map<uint64_t, registry_changes_t> committing_registry_changes_{resource_};
+        std::pmr::vector<actor_zeta::unique_future<core::error_t>> registry_acks_{resource_};
+        // What pg_settings holds: the value of a setting for every session that has none of its own.
         components::catalog::session_catalog_t default_settings_;
+        // Only sessions that set something or are inside a transaction block have an entry.
+        std::pmr::unordered_map<components::session::session_id_t, components::catalog::session_settings_t>
+            session_settings_{resource_};
 
-        const components::catalog::session_catalog_t&
-        session_settings(components::session::session_id_t /*session*/) const {
-            return default_settings_;
-        }
+        // Each session's prepared statements by name; only sessions that prepared one have an entry.
+        std::pmr::unordered_map<
+            components::session::session_id_t,
+            std::pmr::unordered_map<std::pmr::string, components::logical_plan::prepared_statement_t>>
+            prepared_statements_{resource_};
+
+        // Only sessions with an open portal have an entry.
+        std::pmr::unordered_map<components::session::session_id_t, std::pmr::vector<portal_ref_t>> portals_{resource_};
+        uint64_t last_portal_id_{0};
+
+        components::catalog::session_catalog_t session_settings(components::session::session_id_t session) const;
+        components::catalog::place_t place_of(components::session::session_id_t session) const;
 
         // Fire-and-forget GC list for broadcast/register sends, drained via poll_pending().
         std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;
 
         void poll_pending();
+
+        loop_thread_t loop_thread_;
     };
 
 } // namespace services::dispatcher

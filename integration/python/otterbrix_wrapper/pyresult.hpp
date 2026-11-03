@@ -12,16 +12,18 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace otterbrix {
     class py_connection_t;
-    class otterbrix_t;
+    struct engine_arena_t;
+    struct py_connection_state_t;
 
     // The rows a statement produced, as Python sees them (`OtterBrixPyConnection.execute` return type).
     class py_result_t {
     public:
-        py_result_t(py_connection_t* env,
+        py_result_t(const py_connection_t& env,
                     components::cursor::cursor_t_ptr result,
                     const std::vector<components::table::column_definition_t>& columns);
         ~py_result_t();
@@ -46,18 +48,20 @@ namespace otterbrix {
 
         // DB-API rowcount: the rows an INSERT / UPDATE / DELETE wrote, else the rows of the result.
         int64_t rowcount() const;
+        py::object created_oid() const;
+
+        // None once the result is closed.
+        std::optional<components::session::transaction_status_t> transaction_status() const;
 
         void close();
 
         bool is_closed() const;
 
     private:
-        // No back-pointer to the connection: a raw one could outlive what it points at.
-
-        // The result batch is pmr-allocated from space's memory resource, and closing the
-        // connection can drop the last reference to it, so the result holds its own.
-        // Declared before `result` so it outlives it during destruction.
-        boost::intrusive_ptr<otterbrix_t> space;
+        // The result batch is pmr-allocated from the engine's arena, which outlives the engine; declared before
+        // `result` so it outlives it during destruction. The connection's state refuses reads once it is closed.
+        boost::intrusive_ptr<engine_arena_t> arena_;
+        boost::intrusive_ptr<py_connection_state_t> state_;
 
         components::cursor::cursor_t_ptr result;
         std::vector<components::table::column_definition_t> columns;

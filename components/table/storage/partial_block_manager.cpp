@@ -34,10 +34,12 @@ namespace components::table::storage {
         return partial_block_manager_t{block_manager, tails_t::dropped};
     }
 
-    // Place every segment at an 8-byte-aligned offset: the offset is dereferenced after reload as
+    // Place every segment at a PAYLOAD_ALIGNMENT offset: the offset is dereferenced after reload as
     // uint64_t*/int32_t*/T*, and byte-granular packing made those reads misaligned UB (caught by
     // -fsanitize=alignment). Padding bytes stay zeroed (fresh_image memsets the buffer).
-    uint64_t partial_block_manager_t::partial_block_t::next_offset() const { return align_value<uint64_t>(used_bytes); }
+    uint64_t partial_block_manager_t::partial_block_t::next_offset() const {
+        return align_value<uint64_t>(used_bytes, PAYLOAD_ALIGNMENT);
+    }
 
     uint64_t partial_block_manager_t::partial_block_t::free_space() const {
         const uint64_t offset = next_offset();
@@ -148,7 +150,7 @@ namespace components::table::storage {
     // Every byte of a tail reaches the disk once: the first flush writes the used prefix, each
     // later one the range appended since (plus the checksum slot both times).
     core::error_t partial_block_manager_t::flush_tail(partial_block_t& pb) {
-        const uint64_t from = align_value<uint64_t>(pb.flushed_bytes);
+        const uint64_t from = align_value<uint64_t>(pb.flushed_bytes, PAYLOAD_ALIGNMENT);
         // The tail's CRC grows with its bytes (the padding between flushed_bytes and
         // `from` is zero in the image and on disk), so a placement pays a CRC of its own bytes, not
         // of the whole block. Adopted only once the write landed: a refused placement is forgotten.

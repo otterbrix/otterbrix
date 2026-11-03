@@ -16,7 +16,7 @@ namespace components::operators {
         // A VALUES (or no-FROM constant) literal carrier is a SOURCE: the rows are
         // already materialized in output_ from the ctor, so source_next() just walks
         // output_->chunks() by a cursor and emits a COPY of each. role()==source lets
-        // a VALUES SELECT / INSERT...VALUES chain stream through execute_pipeline (the
+        // a VALUES SELECT / INSERT...VALUES chain stream through pump_pipeline_ (the
         // INSERT sink folds the VALUES batches via push() instead of adopting
         // left_->output() wholesale) rather than forcing the legacy materialize path.
         //

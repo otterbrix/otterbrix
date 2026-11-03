@@ -53,7 +53,7 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE dupdb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA dupdb;")->is_success());
         REQUIRE(exec("CREATE TABLE dupdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON dupdb.t USING hash (k);")->is_success());
 
@@ -140,7 +140,7 @@ TEST_CASE("integration::cpp::index_read_through_agent::own_uncommitted_insert_is
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE visdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA visdb;")->is_success());
     REQUIRE(exec("CREATE TABLE visdb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX t_k ON visdb.t USING hash (k);")->is_success());
     REQUIRE(exec("INSERT INTO visdb.t (id, k) VALUES (1, 10);")->is_success());

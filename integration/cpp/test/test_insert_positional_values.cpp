@@ -19,7 +19,7 @@ namespace {
             : config(test_create_config(integration_fixture_path(dir))) {
             test_clear_directory(config);
             space.emplace(config);
-            ok("CREATE DATABASE d;");
+            ok("CREATE SCHEMA d;");
             ok("CREATE TABLE d.t (a BIGINT, b TEXT, c BIGINT DEFAULT 7, e BIGINT);");
         }
 

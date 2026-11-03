@@ -28,7 +28,7 @@ TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX k_idx ON b.t USING hash (k);")->is_success());
         REQUIRE(exec("INSERT INTO b.t (id, k) VALUES (1, 10), (2, 20), (3, 30);")->is_success());

@@ -23,7 +23,7 @@ using namespace components;
 namespace {
 
     void seed_user_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE guarddb;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA guarddb;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE guarddb.alpha (id BIGINT, name STRING);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO guarddb.alpha (id, name) VALUES (1, 'one'), (2, 'two');")
                     ->is_success());
@@ -116,7 +116,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::ddl_cannot_drop_or_alter_the_
     require_refused(dispatcher, "ALTER TABLE pg_catalog.pg_class ADD COLUMN smuggled BIGINT;");
     require_user_table_intact(dispatcher);
 
-    require_refused(dispatcher, "DROP DATABASE pg_catalog;");
+    require_refused(dispatcher, "DROP SCHEMA pg_catalog CASCADE;");
     require_user_table_intact(dispatcher);
 }
 
@@ -153,14 +153,14 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::sequence_wrapped_create_index
                                                            core::indexname_t{std::string{"smuggled_seq_idx"}},
                                                            logical_plan::index_type::single);
     index_node->keys().emplace_back(resource, "relname");
-    index_node->set_target(qualified_name_t{core::dbname_t{"pg_catalog"}, core::relname_t{"pg_class"}});
+    index_node->set_target(qualified_name_t{core::schema_t{"pg_catalog"}, core::relname_t{"pg_class"}});
     auto sequence = boost::intrusive_ptr<logical_plan::node_t>(new logical_plan::node_sequence_t(resource));
     sequence->append_child(index_node);
 
     logical_plan::execution_plan_t plan{resource, sequence, logical_plan::make_parameter_node(resource)};
-    std::vector<std::pair<std::string, std::string>> targets;
-    targets.emplace_back("pg_catalog", "pg_class");
-    targets.emplace_back("pg_catalog", "smuggled_seq_idx");
+    const qualified_name_t targets[] = {
+        qualified_name_t{core::schema_t{"pg_catalog"}, core::relname_t{"pg_class"}},
+        qualified_name_t{core::schema_t{"pg_catalog"}, core::relname_t{"smuggled_seq_idx"}}};
     components::sql::transform::register_catalog_resolve_tables(resource, &plan.catalog_resolves, targets);
 
     auto cursor = dispatcher->execute_plan(otterbrix::session_id_t(), std::move(plan));

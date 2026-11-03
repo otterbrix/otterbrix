@@ -23,7 +23,8 @@ namespace services::planner::impl {
                                                                                          context.log.clone(),
                                                                                          n->function_name(),
                                                                                          std::move(inputs),
-                                                                                         n->behavior()));
+                                                                                         n->behavior(),
+                                                                                         n->schema_oid()));
     }
 
 } // namespace services::planner::impl

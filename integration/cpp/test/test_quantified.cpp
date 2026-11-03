@@ -42,7 +42,7 @@ TEST_CASE("integration::cpp::quantified") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    run(dispatcher, "CREATE DATABASE q;");
+    run(dispatcher, "CREATE SCHEMA q;");
     run(dispatcher, "CREATE TABLE q.t (id bigint, x bigint, l bigint[], a bigint[3], m int[]);");
     run(dispatcher, "INSERT INTO q.t (id, x, l, a, m) VALUES (1, 1, ARRAY[1,2,3], ARRAY[1,2,3], ARRAY[1]);");
     run(dispatcher, "INSERT INTO q.t (id, x, l, a, m) VALUES (2, 5, ARRAY[1,2,3], ARRAY[4,5,6], ARRAY[5]);");

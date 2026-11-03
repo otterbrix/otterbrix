@@ -1,6 +1,6 @@
 #include "create_plan_select.hpp"
 
-#include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/projected_name.hpp>
 #include <components/logical_plan/node_select.hpp>
 
 #include <components/physical_plan/operators/operator_select.hpp>
@@ -11,26 +11,6 @@ namespace services::planner::impl {
 
         using components::expressions::expression_group;
         using components::expressions::expression_ptr;
-        using components::expressions::key_t;
-        using components::expressions::scalar_expression_t;
-        using components::expressions::scalar_type;
-
-        std::pmr::string projected_name(std::pmr::memory_resource* resource, const expression_ptr& expression) {
-            if (expression->group() != expression_group::scalar) {
-                return std::pmr::string(expression->key().as_string(), resource);
-            }
-            if (!expression->key().storage().empty()) {
-                return std::pmr::string(expression->key().storage().back(), resource);
-            }
-            const auto* scalar = static_cast<const scalar_expression_t*>(expression.get());
-            if (scalar->type() == scalar_type::get_field && !scalar->params().empty()) {
-                const auto* field = std::get_if<key_t>(&scalar->params().front());
-                if (field != nullptr && !field->storage().empty()) {
-                    return std::pmr::string(field->storage().back(), resource);
-                }
-            }
-            return std::pmr::string(resource);
-        }
 
         bool projects_column(const expression_ptr& expression) noexcept {
             if (!expression) {
@@ -49,7 +29,7 @@ namespace services::planner::impl {
 
         components::operators::projected_column_t projected_column(std::pmr::memory_resource* resource,
                                                                    const expression_ptr& expression) {
-            return {resource, projected_name(resource, expression), expression};
+            return {resource, components::expressions::projected_name(expression), expression};
         }
 
     } // namespace

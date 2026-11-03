@@ -45,7 +45,7 @@ TEST_CASE("catalog_name_uniqueness::control_serial_double_create_table") {
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE db.twin (id bigint);")->is_success());
     auto second = exec(d, "CREATE TABLE db.twin (id bigint);");
     INFO("serial second CREATE: " << status_of(second));
@@ -60,7 +60,7 @@ TEST_CASE("catalog_name_uniqueness::create_table_from_two_txn_sessions") {
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA db;")->is_success());
 
     auto a = otterbrix::session_id_t();
     auto b = otterbrix::session_id_t();
@@ -111,7 +111,29 @@ TEST_CASE("catalog_name_uniqueness::create_database_against_uncommitted_namespac
     REQUIRE(cb->is_error());
 
     REQUIRE(d->execute_sql(a, "COMMIT;")->is_success());
-    REQUIRE(rows_named(d, "pg_namespace", "nspname", "dupdb") == 1);
+    REQUIRE(rows_named(d, "pg_database", "datname", "dupdb") == 1);
+}
+
+// Same shape, for a schema of one database.
+TEST_CASE("catalog_name_uniqueness::create_schema_against_uncommitted_namespace") {
+    const auto dir = integration_fixture_path("test_catalog_name_uniqueness/schema");
+    auto config = make_test_config(dir);
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    auto a = otterbrix::session_id_t();
+    REQUIRE(d->execute_sql(a, "BEGIN;")->is_success());
+    auto ca = d->execute_sql(a, "CREATE SCHEMA dupschema;");
+    INFO("A CREATE SCHEMA (in txn): " << status_of(ca));
+    REQUIRE(ca->is_success());
+
+    auto cb = exec(d, "CREATE SCHEMA dupschema;");
+    INFO("B CREATE SCHEMA (autocommit, A uncommitted): " << status_of(cb));
+    REQUIRE(cb->is_error());
+
+    REQUIRE(d->execute_sql(a, "COMMIT;")->is_success());
+    REQUIRE(rows_named(d, "pg_namespace", "nspname", "dupschema") == 1);
 }
 
 // Same shape, for pg_type.
@@ -144,7 +166,7 @@ TEST_CASE("catalog_name_uniqueness::create_index_against_uncommitted_index") {
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE db.t1 (x bigint);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE db.t2 (x bigint);")->is_success());
 

@@ -35,7 +35,7 @@ namespace {
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        run_ok(d, "CREATE DATABASE dix;");
+        run_ok(d, "CREATE SCHEMA dix;");
         run_ok(d, "CREATE TABLE dix.t (id bigint, v bigint);");
         run_ok(d, "INSERT INTO dix.t (id, v) VALUES (1, 10), (2, 20);");
         run_ok(d, "CREATE INDEX idx_id ON dix.t (id);");

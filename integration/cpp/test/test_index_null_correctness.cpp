@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_middle_separate_inserts"
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.a1i");
     mk(d, "ix.a1p");
     REQUIRE(run(d, "CREATE INDEX ia1 ON ix.a1i (x);").ok);
@@ -99,7 +99,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_middle_one_batch") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.a2i");
     mk(d, "ix.a2p");
     REQUIRE(run(d, "CREATE INDEX ia2 ON ix.a2i (x);").ok);
@@ -115,7 +115,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_is_first_key") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.a3i");
     mk(d, "ix.a3p");
     REQUIRE(run(d, "CREATE INDEX ia3 ON ix.a3i (x);").ok);
@@ -130,7 +130,7 @@ TEST_CASE("integration::cpp::idx_null::index_first_null_last") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.a4i");
     mk(d, "ix.a4p");
     REQUIRE(run(d, "CREATE INDEX ia4 ON ix.a4i (x);").ok);
@@ -148,7 +148,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_null_middle") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.b2i");
     mk(d, "ix.b2p");
     for (auto* t : {"ix.b2i", "ix.b2p"}) {
@@ -163,7 +163,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_null_first") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.b3i");
     mk(d, "ix.b3p");
     for (auto* t : {"ix.b3i", "ix.b3p"}) {
@@ -178,7 +178,7 @@ TEST_CASE("integration::cpp::idx_null::backfill_separate_inserts_null_middle") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.b1i");
     mk(d, "ix.b1p");
     for (auto* t : {"ix.b1i", "ix.b1p"}) {
@@ -198,7 +198,7 @@ TEST_CASE("integration::cpp::idx_null::all_rows_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.d2i");
     mk(d, "ix.d2p");
     REQUIRE(run(d, "CREATE INDEX id2 ON ix.d2i (x);").ok);
@@ -217,7 +217,7 @@ TEST_CASE("integration::cpp::idx_null::null_only_then_values") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.d3i");
     mk(d, "ix.d3p");
     for (auto* t : {"ix.d3i", "ix.d3p"}) {
@@ -237,7 +237,7 @@ TEST_CASE("integration::cpp::idx_null::no_nulls_baseline") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.d1i");
     mk(d, "ix.d1p");
     REQUIRE(run(d, "CREATE INDEX id1 ON ix.d1i (x);").ok);
@@ -258,7 +258,7 @@ TEST_CASE("integration::cpp::idx_null::update_null_to_value_adds_index_entry") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.e1i");
     mk(d, "ix.e1p");
     REQUIRE(run(d, "CREATE INDEX ie1 ON ix.e1i (x);").ok);
@@ -278,7 +278,7 @@ TEST_CASE("integration::cpp::idx_null::update_value_to_null_removes_index_entry"
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.e2i");
     mk(d, "ix.e2p");
     REQUIRE(run(d, "CREATE INDEX ie2 ON ix.e2i (x);").ok);
@@ -297,7 +297,7 @@ TEST_CASE("integration::cpp::idx_null::delete_null_and_value_rows") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.e3i");
     mk(d, "ix.e3p");
     REQUIRE(run(d, "CREATE INDEX ie3 ON ix.e3i (x);").ok);
@@ -326,7 +326,7 @@ TEST_CASE("integration::cpp::idx_null::text_column_with_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     REQUIRE(run(d, "CREATE TABLE ix.f1i (id INT, s TEXT);").ok);
     REQUIRE(run(d, "CREATE TABLE ix.f1p (id INT, s TEXT);").ok);
     REQUIRE(run(d, "CREATE INDEX if1 ON ix.f1i (s);").ok);
@@ -349,7 +349,7 @@ TEST_CASE("integration::cpp::idx_null::null_constant_predicates") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.g1i");
     mk(d, "ix.g1p");
     REQUIRE(run(d, "CREATE INDEX ig1 ON ix.g1i (x);").ok);
@@ -373,7 +373,7 @@ TEST_CASE("integration::cpp::idx_null::sibling_index_survives_null_column") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     REQUIRE(run(d, "CREATE TABLE ix.h1i (id INT, x BIGINT, y BIGINT);").ok);
     REQUIRE(run(d, "CREATE TABLE ix.h1p (id INT, x BIGINT, y BIGINT);").ok);
     REQUIRE(run(d, "CREATE INDEX ih1x ON ix.h1i (x);").ok);
@@ -395,7 +395,7 @@ TEST_CASE("integration::cpp::idx_null::large_batch_with_scattered_nulls") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     mk(d, "ix.i1i");
     mk(d, "ix.i1p");
     REQUIRE(run(d, "CREATE INDEX ii1 ON ix.i1i (x);").ok);
@@ -438,7 +438,7 @@ TEST_CASE("integration::cpp::idx_null::survives_restart") {
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+        REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
         mk(d, "ix.j1i");
         mk(d, "ix.j1p");
         REQUIRE(run(d, "CREATE INDEX ij1 ON ix.j1i (x);").ok);
@@ -464,7 +464,7 @@ TEST_CASE("integration::cpp::idx_null::computing_table_absent_key") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE ix;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA ix;").ok);
     REQUIRE(run(d, "CREATE TABLE ix.k1i ();").ok);
     REQUIRE(run(d, "CREATE TABLE ix.k1p ();").ok);
     for (auto* t : {"ix.k1i", "ix.k1p"}) {

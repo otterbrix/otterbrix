@@ -14,7 +14,7 @@ async fn lib_rs_quick_start() -> Result<(), sqlx_core::error::Error> {
     let mut conn =
         OtterbrixConnection::connect_with(&OtterbrixConnectOptions::new(dir.path())).await?;
 
-    sqlx_core::query::query::<Otterbrix>("CREATE DATABASE app;")
+    sqlx_core::query::query::<Otterbrix>("CREATE SCHEMA app;")
         .execute(&mut conn)
         .await?;
     sqlx_core::query::query::<Otterbrix>("CREATE TABLE app.t (id bigint, name string);")

@@ -13,22 +13,18 @@ namespace components::operators {
     void dev_set_unregister_udf_purge_refusal(bool refuse) noexcept;
 #endif
 
-    // Operator implementation of manager_dispatcher_t::unregister_udf: drops the pg_proc rows of the overload like
-    // DROP drops an object (a view calling it refuses RESTRICT, CASCADE drops the view) — the rows of its
-    // signatures when the dispatcher's master registry (ctx->function_registry) holds it, else the rows the inputs
-    // match, which a previous process left. The dispatcher drops a held overload from the master once this succeeds.
+    // Drops the pg_proc rows of the overload like DROP drops an object (a view calling it refuses RESTRICT, CASCADE
+    // drops the view): the rows of its signatures when the statement's registry (ctx->function_registry) holds it,
+    // else the rows the inputs match, which a previous process left.
     class operator_unregister_udf_t final : public read_only_operator_t {
     public:
         operator_unregister_udf_t(std::pmr::memory_resource* resource,
                                   log_t log,
                                   std::string function_name,
                                   std::pmr::vector<types::complex_logical_type> inputs,
-                                  components::catalog::drop_behavior_t behavior);
+                                  components::catalog::drop_behavior_t behavior,
+                                  std::uint32_t schema_oid);
 
-        // Sourceless SINK leaf (no data pipeline, no children): the registry
-        // existence-check and the pg_proc/pg_depend purge run in
-        // await_async_and_resume. The dispatcher drives this operator's async
-        // finalize directly (a single await_async_and_resume).
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
@@ -37,6 +33,7 @@ namespace components::operators {
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
         components::catalog::drop_behavior_t behavior_;
+        std::uint32_t schema_oid_;
     };
 
 } // namespace components::operators

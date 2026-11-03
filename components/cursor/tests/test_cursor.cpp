@@ -28,11 +28,39 @@ TEST_CASE("components::cursor::construction") {
     {
         std::pmr::string description = {"error description", &resource};
         auto cursor =
-            components::cursor::make_cursor(&resource, core::error_t(core::error_code_t::other_error, description));
+            components::cursor::make_cursor(&resource, core::error_t(core::error_code_t::internal_error, description));
         REQUIRE_FALSE(cursor->is_success());
         REQUIRE(cursor->is_error());
-        REQUIRE(cursor->get_error().type == core::error_code_t::other_error);
+        REQUIRE(cursor->get_error().type == core::error_code_t::internal_error);
         REQUIRE(cursor->get_error().what == description);
+    }
+}
+
+TEST_CASE("components::cursor::transaction_status defaults to idle and round-trips") {
+    using components::session::transaction_status_t;
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::vector<components::cursor::cursor_t_ptr> cursors{&resource};
+    cursors.push_back(components::cursor::make_cursor(&resource));
+    const core::error_t lvalue_error{core::error_code_t::internal_error, std::pmr::string{"lvalue", &resource}};
+    cursors.push_back(components::cursor::make_cursor(&resource, lvalue_error));
+    cursors.push_back(components::cursor::make_cursor(
+        &resource,
+        core::error_t{core::error_code_t::internal_error, std::pmr::string{"rvalue", &resource}}));
+    cursors.push_back(components::cursor::make_cursor(&resource, gen_data_chunk(1, &resource)));
+    cursors.push_back(
+        components::cursor::make_cursor(&resource, std::pmr::vector<components::vector::data_chunk_t>{&resource}));
+    cursors.push_back(
+        components::cursor::make_cursor(&resource,
+                                        std::pmr::vector<components::types::complex_logical_type>{&resource}));
+    for (const auto& cursor : cursors) {
+        CHECK(cursor->transaction_status() == transaction_status_t::idle);
+    }
+
+    auto cursor = components::cursor::make_cursor(&resource);
+    for (const auto status :
+         {transaction_status_t::in_transaction, transaction_status_t::failed, transaction_status_t::idle}) {
+        cursor->set_transaction_status(status);
+        CHECK(cursor->transaction_status() == status);
     }
 }
 
@@ -154,6 +182,30 @@ TEST_CASE("components::cursor::locate on a cursor without rows") {
     fails(typed->locate(0), core::error_code_t::invalid_parameter);
 }
 
+TEST_CASE("components::cursor::a cursor of column types only holds no rows") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto typed = components::cursor::make_cursor(
+        &resource,
+        std::pmr::vector<complex_logical_type>{
+            {complex_logical_type{logical_type::BIGINT}, complex_logical_type{logical_type::STRING_LITERAL}},
+            &resource});
+    CHECK(typed->size() == 0);
+    CHECK(typed->column_count() == 2);
+    CHECK_FALSE(typed->has_next());
+}
+
+TEST_CASE("components::cursor::a cursor of column types only finds a column by name") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto typed = components::cursor::make_cursor(
+        &resource,
+        std::pmr::vector<complex_logical_type>{
+            {complex_logical_type{logical_type::BIGINT, "a"}, complex_logical_type{logical_type::STRING_LITERAL, "b"}},
+            &resource});
+    CHECK(ok(typed->column_index("b")) == 1);
+    CHECK(ok(typed->column_index("a")) == 0);
+    fails(typed->column_index("c"), core::error_code_t::undefined_column);
+}
+
 TEST_CASE("components::cursor::is_null and get on a NULL cell") {
     auto resource = core::pmr::otterbrix_resource();
     auto chunk = bigint_chunk(&resource, 10, 5);
@@ -163,7 +215,7 @@ TEST_CASE("components::cursor::is_null and get on a NULL cell") {
     CHECK(ok(cursor->is_null(0, 2)));
     CHECK_FALSE(ok(cursor->is_null(0, 1)));
     CHECK(ok(cursor->get<int64_t>(0, 1)) == 11);
-    fails(cursor->get<int64_t>(0, 2), core::error_code_t::conversion_failure);
+    fails(cursor->get<int64_t>(0, 2), core::error_code_t::null_value_no_indicator_parameter);
 }
 
 TEST_CASE("components::cursor::get casts by physical type") {
@@ -241,19 +293,19 @@ TEST_CASE("components::cursor::get and is_null errors") {
     columns.push_back(make_scalar<std::string_view>(&resource, "text"));
     auto cursor = one_row(&resource, std::move(columns));
 
-    fails(cursor->get<std::string_view>(0, 0), core::error_code_t::conversion_failure);
-    fails(cursor->get<core::date::date_t>(0, 0), core::error_code_t::conversion_failure);
-    fails(cursor->get<core::date::interval_t>(0, 0), core::error_code_t::conversion_failure);
-    fails(cursor->get<int64_t>(1, 0), core::error_code_t::conversion_failure);
-    fails(cursor->get<int64_t>(2, 0), core::error_code_t::field_not_exists);
-    fails(cursor->is_null(2, 0), core::error_code_t::field_not_exists);
+    fails(cursor->get<std::string_view>(0, 0), core::error_code_t::datatype_mismatch);
+    fails(cursor->get<core::date::date_t>(0, 0), core::error_code_t::datatype_mismatch);
+    fails(cursor->get<core::date::interval_t>(0, 0), core::error_code_t::datatype_mismatch);
+    fails(cursor->get<int64_t>(1, 0), core::error_code_t::datatype_mismatch);
+    fails(cursor->get<int64_t>(2, 0), core::error_code_t::invalid_parameter);
+    fails(cursor->is_null(2, 0), core::error_code_t::invalid_parameter);
     fails(cursor->get<int64_t>(0, 1), core::error_code_t::invalid_parameter);
     fails(cursor->is_null(0, 1), core::error_code_t::invalid_parameter);
     const std::array<std::size_t, 1> step{0};
     fails(cursor->get<int64_t>(0, 0, step), core::error_code_t::invalid_parameter);
     fails(cursor->is_null(0, 0, step), core::error_code_t::invalid_parameter);
     fails(cursor->list_size(0, 0), core::error_code_t::invalid_parameter);
-    fails(cursor->list_size(2, 0), core::error_code_t::field_not_exists);
+    fails(cursor->list_size(2, 0), core::error_code_t::invalid_parameter);
     fails(cursor->list_size(0, 1), core::error_code_t::invalid_parameter);
 }
 
@@ -300,14 +352,14 @@ TEST_CASE("components::cursor::nested get, is_null and list_size") {
         CHECK(ok(cursor->get<std::string_view>(0, 0, second)) == "x");
         CHECK_FALSE(ok(cursor->is_null(0, 0, first)));
         CHECK(ok(cursor->is_null(1, 0, first)));
-        fails(cursor->get<int64_t>(1, 0, first), core::error_code_t::conversion_failure);
+        fails(cursor->get<int64_t>(1, 0, first), core::error_code_t::null_value_no_indicator_parameter);
         fails(cursor->get<int64_t>(0, 0, bad_field), core::error_code_t::invalid_parameter);
         fails(cursor->get<int64_t>(0, 0, too_deep), core::error_code_t::invalid_parameter);
     }
     SECTION("list element") {
         CHECK(ok(cursor->get<int64_t>(2, 0, first)) == 10);
         CHECK(ok(cursor->is_null(2, 0, second)));
-        fails(cursor->get<int64_t>(2, 0, second), core::error_code_t::conversion_failure);
+        fails(cursor->get<int64_t>(2, 0, second), core::error_code_t::null_value_no_indicator_parameter);
         CHECK(ok(cursor->get<int64_t>(2, 0, third)) == 30);
         CHECK(ok(cursor->is_null(2, 0, far)));
     }
@@ -320,7 +372,7 @@ TEST_CASE("components::cursor::nested get, is_null and list_size") {
         CHECK(ok(cursor->get<int64_t>(2, 0, {2})) == 30);
         CHECK(ok(cursor->is_null(2, 0, {1})));
         CHECK_FALSE(ok(cursor->is_null(0, 0, {})));
-        fails(cursor->get<int64_t>(2, 0, {}), core::error_code_t::conversion_failure);
+        fails(cursor->get<int64_t>(2, 0, {}), core::error_code_t::datatype_mismatch);
         fails(cursor->get<int64_t>(0, 0, {0, 0}), core::error_code_t::invalid_parameter);
         fails(cursor->is_null(0, 0, {9}), core::error_code_t::invalid_parameter);
     }
@@ -346,7 +398,7 @@ TEST_CASE("components::cursor::NA-typed nested leaf is NULL") {
 
     CHECK_FALSE(ok(cursor->is_null(0, 0, {0})));
     CHECK(ok(cursor->is_null(0, 0, {1})));
-    fails(cursor->get<int64_t>(0, 0, {1}), core::error_code_t::conversion_failure);
+    fails(cursor->get<int64_t>(0, 0, {1}), core::error_code_t::null_value_no_indicator_parameter);
 }
 
 TEST_CASE("components::cursor::list_size on a MAP and on a NULL list") {
@@ -363,5 +415,5 @@ TEST_CASE("components::cursor::list_size on a MAP and on a NULL list") {
 
     CHECK(ok(cursor->list_size(0, 0)) == 2);
     CHECK(ok(cursor->is_null(1, 0)));
-    fails(cursor->list_size(1, 0), core::error_code_t::conversion_failure);
+    fails(cursor->list_size(1, 0), core::error_code_t::null_value_no_indicator_parameter);
 }

@@ -69,6 +69,8 @@ namespace {
         operators::operator_delete op{&arena,
                                       log_t{},
                                       catalog::oid_t{1},
+                                      table::storage_address_t{},
+                                      std::pmr::string{&arena},
                                       std::move(returning),
                                       nullptr,
                                       affected_bound};
@@ -176,6 +178,8 @@ namespace {
         operators::operator_delete op{&arena,
                                       log_t{},
                                       catalog::oid_t{1},
+                                      table::storage_address_t{},
+                                      std::pmr::string{&arena},
                                       std::pmr::vector<operators::projected_column_t>{&arena},
                                       condition};
 
@@ -215,7 +219,12 @@ namespace {
             expressions::expression_ptr(expressions::make_scalar_expression(resource,
                                                                             expressions::scalar_type::star_expand,
                                                                             expressions::key_t{resource})));
-        return std::make_unique<operators::operator_delete>(resource, log_t{}, catalog::oid_t{1}, std::move(returning));
+        return std::make_unique<operators::operator_delete>(resource,
+                                                            log_t{},
+                                                            catalog::oid_t{1},
+                                                            table::storage_address_t{},
+                                                            std::pmr::string{resource},
+                                                            std::move(returning));
     }
 
     // Plain DELETE ... RETURNING * of batches whose few rows sit in a scan-sized chunk, as a pushed-down filter

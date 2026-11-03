@@ -336,11 +336,11 @@ namespace core::b_plus_tree {
         friend class r_iterator;
 
         // Pinned-handle ctor: holds one fd for the leaf's whole life. Test-only fault-injection seam.
-        segment_tree_t(std::pmr::memory_resource* resource,
+        segment_tree_t(core::pmr::budget_resource_t* resource,
                        index_t (*func)(const item_data&),
                        std::unique_ptr<filesystem::file_handle_t> file);
         // Opens/closes a lease per operation: the pinned ctor exhausted the fd table under parallel tests.
-        segment_tree_t(std::pmr::memory_resource* resource,
+        segment_tree_t(core::pmr::budget_resource_t* resource,
                        index_t (*func)(const item_data&),
                        filesystem::local_file_system_t& fs,
                        filesystem::path_t file_path);
@@ -454,7 +454,7 @@ namespace core::b_plus_tree {
         failure_channel_t own_failures_;
         failure_channel_t* channel_ = &own_failures_;
 
-        std::pmr::memory_resource* resource_;
+        core::pmr::budget_resource_t* resource_;
         index_t (*key_func_)(const item_data&);
         std::vector<node_t> segments_; // will become boost::intrusive
 

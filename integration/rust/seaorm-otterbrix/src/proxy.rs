@@ -49,7 +49,7 @@ use crate::convert::{
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let db = Database::open(Config::new("./data"))?;
-/// db.execute("CREATE DATABASE app;")?;
+/// db.execute("CREATE SCHEMA app;")?;
 /// db.execute("CREATE TABLE app.t();")?;
 ///
 /// let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));

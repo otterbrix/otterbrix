@@ -51,7 +51,7 @@ TEST_CASE("integration::cpp::null_3vl::comparisons_exclude_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
     seed_plain(d, "n3.t");
 
     CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0;").rows == 1);
@@ -74,7 +74,7 @@ TEST_CASE("integration::cpp::null_3vl::not_does_not_resurrect_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
     seed_plain(d, "n3.t");
 
     CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x = 0);").rows == 1);
@@ -88,7 +88,7 @@ TEST_CASE("integration::cpp::null_3vl::and_or_propagate_unknown") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
     seed_plain(d, "n3.t");
 
     // OR: UNKNOWN or TRUE = TRUE; UNKNOWN or FALSE = UNKNOWN (excluded).
@@ -108,7 +108,7 @@ TEST_CASE("integration::cpp::null_3vl::dml_does_not_touch_null_rows") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
 
     seed_plain(d, "n3.del");
     CHECK(run(d, "DELETE FROM n3.del WHERE x = 0;").ok);
@@ -129,7 +129,7 @@ TEST_CASE("integration::cpp::null_3vl::update_overlay_keeps_null_excluded") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
     seed_plain(d, "n3.t");
 
     CHECK(run(d, "UPDATE n3.t SET x = 7 WHERE id = 1;").ok); // put this vector into the overlay
@@ -148,7 +148,7 @@ TEST_CASE("integration::cpp::null_3vl::string_column_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
     REQUIRE(run(d, "CREATE TABLE n3.s (id INT, name TEXT);").ok);
     REQUIRE(run(d, "INSERT INTO n3.s (id, name) VALUES (1, 'ann');").ok);
     REQUIRE(run(d, "INSERT INTO n3.s (id, name) VALUES (2, NULL);").ok);
@@ -176,7 +176,7 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_absent_key_comparisons") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
     seed_computed(d, "n3.co");
 
     // An absent key projects as NULL (this was already correct before the fix).
@@ -207,7 +207,7 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_not_and_dml") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
 
     seed_computed(d, "n3.co");
     CHECK(run(d, "SELECT id FROM n3.co WHERE NOT (co ->> 'x' = 0);").rows == 1);
@@ -228,7 +228,7 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_nested_absent_key") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE n3;").ok);
+    REQUIRE(run(d, "CREATE SCHEMA n3;").ok);
     REQUIRE(run(d, "CREATE TABLE n3.nd ();").ok);
     REQUIRE(run(d, "INSERT INTO n3.nd (id, a.b) VALUES (1, 5);").ok);
     REQUIRE(run(d, "INSERT INTO n3.nd (id) VALUES (2);").ok);

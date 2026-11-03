@@ -63,8 +63,9 @@ namespace components::vector::operations {
 
         core::result_wrapper_t<core::regex_t>
         compile_pattern(std::pmr::memory_resource* resource, const match_flags_t& flags, std::string_view pattern) {
-            const std::string source = flags.glob ? core::like_to_regex(std::string{pattern}) : std::string{pattern};
-            return core::regex_t::compile(resource, source, flags.case_insensitive);
+            const std::pmr::string source =
+                flags.glob ? core::like_to_regex(resource, pattern) : std::pmr::string{pattern, resource};
+            return core::regex_t::compile(resource, source, {.case_insensitive = flags.case_insensitive});
         }
 
         // The patterns one call has compiled, by their text: a set that varies by row often repeats its patterns
@@ -155,12 +156,20 @@ namespace components::vector::operations {
             *answer = {has_null, false};
             return core::error_t::no_error();
         }
+
+        constexpr uint8_t glob_bit = 1U;
+        constexpr uint8_t case_insensitive_bit = 2U;
+        constexpr uint8_t negate_bit = 4U;
     } // namespace
 
-    match_flags_t match_flags_of(std::string_view flags) noexcept {
-        return {flags.find('l') != std::string_view::npos,
-                flags.find('i') != std::string_view::npos,
-                flags.find('n') != std::string_view::npos};
+    uint8_t match_mode_of(match_flags_t flags) noexcept {
+        return static_cast<uint8_t>((flags.glob ? glob_bit : 0U) |
+                                    (flags.case_insensitive ? case_insensitive_bit : 0U) |
+                                    (flags.negate ? negate_bit : 0U));
+    }
+
+    match_flags_t match_flags_of(uint8_t mode) noexcept {
+        return {(mode & glob_bit) != 0, (mode & case_insensitive_bit) != 0, (mode & negate_bit) != 0};
     }
 
     element_test_t element_test_t::negated() const noexcept {
@@ -206,7 +215,7 @@ namespace components::vector::operations {
         element_count_ = sequence.length;
         if (element_count_ >= std::numeric_limits<uint32_t>::max()) {
             prepared_ = false;
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::program_limit_exceeded,
                                  std::pmr::string{"quantified comparison: the set is too large", resource_});
         }
         if (element_count_ == 0 || is_untyped(*sequence.child)) {
@@ -250,7 +259,7 @@ namespace components::vector::operations {
         if (!vector_ops::is_hashable(elements.type())) {
             prepared_ = false;
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"quantified comparison: the set's elements cannot be hashed", resource_});
         }
         vector_t shallow(elements);
@@ -339,28 +348,28 @@ namespace components::vector::operations {
                                    quantified_set_t* prepared) {
         if (!test.is_match() && !is_quantifiable(test.code())) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"quantified comparison: the operator is not a comparison", output->resource()});
         }
         const bool untyped_set = is_untyped(set);
         if (!untyped_set) {
             const auto physical = set.type().to_physical_type();
             if (physical != types::physical_type::LIST && physical != types::physical_type::ARRAY) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"quantified comparison: the set is neither a LIST nor an ARRAY",
                                                       output->resource()});
             }
             const auto& element = set.type().child_type();
             if (element.type() != types::logical_type::NA && !is_untyped(probe) &&
                 element.to_physical_type() != probe.type().to_physical_type()) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"quantified comparison: the probe and the set's elements "
                                                       "must be cast to a common type",
                                                       output->resource()});
             }
             if (test.is_match() && element.type() != types::logical_type::NA &&
                 element.to_physical_type() != types::physical_type::STRING) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"quantified match: the probe and the patterns must be strings",
                                                       output->resource()});
             }

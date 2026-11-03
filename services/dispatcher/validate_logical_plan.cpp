@@ -15,12 +15,13 @@
 #include <atomic>
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/system_table_schemas.hpp>
-#include <components/catalog/table_id.hpp>
 #include <components/catalog/type_display.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
+#include <components/expressions/expression_equivalence.hpp>
+#include <components/expressions/projected_name.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/index/binary_codec.hpp>
@@ -58,6 +59,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -115,7 +117,8 @@ namespace services::dispatcher {
                                                                      context.function_registry,
                                                                      context.execution_context,
                                                                      check_expr_allowed_functions(),
-                                                                     context.column_uses};
+                                                                     context.column_uses,
+                                                                     nullptr};
             for (auto& [name, predicate] : node->check_predicates()) {
                 if (auto error = validation::resolve_expression(predicate, predicate_context); error.contains_error()) {
                     return error;
@@ -173,7 +176,7 @@ namespace services::dispatcher {
             if ((!is_nn && !is_n) || !std::holds_alternative<components::expressions::key_t>(cmp->left())) {
                 return expr;
             }
-            const auto& key = std::get<components::expressions::key_t>(cmp->left());
+            const auto& key = components::expressions::as_key(cmp->left());
             if (key.storage().empty()) {
                 return expr;
             }
@@ -233,6 +236,7 @@ namespace services::dispatcher {
                                                                       context.execution_context,
                                                                       allowed_function_types,
                                                                       context.column_uses,
+                                                                      context.parameter_types,
                                                                       schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -267,14 +271,9 @@ namespace services::dispatcher {
                                                                           const named_schema& schema,
                                                                           column_uses_t* uses) {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
-                auto& key = std::get<components::expressions::key_t>(param);
-                if (key.storage().empty()) {
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"key has empty storage: " + key.as_string(), resource});
-                }
-                return find_types(resource, key, schema, uses);
+                return find_types(resource, components::expressions::as_key(param), schema, uses);
             } else if (std::holds_alternative<expression_ptr>(param)) {
-                auto& sub = std::get<expression_ptr>(param);
+                auto& sub = components::expressions::as_expr(param);
                 if (!sub) {
                     // A null operand slot (e.g. IS NULL's unused right()) would crash sub->group() below.
                     return type_paths{resource};
@@ -317,6 +316,24 @@ namespace services::dispatcher {
                         const named_schema* schema_left,
                         const named_schema* schema_right = nullptr);
 
+        // An output column of the statement that is a $n alone: the type an earlier clause gave the $n, else text
+        // (PostgreSQL 18 resolveTargetListUnknowns), which a later clause typing it otherwise makes 42P08.
+        core::error_t type_output_parameter(const validation::validation_context_t& context,
+                                            const node_t* node,
+                                            scalar_expression_t* constant,
+                                            core::parameter_id_t slot) {
+            auto* types = context.parameter_types;
+            if (types == nullptr || !types->holds(slot)) {
+                return core::error_t::no_error();
+            }
+            if (!types->is_output(node)) {
+                types->note_read(slot);
+                return core::error_t::no_error();
+            }
+            constant->set_result_type(types->output_column(slot));
+            return core::error_t::no_error();
+        }
+
         core::error_t resolve_scalar_output_type(const validation::validation_context_t& context,
                                                  components::expressions::scalar_expression_t* scalar_expr,
                                                  const named_schema& schema,
@@ -332,6 +349,7 @@ namespace services::dispatcher {
                                                                       context.execution_context,
                                                                       allowed_functions,
                                                                       context.column_uses,
+                                                                      context.parameter_types,
                                                                       schema_right};
             expression_ptr expression{scalar_expr};
             return validation::resolve_expression(expression, expression_context, saw_reduction);
@@ -352,6 +370,7 @@ namespace services::dispatcher {
                 context.execution_context,
                 components::compute::create_mask(components::compute::function_type_t::vector),
                 context.column_uses,
+                context.parameter_types,
                 schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -390,10 +409,13 @@ namespace services::dispatcher {
                     }
                     return result;
                 } else {
-                    std::pmr::string msg{"collection does not exist: ", resource};
-                    msg.append(node->target().database.t.begin(), node->target().database.t.end());
-                    msg += '.';
-                    msg.append(node->target().collection.t.begin(), node->target().collection.t.end());
+                    if (auto level = check_read_levels(resource, context.resolves, node->target());
+                        level.contains_error()) {
+                        return level;
+                    }
+                    std::pmr::string msg{"relation \"", resource};
+                    msg.append(node->target().to_string());
+                    msg.append("\" does not exist");
                     return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                 }
             } else {
@@ -411,6 +433,7 @@ namespace services::dispatcher {
                         context.execution_context,
                         components::compute::create_mask(components::compute::function_type_t::vector),
                         context.column_uses,
+                        context.parameter_types,
                         schema_right};
                     predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                     if (auto error = validation::resolve_expression(node->expressions()[0], predicate_context);
@@ -455,7 +478,7 @@ namespace services::dispatcher {
             const auto& unique_keys = constraints ? constraints->unique_constraints : no_keys;
             if (on_conflict.action == on_conflict_action_t::do_update && on_conflict.constraint_name.empty() &&
                 on_conflict.target_columns.empty()) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"ON CONFLICT DO UPDATE requires a conflict target: a column "
                                                       "list or ON CONSTRAINT",
                                                       resource});
@@ -469,10 +492,21 @@ namespace services::dispatcher {
                     }
                 }
                 if (arbiters.empty()) {
-                    std::pmr::string what{"ON CONFLICT: constraint \"", resource};
+                    const bool named =
+                        constraints && std::any_of(constraints->constraint_oids.begin(),
+                                                   constraints->constraint_oids.end(),
+                                                   [wanted](const auto& held) { return held.first == wanted; });
+                    if (named) {
+                        return core::error_t(
+                            core::error_code_t::wrong_object_type,
+                            std::pmr::string{"constraint in ON CONFLICT clause has no associated index", resource});
+                    }
+                    std::pmr::string what{"constraint \"", resource};
                     what += on_conflict.constraint_name;
-                    what += "\" is not a UNIQUE or PRIMARY KEY constraint of the target table";
-                    return core::error_t(core::error_code_t::do_not_exists, std::move(what));
+                    what += "\" for table \"";
+                    what += table->name;
+                    what += "\" does not exist";
+                    return core::error_t(core::error_code_t::undefined_object, std::move(what));
                 }
             } else if (!on_conflict.target_columns.empty()) {
                 std::set<std::string_view> target(on_conflict.target_columns.begin(), on_conflict.target_columns.end());
@@ -482,7 +516,7 @@ namespace services::dispatcher {
                     }
                 }
                 if (arbiters.empty()) {
-                    return core::error_t(core::error_code_t::invalid_constraint,
+                    return core::error_t(core::error_code_t::invalid_column_reference,
                                          std::pmr::string{"ON CONFLICT: no UNIQUE or PRIMARY KEY constraint matches "
                                                           "the conflict target",
                                                           resource});
@@ -501,53 +535,741 @@ namespace services::dispatcher {
             return core::error_t::no_error();
         }
 
-        core::result_wrapper_t<named_schema>
-        validate_schema(const validation::validation_context_t& context,
-                        node_sort_t* node,
-                        const named_schema& schema,
-                        const components::logical_plan::storage_parameters& parameters) {
+        components::expressions::key_t* read_column(const expression_ptr& column) {
+            if (!column || column->group() != expression_group::scalar) {
+                return nullptr;
+            }
+            auto* field = static_cast<scalar_expression_t*>(column.get());
+            if (field->type() != scalar_type::get_field) {
+                return nullptr;
+            }
+            if (field->params().empty()) {
+                return &field->key();
+            }
+            if (!components::expressions::is_key(field->params().front())) {
+                return nullptr;
+            }
+            return &components::expressions::as_key(field->params().front());
+        }
+
+        core::error_t column_read_without_a_column(std::pmr::memory_resource* resource) {
+            return core::error_t(core::error_code_t::protocol_violation,
+                                 std::pmr::string{"a column read holds an operand that is not a column", resource});
+        }
+
+        bool is_bare_name(const components::expressions::key_t& key) {
+            return key.storage().size() == 1 && !key.has_qualifier() && key.storage().front() != "*";
+        }
+
+        std::string_view output_name(const expression_ptr& column) {
+            if (column->key().is_null()) {
+                return {};
+            }
+            return column->key().storage().back();
+        }
+
+        std::string spelled(const components::expressions::key_t& key) {
+            return key.has_qualifier() ? std::string(key.qualifier()) + "." + key.as_string() : key.as_string();
+        }
+
+        column_path single_path(std::pmr::memory_resource* resource, size_t index) {
+            column_path path(resource);
+            path.push_back(index);
+            return path;
+        }
+
+        core::error_t ambiguous_order_key(std::pmr::memory_resource* resource,
+                                          const components::expressions::key_t& key) {
+            return core::error_t(core::error_code_t::ambiguous_column,
+                                 std::pmr::string{"ORDER BY \"" + key.as_string() + "\" is ambiguous", resource});
+        }
+
+        core::error_t position_out_of_range(std::pmr::memory_resource* resource) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"ORDER BY position is out of range of the select list", resource});
+        }
+
+        core::error_t not_in_distinct_list(std::pmr::memory_resource* resource) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"for SELECT DISTINCT, ORDER BY expressions must appear in select list", resource});
+        }
+
+        [[nodiscard]] core::error_t sort_operand_as_expression(std::pmr::memory_resource* resource,
+                                                               sort_expression_t* sort_key) {
+            if (components::expressions::is_parameter(sort_key->operand())) {
+                auto constant = make_scalar_expression(resource, scalar_type::constant);
+                constant->append_param(sort_key->operand());
+                sort_key->set_operand(expression_ptr{std::move(constant)});
+            }
+            if (!components::expressions::is_expr(sort_key->operand()) ||
+                !components::expressions::as_expr(sort_key->operand())) {
+                return core::error_t(core::error_code_t::protocol_violation,
+                                     std::pmr::string{"ORDER BY key is neither a column nor an expression", resource});
+            }
+            return core::error_t::no_error();
+        }
+
+        bool calls_volatile(const param_storage& operand);
+
+        bool calls_volatile(const expression_ptr& expression) {
+            if (!expression) {
+                return false;
+            }
+            auto any = [](const auto& operands) {
+                return std::any_of(operands.begin(), operands.end(), [](const auto& operand) {
+                    return calls_volatile(operand);
+                });
+            };
+            switch (expression->group()) {
+                case expression_group::function: {
+                    const auto* call = static_cast<const function_expression_t*>(expression.get());
+                    return call->volatility() == components::compute::volatility_t::volatile_ || any(call->args());
+                }
+                case expression_group::scalar:
+                    return any(static_cast<const scalar_expression_t*>(expression.get())->params());
+                case expression_group::aggregate:
+                    return any(static_cast<const aggregate_expression_t*>(expression.get())->params());
+                case expression_group::cast:
+                    return calls_volatile(
+                        static_cast<const components::expressions::cast_expression_t*>(expression.get())->child());
+                case expression_group::compare: {
+                    const auto* compare = static_cast<const compare_expression_t*>(expression.get());
+                    return calls_volatile(compare->left()) || calls_volatile(compare->right()) ||
+                           any(compare->children());
+                }
+                case expression_group::sort:
+                    return calls_volatile(static_cast<const sort_expression_t*>(expression.get())->operand());
+                case expression_group::invalid:
+                    return true;
+            }
+            return true;
+        }
+
+        bool calls_volatile(const param_storage& operand) {
+            return components::expressions::is_expr(operand) &&
+                   calls_volatile(components::expressions::as_expr(operand));
+        }
+
+        bool is_constant_order_key(const expression_ptr& expression) {
+            return expression->cardinality() == cardinality_t::constant && !calls_volatile(expression);
+        }
+
+        void erase_dropped_order_keys(node_sort_t* sort) {
+            auto& keys = sort->expressions();
+            keys.erase(std::remove_if(keys.begin(), keys.end(), [](const expression_ptr& key) { return !key; }),
+                       keys.end());
+        }
+
+        void erase_constant_distinct_on_keys(std::pmr::memory_resource* resource,
+                                             node_aggregate_t* aggregate,
+                                             const std::pmr::vector<size_t>& constant) {
+            if (constant.empty()) {
+                return;
+            }
+            auto& keys = aggregate->distinct_on_keys();
+            for (auto index = constant.rbegin(); index != constant.rend(); ++index) {
+                keys.erase(keys.begin() + static_cast<ptrdiff_t>(*index));
+            }
+            if (!keys.empty()) {
+                return;
+            }
+            for (auto& child : aggregate->children()) {
+                if (child->type() != node_type::limit_t) {
+                    continue;
+                }
+                auto* limit = static_cast<components::logical_plan::node_limit_t*>(child.get());
+                const auto& window = limit->limit();
+                if (window.validate(resource).contains_error()) {
+                    return;
+                }
+                aggregate->set_distinct(false);
+                const int64_t count =
+                    window.offset() > 0 ? 0 : (window.has_count() ? std::min<int64_t>(window.count(), 1) : 1);
+                limit->set_limit(components::logical_plan::limit_t(count));
+                return;
+            }
+            aggregate->set_distinct(false);
+            aggregate->append_child(
+                components::logical_plan::make_node_limit(resource, components::logical_plan::limit_t(1)));
+        }
+
+        [[nodiscard]] core::error_t resolve_scalar_order_entry(const validation::validation_context_t& context,
+                                                               const expression_ptr& entry,
+                                                               const named_schema& schema,
+                                                               const storage_parameters& parameters) {
+            if (entry->group() != expression_group::scalar) {
+                return core::error_t(
+                    core::error_code_t::protocol_violation,
+                    std::pmr::string{"ORDER BY holds an entry that is not a sort key", context.resource});
+            }
+            return resolve_scalar_output_type(
+                context,
+                static_cast<scalar_expression_t*>(entry.get()),
+                schema,
+                parameters,
+                components::compute::create_mask(components::compute::function_type_t::vector));
+        }
+
+        template<typename NameOf, typename Same>
+        [[nodiscard]] core::result_wrapper_t<std::optional<size_t>>
+        find_output_by_name(std::pmr::memory_resource* resource,
+                            const components::expressions::key_t& key,
+                            size_t visible,
+                            const NameOf& name_of,
+                            const Same& same) {
+            std::optional<size_t> found;
+            for (size_t index = 0; index < visible; ++index) {
+                if (name_of(index) != key.storage().front()) {
+                    continue;
+                }
+                if (!found.has_value()) {
+                    found = index;
+                } else if (!same(*found, index)) {
+                    return ambiguous_order_key(resource, key);
+                }
+            }
+            return found;
+        }
+
+        [[nodiscard]] core::error_t bind_ungrouped_order(const validation::validation_context_t& context,
+                                                         node_aggregate_t* aggregate,
+                                                         node_sort_t* sort,
+                                                         node_select_t* select,
+                                                         const named_schema& incoming,
+                                                         const storage_parameters& parameters,
+                                                         std::pmr::vector<complex_logical_type>& computed_types) {
             auto* resource = context.resource;
-            for (auto& expr : node->expressions()) {
-                if (expr->group() == expression_group::sort) {
-                    auto* sort_expr = static_cast<sort_expression_t*>(expr.get());
-                    if (components::expressions::is_key(sort_expr->operand())) {
-                        auto res = find_types(resource,
-                                              components::expressions::as_key(sort_expr->operand()),
-                                              schema,
-                                              context.column_uses);
-                        if (res.has_error()) {
-                            return res.convert_error<named_schema>();
+            const size_t width = incoming.size();
+            const bool distinct = aggregate->is_distinct() && aggregate->distinct_on_keys().empty();
+            const size_t visible = select ? select->expressions().size() - select->hidden_count : width;
+            std::pmr::vector<expression_ptr> written(resource);
+            if (select) {
+                written.assign(select->expressions().begin(),
+                               select->expressions().begin() + static_cast<ptrdiff_t>(visible));
+            }
+            std::pmr::vector<expression_ptr> computed(resource);
+            bool keep_computed_keys = false;
+            const validation::expression_context_t row_context{
+                resource,
+                incoming,
+                parameters,
+                context.cast_registry,
+                context.function_registry,
+                context.execution_context,
+                components::compute::create_mask(components::compute::function_type_t::vector),
+                context.column_uses,
+                context.parameter_types};
+
+            auto input_path_of = [&](const components::expressions::key_t& read,
+                                     components::expressions::key_t& out) -> core::error_t {
+                out = components::expressions::key_t{read, resource};
+                if (!out.path().empty()) {
+                    return core::error_t::no_error();
+                }
+                auto found = validation::find_types(resource, out, incoming, context.column_uses);
+                return found.has_error() ? found.error() : core::error_t::no_error();
+            };
+            auto name_of = [&](size_t index) -> std::string_view { return output_name(written[index]); };
+            auto same = [&](size_t left, size_t right) -> bool {
+                const auto* left_read = read_column(written[left]);
+                const auto* right_read = read_column(written[right]);
+                if (left_read == nullptr || right_read == nullptr) {
+                    return left_read == right_read &&
+                           components::expressions::same_computation(written[left], written[right], parameters);
+                }
+                components::expressions::key_t left_key{resource};
+                components::expressions::key_t right_key{resource};
+                if (input_path_of(*left_read, left_key).contains_error() ||
+                    input_path_of(*right_read, right_key).contains_error()) {
+                    return false;
+                }
+                return left_key.path() == right_key.path();
+            };
+            auto output_operand = [&](size_t index, param_storage& operand) -> core::result_wrapper_t<bool> {
+                if (!select) {
+                    const auto& column = incoming[index];
+                    components::expressions::key_t key{resource,
+                                                       column.type.has_alias() ? column.type.alias() : std::string{}};
+                    key.set_path(single_path(resource, index));
+                    operand = std::move(key);
+                    return true;
+                }
+                auto& column = select->expressions()[index];
+                if (const auto* read = read_column(column)) {
+                    if (!read->path().empty() && read->path().front() >= width) {
+                        operand = components::expressions::key_t{*read, resource};
+                        return true;
+                    }
+                    components::expressions::key_t key{resource};
+                    RETURN_IF_ERROR(input_path_of(*read, key));
+                    operand = std::move(key);
+                    return true;
+                }
+                if (column->group() == expression_group::scalar) {
+                    RETURN_IF_ERROR(validation::resolve_expression(column, row_context));
+                }
+                if (is_constant_order_key(column)) {
+                    return false;
+                }
+                computed.push_back(column);
+                operand = param_storage{column};
+                if (column->group() == expression_group::scalar &&
+                    static_cast<scalar_expression_t*>(column.get())->type() == scalar_type::constant) {
+                    return true;
+                }
+                components::expressions::key_t reference{resource, column->key().as_string()};
+                reference.set_path(single_path(resource, width + computed.size() - 1));
+                column = make_scalar_expression(resource, scalar_type::get_field, reference);
+                keep_computed_keys = true;
+                return true;
+            };
+            auto shown_by_select = [&](const components::expressions::key_t& key) -> bool {
+                if (!select) {
+                    return true;
+                }
+                for (size_t index = 0; index < visible; ++index) {
+                    const auto* read = read_column(written[index]);
+                    components::expressions::key_t shown{resource};
+                    if (read != nullptr && !input_path_of(*read, shown).contains_error() &&
+                        shown.path() == key.path()) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            if (sort) {
+                for (auto& entry : sort->expressions()) {
+                    if (entry->group() != expression_group::sort) {
+                        RETURN_IF_ERROR(resolve_scalar_order_entry(context, entry, incoming, parameters));
+                        continue;
+                    }
+                    auto* sort_key = static_cast<sort_expression_t*>(entry.get());
+                    if (sort_key->ordinal() != 0) {
+                        if (sort_key->ordinal() > visible) {
+                            return position_out_of_range(resource);
+                        }
+                        VALUE_OR_RETURN(auto kept, output_operand(sort_key->ordinal() - 1, sort_key->operand()));
+                        if (!kept) {
+                            entry = nullptr;
+                            continue;
+                        }
+                        sort_key->set_ordinal(0);
+                        continue;
+                    }
+                    if (components::expressions::is_key(sort_key->operand())) {
+                        auto& key = components::expressions::as_key(sort_key->operand());
+                        if (select && is_bare_name(key)) {
+                            VALUE_OR_RETURN(auto found, find_output_by_name(resource, key, visible, name_of, same));
+                            if (found.has_value()) {
+                                VALUE_OR_RETURN(auto kept, output_operand(*found, sort_key->operand()));
+                                if (!kept) {
+                                    entry = nullptr;
+                                }
+                                continue;
+                            }
+                        }
+                        auto found = validation::find_types(resource, key, incoming, context.column_uses);
+                        if (found.has_error()) {
+                            return found.error();
+                        }
+                        if (distinct && !shown_by_select(key)) {
+                            return not_in_distinct_list(resource);
                         }
                         continue;
                     }
-                    const validation::expression_context_t expression_context{
-                        resource,
-                        schema,
-                        parameters,
-                        context.cast_registry,
-                        context.function_registry,
-                        context.execution_context,
-                        components::compute::create_mask(components::compute::function_type_t::vector),
-                        context.column_uses};
-                    auto& operand = std::get<components::expressions::expression_ptr>(sort_expr->operand());
-                    if (auto error = validation::resolve_expression(operand, expression_context);
-                        error.contains_error()) {
-                        return error;
+                    RETURN_IF_ERROR(sort_operand_as_expression(resource, sort_key));
+                    auto& expression = components::expressions::as_expr(sort_key->operand());
+                    RETURN_IF_ERROR(validation::resolve_expression(expression, row_context));
+                    std::optional<size_t> same_column;
+                    for (size_t index = 0; index < visible && select; ++index) {
+                        if (read_column(written[index]) == nullptr &&
+                            components::expressions::same_computation(expression, written[index], parameters)) {
+                            same_column = index;
+                            break;
+                        }
                     }
-                } else if (expr->group() == expression_group::scalar) {
-                    auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
-                    auto resolve_error = resolve_scalar_output_type(
-                        context,
-                        scalar_expr,
-                        schema,
-                        parameters,
-                        components::compute::create_mask(components::compute::function_type_t::vector));
-                    if (resolve_error.contains_error()) {
-                        return resolve_error;
+                    if (!same_column.has_value() && distinct) {
+                        return not_in_distinct_list(resource);
+                    }
+                    if (is_constant_order_key(expression)) {
+                        entry = nullptr;
+                        continue;
+                    }
+                    if (same_column.has_value()) {
+                        VALUE_OR_RETURN(auto kept, output_operand(*same_column, sort_key->operand()));
+                        if (!kept) {
+                            entry = nullptr;
+                        }
+                        continue;
+                    }
+                    computed.push_back(expression);
+                }
+                erase_dropped_order_keys(sort);
+            }
+
+            std::pmr::vector<size_t> constant_on_keys(resource);
+            for (size_t on_index = 0; on_index < aggregate->distinct_on_keys().size(); ++on_index) {
+                auto& on_key = aggregate->distinct_on_keys()[on_index];
+                if (select && is_bare_name(on_key)) {
+                    VALUE_OR_RETURN(auto found, find_output_by_name(resource, on_key, visible, name_of, same));
+                    if (found.has_value()) {
+                        auto& column = select->expressions()[*found];
+                        const auto* read = read_column(column);
+                        if (read == nullptr && column->group() == expression_group::scalar) {
+                            RETURN_IF_ERROR(validation::resolve_expression(column, row_context));
+                        }
+                        if (read == nullptr && is_constant_order_key(column)) {
+                            constant_on_keys.push_back(on_index);
+                            continue;
+                        }
+                        if (read == nullptr) {
+                            return core::error_t(core::error_code_t::unimplemented_yet,
+                                                 std::pmr::string{"DISTINCT ON a computed column of the select list "
+                                                                  "is supported only when ORDER BY sorts on it",
+                                                                  resource});
+                        }
+                        components::expressions::key_t shown{resource};
+                        RETURN_IF_ERROR(input_path_of(*read, shown));
+                        on_key.set_path(column_path{shown.path(), on_key.resource()});
+                        continue;
                     }
                 }
+                auto found = validation::find_types(resource, on_key, incoming, context.column_uses);
+                if (found.has_error()) {
+                    return found.error();
+                }
             }
-            return named_schema{resource};
+            erase_constant_distinct_on_keys(resource, aggregate, constant_on_keys);
+
+            if (sort) {
+                sort->set_keep_computed_keys(keep_computed_keys);
+            }
+            computed_types.clear();
+            for (const auto& expression : computed) {
+                auto type = expression->result_type();
+                if (!expression->key().is_null()) {
+                    type.set_alias(expression->key().as_string());
+                }
+                computed_types.push_back(std::move(type));
+            }
+            return core::error_t::no_error();
+        }
+
+        struct group_output_t {
+            column_path source;
+            expression_ptr expression;
+        };
+
+        [[nodiscard]] core::error_t bind_grouped_order(const validation::validation_context_t& context,
+                                                       const node_t* node,
+                                                       node_aggregate_t* aggregate,
+                                                       node_group_t* group,
+                                                       node_sort_t* sort,
+                                                       node_select_t* select,
+                                                       const named_schema& incoming,
+                                                       const named_schema& grouping,
+                                                       const std::pmr::vector<validation::precomputed_column_t>& keys,
+                                                       named_schema& result,
+                                                       std::pmr::vector<group_output_t>& outputs,
+                                                       const storage_parameters& parameters) {
+            auto* resource = context.resource;
+            const bool distinct = aggregate->is_distinct() && aggregate->distinct_on_keys().empty();
+            const size_t shown = result.size();
+            std::pmr::vector<size_t> visible(resource);
+            if (select) {
+                for (size_t index = 0; index < select->expressions().size() - select->hidden_count; ++index) {
+                    const auto* read = read_column(select->expressions()[index]);
+                    const bool reads_output =
+                        read != nullptr && !read->path().empty() && read->path().front() < result.size();
+                    visible.push_back(reads_output ? read->path().front() : SIZE_MAX);
+                }
+            } else {
+                for (size_t index = 0; index < result.size(); ++index) {
+                    visible.push_back(index);
+                }
+            }
+            auto name_of_output = [&](size_t index) -> std::string_view {
+                return index < result.size() && result[index].type.has_alias()
+                           ? std::string_view{result[index].type.alias()}
+                           : std::string_view{};
+            };
+            auto output_key = [&](size_t index) {
+                components::expressions::key_t key{resource, std::string{name_of_output(index)}};
+                key.set_path(single_path(resource, index));
+                return key;
+            };
+            auto name_of = [&](size_t index) { return name_of_output(visible[index]); };
+            auto same = [&](size_t left, size_t right) {
+                if (visible[left] == SIZE_MAX || visible[right] == SIZE_MAX) {
+                    return false;
+                }
+                const auto& left_source = outputs[visible[left]].source;
+                return visible[left] == visible[right] ||
+                       (!left_source.empty() && left_source == outputs[visible[right]].source);
+            };
+            auto is_visible = [&](size_t index) {
+                return std::find(visible.begin(), visible.end(), index) != visible.end();
+            };
+            auto constant_output = [&](size_t index) {
+                return index < outputs.size() && outputs[index].expression &&
+                       is_constant_order_key(outputs[index].expression);
+            };
+
+            auto bind_input_key = [&](const components::expressions::key_t& key,
+                                      components::expressions::key_t& bound) -> core::error_t {
+                components::expressions::key_t input{key, resource};
+                auto found = validation::find_types(resource, input, grouping, context.column_uses);
+                if (found.has_error()) {
+                    return found.error();
+                }
+                for (size_t index = 0; index < outputs.size(); ++index) {
+                    if (!outputs[index].source.empty() && outputs[index].source == input.path()) {
+                        bound = output_key(index);
+                        return core::error_t::no_error();
+                    }
+                }
+                const bool grouping_key =
+                    input.path().front() >= incoming.size() ||
+                    std::any_of(group->expressions().begin(), group->expressions().end(), [&](const auto& expr) {
+                        if (expr->group() != expression_group::scalar) {
+                            return false;
+                        }
+                        const auto* marker = static_cast<const scalar_expression_t*>(expr.get());
+                        return marker->type() == scalar_type::group_field && marker->params().empty() &&
+                               marker->key().path() == input.path();
+                    });
+                if (!grouping_key) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"column \"" + spelled(key) +
+                                                              "\" must appear in the GROUP BY clause or be used in "
+                                                              "an aggregate function",
+                                                          resource});
+                }
+                group->append_expression(make_scalar_expression(resource, scalar_type::get_field, input));
+                result.emplace_back(type_from_t{node->result_alias(), found.value().front().type});
+                outputs.push_back(group_output_t{column_path{input.path(), resource}, nullptr});
+                bound = output_key(result.size() - 1);
+                return core::error_t::no_error();
+            };
+            auto bind_key = [&](const components::expressions::key_t& key,
+                                components::expressions::key_t& bound) -> core::error_t {
+                if (is_bare_name(key)) {
+                    VALUE_OR_RETURN(auto found, find_output_by_name(resource, key, visible.size(), name_of, same));
+                    if (found.has_value() && visible[*found] != SIZE_MAX) {
+                        bound = output_key(visible[*found]);
+                        return core::error_t::no_error();
+                    }
+                    for (size_t index = 0; index < shown; ++index) {
+                        if (name_of_output(index) == key.storage().front()) {
+                            bound = output_key(index);
+                            return core::error_t::no_error();
+                        }
+                    }
+                }
+                return bind_input_key(key, bound);
+            };
+            const validation::expression_context_t projection_context{
+                resource,
+                grouping,
+                parameters,
+                context.cast_registry,
+                context.function_registry,
+                context.execution_context,
+                components::compute::create_mask(components::compute::function_type_t::vector,
+                                                 components::compute::function_type_t::aggregate),
+                context.column_uses,
+                context.parameter_types,
+                nullptr,
+                &keys};
+            auto bind_aggregate = [&](const expression_ptr& aggregate_expr,
+                                      components::expressions::key_t& bound) -> core::error_t {
+                for (size_t index = 0; index < outputs.size(); ++index) {
+                    if (outputs[index].expression &&
+                        outputs[index].expression->group() == expression_group::aggregate &&
+                        components::expressions::same_computation(aggregate_expr,
+                                                                  outputs[index].expression,
+                                                                  parameters)) {
+                        bound = output_key(index);
+                        return core::error_t::no_error();
+                    }
+                }
+                group->append_expression(aggregate_expr);
+                auto type = aggregate_expr->result_type();
+                if (!aggregate_expr->key().is_null()) {
+                    type.set_alias(aggregate_expr->key().as_string());
+                }
+                result.emplace_back(type_from_t{node->result_alias(), std::move(type)});
+                outputs.push_back(group_output_t{column_path{resource}, aggregate_expr});
+                bound = output_key(result.size() - 1);
+                return core::error_t::no_error();
+            };
+            auto bind_operand = [&](auto& self, auto& target) -> core::error_t {
+                expression_ptr expr;
+                if constexpr (std::is_same_v<std::decay_t<decltype(target)>, param_storage>) {
+                    if (components::expressions::is_key(target)) {
+                        components::expressions::key_t bound{resource};
+                        RETURN_IF_ERROR(bind_input_key(components::expressions::as_key(target), bound));
+                        target = std::move(bound);
+                        return core::error_t::no_error();
+                    }
+                    if (!components::expressions::is_expr(target)) {
+                        return core::error_t::no_error();
+                    }
+                    expr = components::expressions::as_expr(target);
+                } else {
+                    expr = target;
+                }
+                if (expr->group() == expression_group::aggregate) {
+                    components::expressions::key_t bound{resource};
+                    RETURN_IF_ERROR(bind_aggregate(expr, bound));
+                    if constexpr (std::is_same_v<std::decay_t<decltype(target)>, param_storage>) {
+                        target = std::move(bound);
+                    } else {
+                        auto read = make_scalar_expression(resource, scalar_type::get_field, bound);
+                        read->set_result_type(expr->result_type());
+                        target = std::move(read);
+                    }
+                    return core::error_t::no_error();
+                }
+                switch (expr->group()) {
+                    case expression_group::scalar: {
+                        auto* scalar = static_cast<scalar_expression_t*>(expr.get());
+                        if (scalar->type() == scalar_type::get_field && scalar->params().empty()) {
+                            components::expressions::key_t bound{resource};
+                            RETURN_IF_ERROR(bind_input_key(scalar->key(), bound));
+                            scalar->key() = std::move(bound);
+                            return core::error_t::no_error();
+                        }
+                        for (auto& param : scalar->params()) {
+                            RETURN_IF_ERROR(self(self, param));
+                        }
+                        return core::error_t::no_error();
+                    }
+                    case expression_group::function:
+                        for (auto& arg : static_cast<function_expression_t*>(expr.get())->args()) {
+                            RETURN_IF_ERROR(self(self, arg));
+                        }
+                        return core::error_t::no_error();
+                    case expression_group::cast:
+                        return self(self,
+                                    static_cast<components::expressions::cast_expression_t*>(expr.get())->child());
+                    case expression_group::compare: {
+                        auto* compare = static_cast<compare_expression_t*>(expr.get());
+                        RETURN_IF_ERROR(self(self, compare->left()));
+                        RETURN_IF_ERROR(self(self, compare->right()));
+                        for (auto& child : compare->children()) {
+                            RETURN_IF_ERROR(self(self, child));
+                        }
+                        return core::error_t::no_error();
+                    }
+                    default:
+                        return core::error_t(
+                            core::error_code_t::protocol_violation,
+                            std::pmr::string{"ORDER BY holds an expression it cannot bind to the groups", resource});
+                }
+            };
+
+            if (sort) {
+                for (auto& entry : sort->expressions()) {
+                    if (entry->group() != expression_group::sort) {
+                        RETURN_IF_ERROR(resolve_scalar_order_entry(context, entry, result, parameters));
+                        continue;
+                    }
+                    auto* sort_key = static_cast<sort_expression_t*>(entry.get());
+                    if (sort_key->ordinal() != 0) {
+                        if (sort_key->ordinal() > visible.size()) {
+                            return position_out_of_range(resource);
+                        }
+                        if (visible[sort_key->ordinal() - 1] == SIZE_MAX) {
+                            return core::error_t(core::error_code_t::unimplemented_yet,
+                                                 std::pmr::string{"ORDER BY position over a column computed after "
+                                                                  "grouping is not supported",
+                                                                  resource});
+                        }
+                        if (constant_output(visible[sort_key->ordinal() - 1])) {
+                            entry = nullptr;
+                            continue;
+                        }
+                        sort_key->set_operand(output_key(visible[sort_key->ordinal() - 1]));
+                        sort_key->set_ordinal(0);
+                        continue;
+                    }
+                    if (components::expressions::is_key(sort_key->operand())) {
+                        components::expressions::key_t bound{resource};
+                        RETURN_IF_ERROR(bind_key(components::expressions::as_key(sort_key->operand()), bound));
+                        if (distinct && !is_visible(bound.path().front())) {
+                            return not_in_distinct_list(resource);
+                        }
+                        if (constant_output(bound.path().front())) {
+                            entry = nullptr;
+                            continue;
+                        }
+                        sort_key->set_operand(std::move(bound));
+                        continue;
+                    }
+                    RETURN_IF_ERROR(sort_operand_as_expression(resource, sort_key));
+                    auto& expression = components::expressions::as_expr(sort_key->operand());
+                    RETURN_IF_ERROR(validation::resolve_expression(expression, projection_context));
+                    const auto same_output = std::find_if(visible.begin(), visible.end(), [&](size_t index) {
+                        return index != SIZE_MAX && outputs[index].expression &&
+                               components::expressions::same_computation(expression,
+                                                                         outputs[index].expression,
+                                                                         parameters);
+                    });
+                    if (same_output == visible.end() && distinct) {
+                        return not_in_distinct_list(resource);
+                    }
+                    if (is_constant_order_key(expression)) {
+                        entry = nullptr;
+                        continue;
+                    }
+                    if (same_output != visible.end()) {
+                        sort_key->set_operand(output_key(*same_output));
+                        continue;
+                    }
+                    RETURN_IF_ERROR(bind_operand(bind_operand, sort_key->operand()));
+                }
+                erase_dropped_order_keys(sort);
+            }
+            std::pmr::vector<size_t> constant_on_keys(resource);
+            for (size_t on_index = 0; on_index < aggregate->distinct_on_keys().size(); ++on_index) {
+                auto& on_key = aggregate->distinct_on_keys()[on_index];
+                components::expressions::key_t bound{resource};
+                RETURN_IF_ERROR(bind_key(on_key, bound));
+                if (constant_output(bound.path().front())) {
+                    constant_on_keys.push_back(on_index);
+                    continue;
+                }
+                on_key.set_path(column_path{bound.path(), on_key.resource()});
+            }
+            erase_constant_distinct_on_keys(resource, aggregate, constant_on_keys);
+            if (result.size() > shown && !select) {
+                aggregate->set_output_width(shown);
+            }
+            return core::error_t::no_error();
+        }
+
+        [[nodiscard]] core::error_t check_order_keys_bound(std::pmr::memory_resource* resource,
+                                                           const node_sort_t* node) {
+            for (const auto& entry : node->expressions()) {
+                if (entry->group() != expression_group::sort) {
+                    continue;
+                }
+                const auto* sort_key = static_cast<const sort_expression_t*>(entry.get());
+                const auto& operand = sort_key->operand();
+                const bool bound =
+                    components::expressions::is_key(operand)
+                        ? !components::expressions::as_key(operand).path().empty()
+                        : components::expressions::is_expr(operand) &&
+                              components::expressions::as_expr(operand)->result_type().type() != logical_type::INVALID;
+                if (sort_key->ordinal() != 0 || !bound) {
+                    return core::error_t(core::error_code_t::protocol_violation,
+                                         std::pmr::string{"ORDER BY key is not bound to a column", resource});
+                }
+            }
+            return core::error_t::no_error();
         }
 
         [[nodiscard]] core::error_t
@@ -573,6 +1295,7 @@ namespace services::dispatcher {
                         context.execution_context,
                         components::compute::create_mask(components::compute::function_type_t::vector),
                         context.column_uses,
+                        context.parameter_types,
                         schema_right};
                     if (auto error = validation::resolve_expression(exprs[idx], expression_context);
                         error.contains_error()) {
@@ -584,9 +1307,11 @@ namespace services::dispatcher {
                 auto* scalar_expr = static_cast<scalar_expression_t*>(exprs[idx].get());
                 switch (scalar_expr->type()) {
                     case scalar_type::get_field: {
-                        auto& key = scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        auto* key_read = read_column(exprs[idx]);
+                        if (key_read == nullptr) {
+                            return column_read_without_a_column(resource);
+                        }
+                        auto& key = *key_read;
                         if (key.path().empty()) {
                             auto res = validate_key(resource, key, schema_left, schema_right, context.column_uses);
                             if (res.has_error()) {
@@ -652,31 +1377,227 @@ namespace services::dispatcher {
             return core::error_t::no_error();
         }
 
+        // The column a resolved RETURNING column read reads, through its path.
+        complex_logical_type returned_column_type(const components::expressions::key_t& key,
+                                                  const named_schema* schema_left,
+                                                  const named_schema* schema_right) {
+            const named_schema* schema =
+                key.side() == side_t::right && schema_right != nullptr ? schema_right : schema_left;
+            if (key.path().empty() || key.path().front() >= schema->size()) {
+                return complex_logical_type{logical_type::INVALID};
+            }
+            complex_logical_type type = (*schema)[key.path().front()].type;
+            for (size_t depth = 1; depth < key.path().size(); depth++) {
+                type = type.type() == logical_type::STRUCT ? type.child_types()[key.path()[depth]] : type.child_type();
+            }
+            return type;
+        }
+
+        // The columns a resolved RETURNING list answers, as the DML operator projects them: a bare `*` is the
+        // columns of the written table, an output $n alone is text.
+        [[nodiscard]] core::result_wrapper_t<named_schema>
+        returning_schema(const validation::validation_context_t& context,
+                         const node_t* node,
+                         const std::pmr::vector<expression_ptr>& returning,
+                         const named_schema* schema_left,
+                         const named_schema* schema_right,
+                         const components::logical_plan::storage_parameters& parameters) {
+            named_schema schema(context.resource);
+            for (const auto& expression : returning) {
+                if (!expression) {
+                    continue;
+                }
+                complex_logical_type type{logical_type::INVALID};
+                if (expression->group() == expression_group::scalar) {
+                    auto* scalar = static_cast<scalar_expression_t*>(expression.get());
+                    if (scalar->type() == scalar_type::star_expand) {
+                        for (const auto& column : *schema_left) {
+                            schema.push_back(column);
+                        }
+                        continue;
+                    }
+                    if (scalar->type() == scalar_type::get_field) {
+                        const auto* key = read_column(expression);
+                        if (key == nullptr) {
+                            return column_read_without_a_column(context.resource);
+                        }
+                        type = returned_column_type(*key, schema_left, schema_right);
+                    } else if (scalar->type() == scalar_type::constant && !scalar->params().empty() &&
+                               components::expressions::is_parameter(scalar->params().front())) {
+                        const auto slot = components::expressions::as_parameter(scalar->params().front());
+                        RETURN_IF_ERROR(type_output_parameter(context, node, scalar, slot));
+                        type = validation::is_stamped(scalar->result_type()) ? scalar->result_type()
+                                                                             : parameters.type(slot);
+                    } else {
+                        type = expression->result_type();
+                    }
+                } else {
+                    type = expression->result_type();
+                }
+                type.set_alias(components::expressions::projected_name(expression));
+                schema.push_back(type_from_t{std::string{}, std::move(type)});
+            }
+            return schema;
+        }
+
+        // Each VALUES column of the INSERT gives its $n its type: its own, or the target column's while it holds
+        // only untyped $n (PostgreSQL 18 transformInsertRow).
+        [[nodiscard]] core::error_t type_values_parameters(const validation::validation_context_t& context,
+                                                           const node_insert_t* insert) {
+            auto* types = context.parameter_types;
+            if (types == nullptr || insert->children().empty() ||
+                insert->children().front()->type() != node_type::data_t) {
+                return core::error_t::no_error();
+            }
+            const auto* data = static_cast<const node_data_t*>(insert->children().front().get());
+            if (data->chunks().empty()) {
+                return core::error_t::no_error();
+            }
+            const auto& columns = data->chunks().front().data;
+            for (std::size_t column = 0; column < columns.size(); ++column) {
+                auto type = columns[column].type();
+                if (type.type() == logical_type::NA && column < insert->column_bindings().size()) {
+                    type = insert->column_bindings()[column].target_type;
+                }
+                if (type.type() != logical_type::NA) {
+                    RETURN_IF_ERROR(types->values_column(column, type));
+                }
+            }
+            return core::error_t::no_error();
+        }
+
+        // SET column = $n: a $n without a type takes the column's (PostgreSQL 18 transformAssignedExpr).
+        [[nodiscard]] core::error_t assign_parameter(const validation::validation_context_t& context,
+                                                     expression_ptr& value,
+                                                     const complex_logical_type& target) {
+            auto* types = context.parameter_types;
+            if (types == nullptr || !value || value->group() != expression_group::scalar) {
+                return core::error_t::no_error();
+            }
+            auto* scalar = static_cast<scalar_expression_t*>(value.get());
+            if (scalar->type() != scalar_type::constant || scalar->params().empty() ||
+                !components::expressions::is_parameter(scalar->params().front())) {
+                return core::error_t::no_error();
+            }
+            const auto slot = components::expressions::as_parameter(scalar->params().front());
+            if (!types->is_untyped(slot)) {
+                return core::error_t::no_error();
+            }
+            RETURN_IF_ERROR(types->give(slot, target));
+            auto typed = target;
+            typed.set_alias(std::string{});
+            scalar->set_result_type(std::move(typed));
+            return core::error_t::no_error();
+        }
+
     } // namespace impl
+
+    core::error_t check_database_exists(std::pmr::memory_resource* resource,
+                                        const catalog_resolves_t* resolves,
+                                        const qualified_name_t& name) {
+        if (resolves &&
+            resolves->database_oid(name.connection.t, name.database.t) != components::catalog::INVALID_OID) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string msg{"database \"", resource};
+        msg.append(qualified_name_t{name.connection, name.database, {}, {}}.to_string());
+        msg.append("\" does not exist");
+        return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
+    }
+
+    namespace {
+        // The missing level of `name` above its relation (`entry` is what the resolve found of it), spelled as the
+        // place completes the name.
+        core::error_t missing_level(std::pmr::memory_resource* resource,
+                                    const catalog_resolves_t* resolves,
+                                    const qualified_name_t& name,
+                                    const components::logical_plan::resolve_entry_t* entry);
+    } // namespace
 
     core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
                                          const catalog_resolves_t* resolves,
-                                         const components::catalog::table_id& id) {
-        if (id.database().empty()) {
-            return core::error_t(core::error_code_t::database_not_exists,
-                                 std::pmr::string{"database does not exist", resource});
+                                         const qualified_name_t& name) {
+        const auto* entry = resolves ? resolves->namespace_entry(name) : nullptr;
+        if (entry && entry->namespace_oid != components::catalog::INVALID_OID) {
+            return core::error_t::no_error();
         }
-        if (!resolves || resolves->namespace_oid(id.database()) == components::catalog::INVALID_OID) {
-            return core::error_t(core::error_code_t::database_not_exists,
-                                 std::pmr::string{"database does not exist", resource});
-        }
-        return core::error_t::no_error();
+        return missing_level(resource, resolves, name, entry);
     }
+
+    core::error_t check_relation_levels(std::pmr::memory_resource* resource,
+                                        const catalog_resolves_t* resolves,
+                                        const qualified_name_t& name) {
+        // A bare name looks in pg_catalog and then in the place's schema: no level of its own to check.
+        if (resolves == nullptr || name.schema.t.empty()) {
+            return core::error_t::no_error();
+        }
+        const auto* entry = resolves->table_entry(name);
+        if (entry == nullptr || entry->table_md.has_value() ||
+            (entry->database_oid != components::catalog::INVALID_OID &&
+             entry->namespace_oid != components::catalog::INVALID_OID)) {
+            return core::error_t::no_error();
+        }
+        return missing_level(resource, resolves, name, entry);
+    }
+
+    core::error_t check_read_levels(std::pmr::memory_resource* resource,
+                                    const catalog_resolves_t* resolves,
+                                    const qualified_name_t& name) {
+        if (resolves == nullptr || name.connection.t.empty()) {
+            return core::error_t::no_error();
+        }
+        const auto* entry = resolves->table_entry(name);
+        if (entry == nullptr || entry->table_md.has_value() ||
+            entry->database_oid != components::catalog::INVALID_OID) {
+            return core::error_t::no_error();
+        }
+        return missing_level(resource, resolves, name, entry);
+    }
+
+    namespace {
+        core::error_t missing_level(std::pmr::memory_resource* resource,
+                                    const catalog_resolves_t* resolves,
+                                    const qualified_name_t& name,
+                                    const components::logical_plan::resolve_entry_t* entry) {
+            static const components::catalog::place_t no_place{};
+            const auto& place = resolves ? resolves->place : no_place;
+            const auto completed =
+                components::catalog::complete_name(place, name.connection.t, name.database.t, name.schema.t);
+            const auto missing =
+                [resource](core::error_code_t code, std::string_view level, const std::string& written) {
+                    std::pmr::string msg{level, resource};
+                    msg.append(" \"");
+                    msg.append(written);
+                    msg.append("\" does not exist");
+                    return core::error_t(code, std::move(msg));
+                };
+            if (!entry || entry->database_oid == components::catalog::INVALID_OID) {
+                return missing(core::error_code_t::database_not_exists,
+                               "database",
+                               qualified_name_t{core::connection_name_t{completed.connection},
+                                                core::dbname_t{completed.database},
+                                                {},
+                                                {}}
+                                   .to_string());
+            }
+            return missing(core::error_code_t::schema_not_exists, "schema", completed.schema);
+        }
+    } // namespace
 
     core::error_t check_collection_exists(std::pmr::memory_resource* resource,
                                           const catalog_resolves_t* resolves,
-                                          const components::catalog::table_id& id) {
-        if (auto err = check_namespace_exists(resource, resolves, id); err.contains_error()) {
-            return err;
+                                          const qualified_name_t& name) {
+        // A bare name looks in pg_catalog and then in the place's schema: no schema of its own to check.
+        if (!name.schema.t.empty()) {
+            if (auto err = check_namespace_exists(resource, resolves, name); err.contains_error()) {
+                return err;
+            }
         }
-        if (!resolves->table_md(id.database(), std::string_view(id.table_name()))) {
-            return core::error_t(core::error_code_t::table_not_exists,
-                                 std::pmr::string{"collection does not exist", resource});
+        if (!resolves || !resolves->table_md(name)) {
+            std::pmr::string msg{"relation \"", resource};
+            msg.append(name.to_string());
+            msg.append("\" does not exist");
+            return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
         }
         return core::error_t::no_error();
     }
@@ -691,7 +1612,7 @@ namespace services::dispatcher {
                 std::pmr::string msg{"column \"", resource};
                 msg.append(columns[later].name().c_str());
                 msg.append("\" specified more than once");
-                return core::error_t{core::error_code_t::duplicate_field, std::move(msg)};
+                return core::error_t{core::error_code_t::duplicate_column, std::move(msg)};
             }
         }
         return core::error_t::no_error();
@@ -700,10 +1621,10 @@ namespace services::dispatcher {
     namespace {
         core::error_t check_dml_target_not_catalog(std::pmr::memory_resource* resource,
                                                    const components::logical_plan::node_t* node) {
-            if (!components::catalog::is_catalog_table(node->table_oid())) {
+            const auto* tbl = node->table_metadata();
+            if (tbl == nullptr || !components::catalog::in_system_schema(tbl->namespace_oid)) {
                 return core::error_t::no_error();
             }
-            const auto* tbl = node->table_metadata();
             std::pmr::string msg{"cannot modify system catalog", resource};
             if (tbl && !tbl->name.empty()) {
                 msg += " \"";
@@ -716,22 +1637,18 @@ namespace services::dispatcher {
 
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
                                     const catalog_resolves_t* resolves,
-                                    const std::string& alias,
-                                    std::span<const std::string> search_dbnames) {
-        if (components::catalog::pg_name_to_logical_type(alias) != components::types::logical_type::UNKNOWN) {
+                                    const qualified_name_t& written) {
+        const bool in_pg_catalog = written.schema.t.empty() || written.schema.t == "pg_catalog";
+        if (in_pg_catalog && components::catalog::pg_name_to_logical_type(written.collection.t) !=
+                                 components::types::logical_type::UNKNOWN) {
             return core::error_t::no_error();
         }
-        static const std::string kPublic{"public"};
-        static const std::string kPgCatalog{"pg_catalog"};
-        const std::string default_path[] = {kPublic, kPgCatalog};
-        const auto path = search_dbnames.empty() ? std::span<const std::string>(default_path) : search_dbnames;
-        for (const auto& db : path) {
-            if (resolves && resolves->type_md(std::string_view(db), std::string_view(alias))) {
-                return core::error_t::no_error();
-            }
+        if (resolves && resolves->type_md(written)) {
+            return core::error_t::no_error();
         }
-        return core::error_t(core::error_code_t::schema_error,
-                             std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
+        return core::error_t(
+            core::error_code_t::undefined_object,
+            std::pmr::string{"type: \'" + written.to_string() + "\' is not registered in catalog", resource});
     }
 
     core::error_t convert_column_default(std::pmr::memory_resource* resource,
@@ -749,7 +1666,7 @@ namespace services::dispatcher {
             auto conversion =
                 cast_registry->resolve(written.type(), column.type(), components::casts::cast_type::assignment);
             if (!conversion.has_value()) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::datatype_mismatch,
                                      std::pmr::string{"DEFAULT for column '" + column.name() +
                                                           "' may not be converted to the column's type on assignment",
                                                       resource});
@@ -772,7 +1689,7 @@ namespace services::dispatcher {
         auto encoded = components::types::encode_type_spec(type, spec);
         if (encoded.has_error()) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{subject + " cannot be persisted: " + std::string(encoded.error().what.c_str()),
                                  resource});
         }
@@ -784,7 +1701,7 @@ namespace services::dispatcher {
                                      const components::types::complex_logical_type& type) {
         if (auto refused = components::table::column_data_t::validate_column_type(type, resource);
             refused.contains_error()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{subject + " of type " + components::catalog::describe_type(type) +
                                                       " cannot be stored: " + std::string(refused.what.c_str()),
                                                   resource});
@@ -839,7 +1756,7 @@ namespace services::dispatcher {
                         what += " rows exceeds the ";
                         what += std::to_string(components::vector::DEFAULT_VECTOR_CAPACITY);
                         what += "-row limit per chunk; split it into a batch of chunks";
-                        result = core::error_t(core::error_code_t::invalid_parameter, std::move(what));
+                        result = core::error_t(core::error_code_t::protocol_violation, std::move(what));
                         return false;
                     }
                 }
@@ -874,7 +1791,7 @@ namespace services::dispatcher {
                                    cols.end());
                         if (dropped_count != 0 && names_readable) {
                             result = core::error_t(
-                                core::error_code_t::schema_error,
+                                core::error_code_t::indeterminate_datatype,
                                 std::pmr::string{
                                     insert_arity_disagreement(written_column_list->key_translation().size(),
                                                               cols.size()) +
@@ -914,7 +1831,6 @@ namespace services::dispatcher {
                          const components::logical_plan::storage_parameters& parameters,
                          cte_schemas_t* cte_schemas) {
         auto* resource = context.resource;
-        const auto* resolves = context.resolves;
         const auto* cast_registry = &context.cast_registry;
         named_schema result{resource};
 
@@ -960,6 +1876,20 @@ namespace services::dispatcher {
                     }
                 }
 
+                auto drop_sort_without_keys = [&] {
+                    if (node_sort == nullptr || !node_sort->expressions().empty()) {
+                        return;
+                    }
+                    auto& children = node->children();
+                    children.erase(std::remove_if(children.begin(),
+                                                  children.end(),
+                                                  [node_sort](const components::logical_plan::node_ptr& child) {
+                                                      return child.get() == node_sort;
+                                                  }),
+                                   children.end());
+                    node_sort = nullptr;
+                };
+
                 // Table-valued jsonb operators expand only on the non-GROUP-BY path (else crash).
                 if (node_group && node_select) {
                     for (const auto& expr : node_select->expressions()) {
@@ -968,7 +1898,7 @@ namespace services::dispatcher {
                         }
                         auto* se = reinterpret_cast<scalar_expression_t*>(expr.get());
                         if (se->type() == scalar_type::jsonb_expand || se->type() == scalar_type::jsonb_delete) {
-                            return core::error_t(core::error_code_t::schema_error,
+                            return core::error_t(core::error_code_t::unimplemented_yet,
                                                  std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
                                                                   "is not supported with GROUP BY or aggregation",
                                                                   resource});
@@ -985,7 +1915,6 @@ namespace services::dispatcher {
                     }
                 } else if (auto* agg_node = static_cast<node_aggregate_t*>(node);
                            !static_cast<const std::string&>(agg_node->target().collection).empty()) {
-                    const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->target().database);
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->target().collection);
                     const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     const auto* tbl = node->table_metadata();
@@ -995,19 +1924,13 @@ namespace services::dispatcher {
                             table_schema.emplace_back(catalog_column(visible_alias, *tbl, column));
                         }
                     } else {
-                        if (!agg_dbname_s.empty() &&
-                            (!resolves || resolves->namespace_oid(std::string_view(agg_dbname_s)) ==
-                                              components::catalog::INVALID_OID)) {
-                            std::pmr::string msg{"database does not exist: ", resource};
-                            msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
-                            return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
+                        if (auto level = check_read_levels(resource, context.resolves, agg_node->target());
+                            level.contains_error()) {
+                            return level;
                         }
-                        std::pmr::string msg{"collection does not exist: ", resource};
-                        if (!agg_dbname_s.empty()) {
-                            msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
-                            msg += '.';
-                        }
-                        msg.append(agg_relname_s.begin(), agg_relname_s.end());
+                        std::pmr::string msg{"relation \"", resource};
+                        msg.append(agg_node->target().to_string());
+                        msg.append("\" does not exist");
                         return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                     }
                 }
@@ -1051,7 +1974,8 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector,
                                                              components::compute::function_type_t::aggregate),
-                            context.column_uses};
+                            context.column_uses,
+                            context.parameter_types};
                         for (auto& expr : node_group->expressions()) {
                             if (expr->group() == expression_group::aggregate) {
                                 reduces = true;
@@ -1091,6 +2015,8 @@ namespace services::dispatcher {
                     for (auto& e : node_match->expressions()) {
                         e = impl::rewrite_multitype_null_checks(resource, e, incoming_schema);
                     }
+                    // PostgreSQL 18 reads WHERE after the select list: what WHERE gives a $n comes too late for it.
+                    const validation::later_clause_t where{context.parameter_types};
                     auto res = impl::validate_schema(context, node_match, parameters, &table_schema, source_schema);
                     if (res.has_error()) {
                         return res;
@@ -1098,26 +2024,29 @@ namespace services::dispatcher {
                 }
 
                 if (!node_group) {
-                    if (node_sort) {
-                        auto res = impl::validate_schema(context, node_sort, incoming_schema, parameters);
-                        if (res.has_error()) {
-                            return res;
-                        }
+                    if (!aggregate_node->distinct_on_keys().empty() && relkind_computed) {
+                        return core::error_t(core::error_code_t::unimplemented_yet,
+                                             std::pmr::string{"DISTINCT ON is not yet supported on "
+                                                              "relkind='g' (dynamic-schema) tables",
+                                                              resource});
                     }
-                    if (!aggregate_node->distinct_on_keys().empty()) {
-                        if (relkind_computed) {
-                            return core::error_t(core::error_code_t::unimplemented_yet,
-                                                 std::pmr::string{"DISTINCT ON is not yet supported on "
-                                                                  "relkind='g' (dynamic-schema) tables",
-                                                                  resource});
-                        }
-                        for (auto& on_key : aggregate_node->distinct_on_keys()) {
-                            auto r = validation::find_types(resource, on_key, incoming_schema, context.column_uses);
-                            if (r.has_error()) {
-                                return r.convert_error<named_schema>();
-                            }
-                        }
-                    }
+                    std::pmr::vector<complex_logical_type> computed_sort_types(resource);
+                    auto bind_order = [&]() -> core::error_t {
+                        RETURN_IF_ERROR(impl::bind_ungrouped_order(context,
+                                                                   aggregate_node,
+                                                                   node_sort,
+                                                                   node_select,
+                                                                   incoming_schema,
+                                                                   parameters,
+                                                                   computed_sort_types));
+                        drop_sort_without_keys();
+                        return node_sort ? impl::check_order_keys_bound(resource, node_sort)
+                                         : core::error_t::no_error();
+                    };
+                    auto column_type = [&](size_t index) -> const complex_logical_type& {
+                        return index < incoming_schema.size() ? incoming_schema[index].type
+                                                              : computed_sort_types[index - incoming_schema.size()];
+                    };
                     if (node_select) {
                         auto& exprs = node_select->expressions();
                         for (size_t expr_index = 0; expr_index < exprs.size();) {
@@ -1149,7 +2078,7 @@ namespace services::dispatcher {
                                     }
                                 }
                                 if (matched.empty()) {
-                                    return core::error_t(core::error_code_t::schema_error,
+                                    return core::error_t(core::error_code_t::table_not_exists,
                                                          std::pmr::string{(std::string{"alias '"} + alias.c_str() +
                                                                            "' has no columns in scope")
                                                                               .c_str(),
@@ -1181,9 +2110,11 @@ namespace services::dispatcher {
                                 expr_index++;
                                 continue;
                             }
-                            auto& k_ref = scalar_expr->params().empty()
-                                              ? scalar_expr->key()
-                                              : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                            auto* k_ref_read = impl::read_column(exprs[expr_index]);
+                            if (k_ref_read == nullptr) {
+                                return impl::column_read_without_a_column(resource);
+                            }
+                            auto& k_ref = *k_ref_read;
                             if (k_ref.storage().empty() || k_ref.storage().back() != "*") {
                                 expr_index++;
                                 continue;
@@ -1229,7 +2160,7 @@ namespace services::dispatcher {
                             if (se->key().is_null()) {
                                 for (const auto& p : se->params()) {
                                     if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                        op_side = std::get<components::expressions::key_t>(p).side();
+                                        op_side = components::expressions::as_key(p).side();
                                         break;
                                     }
                                 }
@@ -1245,7 +2176,7 @@ namespace services::dispatcher {
                                 }
                                 for (const auto& p : se->params()) {
                                     if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                        del_prefixes.push_back(std::get<components::expressions::key_t>(p).as_string());
+                                        del_prefixes.push_back(components::expressions::as_key(p).as_string());
                                     }
                                 }
                             }
@@ -1275,7 +2206,7 @@ namespace services::dispatcher {
                             }
                             if (is_expand && cols.empty()) {
                                 return core::error_t(
-                                    core::error_code_t::schema_error,
+                                    core::error_code_t::undefined_column,
                                     std::pmr::string{
                                         (std::string{"jsonb expand: path '"} + prefix + "' matches no column").c_str(),
                                         resource});
@@ -1292,6 +2223,7 @@ namespace services::dispatcher {
                             ei += cols.size();
                         }
 
+                        RETURN_IF_ERROR(bind_order());
                         bool has_computed_column = false;
                         for (auto& expr : node_select->expressions()) {
                             if (expr->group() == expression_group::function ||
@@ -1304,10 +2236,11 @@ namespace services::dispatcher {
                             }
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                auto& key = *key_read;
                                 if (key.path().empty()) {
                                     auto validated_key = validation::validate_key(resource,
                                                                                   key,
@@ -1318,12 +2251,12 @@ namespace services::dispatcher {
                                         return validated_key.convert_error<named_schema>();
                                     }
                                 }
-                                const auto& col_type = incoming_schema[key.path()[0]].type;
+                                const auto& col_type = column_type(key.path()[0]);
                                 const components::types::complex_logical_type* res_type = &col_type;
                                 for (size_t j = 1; j < key.path().size(); j++) {
                                     if (!res_type->is_nested()) {
                                         return core::error_t(
-                                            core::error_code_t::schema_error,
+                                            core::error_code_t::wrong_object_type,
                                             std::pmr::string{"trying to access field of non-nested type", resource});
                                     } else if (res_type->type() == logical_type::STRUCT) {
                                         res_type = &res_type->child_types()[key.path()[j]];
@@ -1355,6 +2288,7 @@ namespace services::dispatcher {
                             return result;
                         }
                     } else {
+                        RETURN_IF_ERROR(bind_order());
                         struct column_key {
                             std::string result_alias;
                             std::string name;
@@ -1369,7 +2303,7 @@ namespace services::dispatcher {
                             column_key key{col.result_alias, col_alias, col.type.type(), col.side};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
-                                    core::error_code_t::schema_error,
+                                    core::error_code_t::ambiguous_column,
                                     std::pmr::string{"column '" + col_alias +
                                                          "' has multiple types; use explicit type selection",
                                                      resource});
@@ -1402,14 +2336,18 @@ namespace services::dispatcher {
                             }
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                const auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                const auto& key = *key_read;
                                 if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
                                     auto column = incoming_schema[key.path().front()];
                                     name_as_projected(scalar_expr, column.type);
                                     result_schema.push_back(std::move(column));
+                                } else if (!key.path().empty()) {
+                                    result_schema.push_back(
+                                        type_from_t{node->result_alias(), column_type(key.path().front())});
                                 }
                             } else if (scalar_expr->type() == scalar_type::star_expand) {
                                 for (const auto& col : incoming_schema) {
@@ -1429,10 +2367,10 @@ namespace services::dispatcher {
                                 bool from_null = false;
                                 if (scalar_expr->type() == scalar_type::constant && !scalar_expr->params().empty() &&
                                     components::expressions::is_parameter(scalar_expr->params().front())) {
-                                    from_null =
-                                        parameters
-                                            .type(components::expressions::as_parameter(scalar_expr->params().front()))
-                                            .type() == components::types::logical_type::NA;
+                                    const auto slot =
+                                        components::expressions::as_parameter(scalar_expr->params().front());
+                                    from_null = parameters.type(slot).type() == components::types::logical_type::NA;
+                                    RETURN_IF_ERROR(impl::type_output_parameter(context, node, scalar_expr, slot));
                                 }
                                 complex_logical_type out_type = expr->result_type();
                                 if (!expr->key().is_null()) {
@@ -1466,9 +2404,11 @@ namespace services::dispatcher {
                             expr_index++;
                             continue;
                         }
-                        auto& k_ref = scalar_expr->params().empty()
-                                          ? scalar_expr->key()
-                                          : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        auto* k_ref_read = impl::read_column(exprs[expr_index]);
+                        if (k_ref_read == nullptr) {
+                            return impl::column_read_without_a_column(resource);
+                        }
+                        auto& k_ref = *k_ref_read;
                         if (k_ref.storage().empty() || k_ref.storage().back() != "*") {
                             expr_index++;
                             continue;
@@ -1554,8 +2494,15 @@ namespace services::dispatcher {
                             context.function_registry,
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
-                            context.column_uses};
-                        auto& operand = std::get<expression_ptr>(scalar_expr->params().front());
+                            context.column_uses,
+                            context.parameter_types};
+                        if (!components::expressions::is_expr(scalar_expr->params().front()) ||
+                            !components::expressions::as_expr(scalar_expr->params().front())) {
+                            return core::error_t(
+                                core::error_code_t::protocol_violation,
+                                std::pmr::string{"GROUP BY key holds an operand that is not an expression", resource});
+                        }
+                        auto& operand = components::expressions::as_expr(scalar_expr->params().front());
                         if (auto error = validation::resolve_expression(operand, key_context); error.contains_error()) {
                             return error;
                         }
@@ -1586,6 +2533,7 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
                             context.column_uses,
+                            context.parameter_types,
                             nullptr,
                             keys};
                         expression_ptr expression{scalar_expr};
@@ -1612,6 +2560,7 @@ namespace services::dispatcher {
                                                          components::compute::function_type_t::aggregate,
                                                          components::compute::function_type_t::expand),
                         context.column_uses,
+                        context.parameter_types,
                         nullptr,
                         &group_keys};
                     for (auto& expr : node_group->expressions()) {
@@ -1639,6 +2588,14 @@ namespace services::dispatcher {
 
                     size_t select_end = node_group->expressions().size() - node_group->internal_aggregate_count;
                     named_schema key_schema(resource);
+                    std::pmr::vector<impl::group_output_t> group_outputs(resource);
+                    auto shows = [&](const expression_ptr& expr, const column_path* source) {
+                        const bool reads_input =
+                            source != nullptr && !source->empty() && source->front() < incoming_schema.size();
+                        group_outputs.push_back(
+                            impl::group_output_t{reads_input ? column_path{*source, resource} : column_path{resource},
+                                                 expr});
+                    };
                     std::vector<size_t> post_agg_indices;
                     std::vector<size_t> agg_result_positions;
 
@@ -1647,10 +2604,11 @@ namespace services::dispatcher {
                         if (expr->group() == expression_group::scalar) {
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                auto& key = *key_read;
                                 auto res = validation::validate_key(resource,
                                                                     key,
                                                                     &grouping_schema,
@@ -1665,7 +2623,7 @@ namespace services::dispatcher {
                                 for (size_t j = 1; j < key.path().size(); j++) {
                                     if (!res_type->is_nested()) {
                                         return core::error_t(
-                                            core::error_code_t::schema_error,
+                                            core::error_code_t::wrong_object_type,
 
                                             std::pmr::string{"trying to access field of non-nested type", resource});
                                     } else if (res_type->type() == logical_type::STRUCT) {
@@ -1677,6 +2635,7 @@ namespace services::dispatcher {
                                 auto field_type = *res_type;
                                 name_as_projected(scalar_expr, field_type);
                                 result.emplace_back(type_from_t{node->result_alias(), std::move(field_type)});
+                                shows(expr, &key.path());
                                 key_schema.emplace_back(result.back());
                             } else if (scalar_expr->type() == scalar_type::group_field) {
                                 if (scalar_expr->params().empty()) {
@@ -1694,16 +2653,20 @@ namespace services::dispatcher {
                                 if (scalar_expr->params().empty() ||
                                     !components::expressions::is_parameter(scalar_expr->params().front())) {
                                     return core::error_t(
-                                        core::error_code_t::invalid_parameter,
+                                        core::error_code_t::protocol_violation,
                                         std::pmr::string{"constant in a grouped projection carries no parameter",
                                                          resource});
                                 }
-                                complex_logical_type constant_type = parameters.type(
-                                    components::expressions::as_parameter(scalar_expr->params().front()));
+                                const auto slot = components::expressions::as_parameter(scalar_expr->params().front());
+                                RETURN_IF_ERROR(impl::type_output_parameter(context, node, scalar_expr, slot));
+                                complex_logical_type constant_type = validation::is_stamped(scalar_expr->result_type())
+                                                                         ? scalar_expr->result_type()
+                                                                         : parameters.type(slot);
                                 if (!scalar_expr->key().is_null()) {
                                     constant_type.set_alias(scalar_expr->key().as_string());
                                 }
                                 result.emplace_back(type_from_t{node->result_alias(), constant_type});
+                                shows(expr, nullptr);
                                 key_schema.emplace_back(result.back());
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
                                 auto res = impl::resolve_key_paths_in_group(resource,
@@ -1718,6 +2681,7 @@ namespace services::dispatcher {
                                         return compute_type_error;
                                     }
                                     result.emplace_back(entry);
+                                    shows(expr, nullptr);
                                     key_schema.emplace_back(entry);
                                 }
                             }
@@ -1733,7 +2697,8 @@ namespace services::dispatcher {
                                 context.function_registry,
                                 context.execution_context,
                                 components::compute::create_mask(components::compute::function_type_t::aggregate),
-                                context.column_uses};
+                                context.column_uses,
+                                context.parameter_types};
                             if (auto error = validation::resolve_expression(expr, aggregate_context);
                                 error.contains_error()) {
                                 return error;
@@ -1743,8 +2708,17 @@ namespace services::dispatcher {
                                 if (!agg_expr->key().is_null()) {
                                     result.back().type.set_alias(agg_expr->key().as_string());
                                 }
+                                shows(expr, nullptr);
                                 agg_result_positions.push_back(result.size() - 1);
                             }
+                        } else if (expr->group() == expression_group::function) {
+                            auto type = expr->result_type();
+                            if (!expr->key().is_null()) {
+                                type.set_alias(expr->key().as_string());
+                            }
+                            result.emplace_back(type_from_t{node->result_alias(), std::move(type)});
+                            shows(expr, nullptr);
+                            key_schema.emplace_back(result.back());
                         } else {
                             // TODO: add check to validate schema, if assert is triggered
                             assert(false);
@@ -1773,6 +2747,7 @@ namespace services::dispatcher {
                             return compute_type_error;
                         }
                         result.emplace_back(entry);
+                        shows(expr, nullptr);
                     }
 
                     if (node_select) {
@@ -1783,10 +2758,11 @@ namespace services::dispatcher {
                             }
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                auto& key = *key_read;
                                 if (key.path().empty()) {
                                     auto res = validation::validate_key(resource,
                                                                         key,
@@ -1832,39 +2808,21 @@ namespace services::dispatcher {
                                        children.end());
                         node_select = nullptr;
                     }
-                }
-                if (node_sort) {
-                    for (auto& sort_child : node_sort->expressions()) {
-                        if (sort_child->group() != expression_group::sort) {
-                            continue;
-                        }
-                        auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
-                        if (!components::expressions::is_key(sort_expr->operand())) {
-                            continue;
-                        }
-                        auto& skey = components::expressions::as_key(sort_expr->operand());
-                        auto field_in_result = validation::find_types(resource, skey, result, context.column_uses);
-                        if (!field_in_result.has_error() && !field_in_result.value().empty()) {
-                            continue;
-                        }
-                        auto field = validation::find_types(resource, skey, incoming_schema, context.column_uses);
-                        if (!field.has_error() && !field.value().empty()) {
-                            auto hidden_expr = make_scalar_expression(resource, scalar_type::get_field, skey);
-                            node_group->append_expression(hidden_expr);
-                            result.emplace_back(type_from_t{node->result_alias(), field.value().front().type});
-                        }
-                    }
-                    auto res = impl::validate_schema(context, node_sort, result, parameters);
-                    if (res.has_error()) {
-                        return res;
-                    }
-                }
-                if (!aggregate_node->distinct_on_keys().empty()) {
-                    for (auto& on_key : aggregate_node->distinct_on_keys()) {
-                        auto r = validation::find_types(resource, on_key, result, context.column_uses);
-                        if (r.has_error()) {
-                            return r.convert_error<named_schema>();
-                        }
+                    RETURN_IF_ERROR(impl::bind_grouped_order(context,
+                                                             node,
+                                                             aggregate_node,
+                                                             node_group,
+                                                             node_sort,
+                                                             node_select,
+                                                             incoming_schema,
+                                                             grouping_schema,
+                                                             group_keys,
+                                                             result,
+                                                             group_outputs,
+                                                             parameters));
+                    drop_sort_without_keys();
+                    if (node_sort) {
+                        RETURN_IF_ERROR(impl::check_order_keys_bound(resource, node_sort));
                     }
                 }
                 if (node_having && !node_having->expressions().empty()) {
@@ -1878,13 +2836,18 @@ namespace services::dispatcher {
                     }
                 }
                 // cleanup of group output schema
-                if (node_group && node_select) {
+                if (node_group) {
                     std::pmr::vector<complex_logical_type> group_types(resource);
                     group_types.reserve(result.size());
                     for (const auto& column : result) {
                         group_types.push_back(column.type);
                     }
                     node_group->set_output_types(std::move(group_types));
+                }
+                if (node_group && !node_select && aggregate_node->output_width() > 0) {
+                    result.erase(result.begin() + static_cast<ptrdiff_t>(aggregate_node->output_width()), result.end());
+                }
+                if (node_group && node_select) {
                     named_schema projected(resource);
                     projected.reserve(node_select->expressions().size());
                     for (const auto& expr : node_select->expressions()) {
@@ -1898,9 +2861,11 @@ namespace services::dispatcher {
                             projected.push_back(std::move(entry));
                             continue;
                         }
-                        const auto& key = scalar_expr->params().empty()
-                                              ? scalar_expr->key()
-                                              : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        auto* key_read = impl::read_column(expr);
+                        if (key_read == nullptr) {
+                            return impl::column_read_without_a_column(resource);
+                        }
+                        const auto& key = *key_read;
                         auto entry = result[key.path().front()];
                         for (size_t depth = 1; depth < key.path().size(); depth++) {
                             entry.type = entry.type.type() == logical_type::STRUCT
@@ -1934,18 +2899,18 @@ namespace services::dispatcher {
                                              "(not yet supported)",
                                              resource});
                     }
-                    function_input.emplace_back(parameters.type(std::get<core::parameter_id_t>(arg)));
+                    function_input.emplace_back(parameters.type(components::expressions::as_parameter(arg)));
                 }
 
                 auto fn_resolved =
                     resolve_function(resource,
                                      *cast_registry,
-                                     context.execution_context,
                                      context.function_registry,
                                      function_node->full_name(),
                                      function_input,
                                      components::compute::create_mask(components::compute::function_type_t::vector,
                                                                       components::compute::function_type_t::expand),
+                                     function_node->scope(),
                                      {});
                 if (fn_resolved.has_error()) {
                     return fn_resolved.convert_error<named_schema>();
@@ -1996,7 +2961,7 @@ namespace services::dispatcher {
                         if (!found) {
                             const std::string written =
                                 key.has_qualifier() ? std::string(key.qualifier()) + "." + full : full;
-                            return core::error_t(core::error_code_t::field_not_exists,
+                            return core::error_t(core::error_code_t::undefined_column,
                                                  std::pmr::string{"column " + written + " does not exist", resource});
                         }
                     }
@@ -2076,16 +3041,6 @@ namespace services::dispatcher {
                         table_schema.emplace_back(type_from_t{target_relname_ins, column.type});
                     }
                 }
-                if (!insert_node->returning().empty() && !table_schema.empty()) {
-                    auto ret_err = impl::resolve_returning_columns(context,
-                                                                   &insert_node->returning(),
-                                                                   &table_schema,
-                                                                   nullptr,
-                                                                   parameters);
-                    if (ret_err.contains_error()) {
-                        return ret_err;
-                    }
-                }
                 // ARRAY/STRUCT/UNION/LIST/MAP crash table_storage_t::adopt_schema (SIGSEGV).
                 auto is_simple_chunk = [&]() {
                     for (const auto& nt : incoming_schema.value()) {
@@ -2102,7 +3057,7 @@ namespace services::dispatcher {
                 };
                 if (is_computed && !is_simple_chunk()) {
                     return core::error_t(
-                        core::error_code_t::schema_error,
+                        core::error_code_t::unimplemented_yet,
                         std::pmr::string{"insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
                                          "are not yet supported on relkind='g' (dynamic-schema) tables",
                                          resource});
@@ -2124,7 +3079,7 @@ namespace services::dispatcher {
                         std::string named =
                             column_name.empty() ? std::string{} : std::string{" \""} + column_name + "\"";
                         return core::error_t(
-                            core::error_code_t::schema_error,
+                            core::error_code_t::indeterminate_datatype,
                             std::pmr::string{"insert_node: INSERT into dynamic-schema table '" + target_relname_ins +
                                                  "': source column " + std::to_string(i + 1) + named +
                                                  " is NULL in every row, so there is no type to create the "
@@ -2138,7 +3093,7 @@ namespace services::dispatcher {
                     }
                     if (insert_node->key_translation().size() != incoming_schema.value().size()) {
                         return core::error_t(
-                            core::error_code_t::schema_error,
+                            core::error_code_t::sql_parse_error,
                             std::pmr::string{insert_arity_disagreement(insert_node->key_translation().size(),
                                                                        incoming_schema.value().size()),
                                              resource});
@@ -2168,7 +3123,7 @@ namespace services::dispatcher {
                 // VALUES without a column list names its columns by position only; a dynamic-schema table
                 // takes its column names from the INSERT.
                 if (is_computed && !insert_node->deferred_cells().empty()) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::datatype_mismatch,
                                          std::pmr::string{"INSERT into dynamic-schema table \"" + target_relname_ins +
                                                               "\": a column holds values of differing types, so "
                                                               "there is no declared type to coerce them to",
@@ -2176,7 +3131,7 @@ namespace services::dispatcher {
                 }
                 if (is_computed && insert_node->key_translation().empty() &&
                     node->children().front()->type() == node_type::data_t) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::unimplemented_yet,
                                          std::pmr::string{"INSERT into dynamic-schema table \"" + target_relname_ins +
                                                               "\" needs a column list: its columns are named "
                                                               "by the INSERT",
@@ -2185,7 +3140,7 @@ namespace services::dispatcher {
                 if (table_schema.empty()) {
                     // Must stay relkind='r' (test_persistence::zero_column_regular_table_stays_regular).
                     if (!is_computed) {
-                        return core::error_t(core::error_code_t::schema_error,
+                        return core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"insert_node: table '" + target_relname_ins +
                                                                   "' has no columns; INSERT needs at least one column",
                                                               resource});
@@ -2219,11 +3174,6 @@ namespace services::dispatcher {
                             return key_res.convert_error<named_schema>();
                         }
                     }
-                    std::pmr::unordered_set<size_t> unchecked_columns(resource);
-                    for (size_t i = 0; i < table_schema.size(); i++) {
-                        unchecked_columns.emplace(i);
-                    }
-
                     const bool source_is_raw_values = node->children().front()->type() == node_type::data_t;
                     components::logical_plan::insert_column_bindings_t bindings(insert_node->resource());
                     bindings.reserve(incoming_schema.value().size());
@@ -2238,7 +3188,7 @@ namespace services::dispatcher {
                                 return key.as_string() == written_name;
                             });
                             if (key_it == keys.end()) {
-                                return core::error_t(core::error_code_t::schema_error,
+                                return core::error_t(core::error_code_t::undefined_column,
                                                      std::pmr::string{"insert_node: VALUES column '" + written_name +
                                                                           "' is not in the INSERT column list",
                                                                       resource});
@@ -2249,7 +3199,6 @@ namespace services::dispatcher {
                                            ? i
                                            : insert_node->key_translation()[key_pos].path().front();
                         const auto& corresponding_table_type = table_schema[index].type;
-                        unchecked_columns.erase(index);
                         const auto& incoming_type = incoming_schema.value()[i].type;
 
                         std::string target_name = insert_node->key_translation().empty()
@@ -2266,7 +3215,7 @@ namespace services::dispatcher {
                                                                components::casts::cast_type::assignment);
                             if (!cast.has_value()) {
                                 return core::error_t(
-                                    core::error_code_t::conversion_failure,
+                                    core::error_code_t::datatype_mismatch,
                                     std::pmr::string{"insert_node: column '" + tbl_ins->columns[index].attname +
                                                          "' is of type " +
                                                          components::catalog::describe_type(corresponding_table_type) +
@@ -2275,82 +3224,59 @@ namespace services::dispatcher {
                                                          "; no cast between them may be applied on assignment",
                                                      resource});
                             }
-                            binding.cast = std::move(cast.value());
+                            binding.cast = std::move(*cast);
                         }
                         bindings.emplace_back(std::move(binding));
                     }
                     insert_node->set_column_bindings(std::move(bindings));
 
                     // Each deferred cell is cast to the TABLE column's type by assignment, as PostgreSQL's
-                    // transformInsertRow does. A cell of type text only reaches a non-text column through an
-                    // unknown (quoted) literal; `x::text` has no assignment cast to it.
-                    std::pmr::unordered_set<std::uint64_t> deferred_positions(resource);
+                    // transformInsertRow does.
                     for (auto& cell : insert_node->deferred_cells()) {
                         if (cell.column >= insert_node->column_bindings().size()) {
-                            return core::error_t(core::error_code_t::schema_error,
+                            return core::error_t(core::error_code_t::internal_error,
                                                  std::pmr::string{"insert_node: a deferred VALUES cell points outside "
                                                                   "the INSERT columns",
                                                                   resource});
                         }
-                        deferred_positions.insert(cell.row * incoming_schema.value().size() + cell.column);
                         const auto& binding = insert_node->column_bindings()[cell.column];
-                        const bool text_to_other = !cell.quoted &&
-                                                   cell.value.type().type() == logical_type::STRING_LITERAL &&
-                                                   binding.target_type.type() != logical_type::STRING_LITERAL;
                         if (cell.value.type() == binding.target_type) {
                             continue;
                         }
-                        auto cast = cast_registry->resolve(cell.value.type(),
-                                                           binding.target_type,
-                                                           components::casts::cast_type::assignment);
-                        if (text_to_other || !cast.has_value()) {
+                        auto cast =
+                            cast_registry->resolve_assignment(cell.value.type(), binding.target_type, cell.quoted);
+                        if (!cast.has_value()) {
                             return core::error_t(
-                                core::error_code_t::conversion_failure,
+                                core::error_code_t::datatype_mismatch,
                                 std::pmr::string{"column \"" + std::string(binding.target_name) + "\" is of type " +
                                                      components::catalog::format_type_be(binding.target_type, false) +
                                                      " but expression is of type " +
                                                      components::catalog::format_type_be(cell.value.type(), false),
                                                  resource});
                         }
-                        cell.cast = std::move(cast.value());
+                        cell.cast = std::move(*cast);
                     }
-
-                    if (source_is_raw_values && tbl_ins) {
-                        const auto* dat = reinterpret_cast<const node_data_t*>(node->children().front().get());
-                        const auto& chunk = dat->data_chunk();
-                        const auto& cat_cols = tbl_ins->columns;
-                        for (size_t ci = 0; ci < incoming_schema.value().size(); ++ci) {
-                            size_t tbl_idx = insert_node->column_bindings()[ci].target_index;
-                            if (tbl_idx >= cat_cols.size() || !cat_cols[tbl_idx].attnotnull)
-                                continue;
-                            for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-                                if (!chunk.data[ci].validity().row_is_valid(row) &&
-                                    !deferred_positions.contains(row * incoming_schema.value().size() + ci)) {
-                                    return core::error_t{
-                                        core::error_code_t::schema_error,
-                                        std::pmr::string{("insert_node: NULL value for NOT NULL column '" +
-                                                          cat_cols[tbl_idx].attname + "'")
-                                                             .c_str(),
-                                                         resource}};
-                                }
-                            }
-                        }
+                }
+                // PostgreSQL 18 transforms VALUES before RETURNING and ON CONFLICT: a $n of a VALUES column has
+                // its type there (analyze.c:830-984, then :1040 and :1237).
+                RETURN_IF_ERROR(impl::type_values_parameters(context, insert_node));
+                if (!insert_node->returning().empty() && !table_schema.empty()) {
+                    auto ret_err = impl::resolve_returning_columns(context,
+                                                                   &insert_node->returning(),
+                                                                   &table_schema,
+                                                                   nullptr,
+                                                                   parameters);
+                    if (ret_err.contains_error()) {
+                        return ret_err;
                     }
-
-                    if (!unchecked_columns.empty()) {
-                        const auto& cat_columns =
-                            tbl_ins ? tbl_ins->columns
-                                    : std::vector<components::logical_plan::resolved_column_metadata_t>{};
-                        for (auto index : unchecked_columns) {
-                            if (!cat_columns[index].atthasdefault && cat_columns[index].attnotnull) {
-                                return core::error_t(
-                                    core::error_code_t::schema_error,
-                                    std::pmr::string{"insert_node: can not fill column \'" +
-                                                         cat_columns[index].attname +
-                                                         "\', because it lacks a default value and do not except null",
-                                                     resource});
-                            }
-                        }
+                    if (context.returning != nullptr) {
+                        VALUE_OR_RETURN(*context.returning,
+                                        impl::returning_schema(context,
+                                                               node,
+                                                               insert_node->returning(),
+                                                               &table_schema,
+                                                               nullptr,
+                                                               parameters));
                     }
                 }
             }
@@ -2398,11 +3324,10 @@ namespace services::dispatcher {
                                 continue;
                             }
                             const auto& storage = expr->key().storage();
-                            // storage.at(0) is safe: is_null() above already skipped empty-key SETs.
-                            const std::string column_name(storage.at(0).data(), storage.at(0).size());
+                            const std::string column_name(storage.front().data(), storage.front().size());
                             if (live_columns.find(column_name) == live_columns.end()) {
                                 return core::error_t{
-                                    core::error_code_t::schema_error,
+                                    core::error_code_t::undefined_column,
                                     std::pmr::string{
                                         ("UPDATE on dynamic-schema (relkind='g') table '" + target_relname +
                                          "' references column '" + column_name +
@@ -2452,7 +3377,7 @@ namespace services::dispatcher {
                     }
                 } else {
                     return core::error_t(
-                        core::error_code_t::schema_error,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"update_node: invalid node, node_match is not present", resource});
                 }
                 if (node->type() == node_type::update_t) {
@@ -2475,6 +3400,7 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
                             context.column_uses,
+                            context.parameter_types,
                             source_schema};
                         if (auto error = validation::resolve_expression(expr, assignment_context);
                             error.contains_error()) {
@@ -2482,6 +3408,7 @@ namespace services::dispatcher {
                         }
 
                         const auto& target_type = target_res.value().front().type;
+                        RETURN_IF_ERROR(impl::assign_parameter(context, expr, target_type));
 
                         const auto& value_type = expr->result_type();
                         if (value_type.type() != logical_type::INVALID && value_type != target_type) {
@@ -2490,7 +3417,7 @@ namespace services::dispatcher {
                                                                components::casts::cast_type::assignment);
                             if (!cast.has_value()) {
                                 return core::error_t(
-                                    core::error_code_t::conversion_failure,
+                                    core::error_code_t::datatype_mismatch,
                                     std::pmr::string{("update_node: column '" + expr->key().as_string() +
                                                       "' is of type " +
                                                       components::catalog::describe_type(target_type) +
@@ -2504,7 +3431,7 @@ namespace services::dispatcher {
                                 components::expressions::make_cast_expression(resource,
                                                                               param_storage{expr},
                                                                               target_type,
-                                                                              cast.value(),
+                                                                              *cast,
                                                                               components::casts::cast_kind::cast);
                             conversion->key() = expr->key();
                             expr = components::expressions::expression_ptr{conversion.get()};
@@ -2525,12 +3452,22 @@ namespace services::dispatcher {
                     if (ret_err.contains_error()) {
                         return ret_err;
                     }
+                    if (context.returning != nullptr) {
+                        VALUE_OR_RETURN(*context.returning,
+                                        impl::returning_schema(context,
+                                                               node,
+                                                               *returning,
+                                                               &table_schema,
+                                                               has_join ? &incoming_schema : nullptr,
+                                                               parameters));
+                    }
                 }
                 return result;
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
-                if (components::catalog::is_catalog_table(idx_node->table_oid())) {
+                if (idx_node->table_metadata() != nullptr &&
+                    components::catalog::in_system_schema(idx_node->table_metadata()->namespace_oid)) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"cannot create an index on a system catalog table", resource});
@@ -2543,7 +3480,7 @@ namespace services::dispatcher {
 
                 named_schema table_schema{resource};
                 if (tbl_idx && tbl_idx->relkind == 'g' && tbl_idx->columns.empty()) {
-                    return core::error_t{core::error_code_t::index_create_fail,
+                    return core::error_t{core::error_code_t::undefined_column,
                                          "CREATE INDEX requires at least one column registered on the table; "
                                          "INSERT data first to register a schema on this dynamic-schema "
                                          "(relkind='g') table."};
@@ -2568,7 +3505,7 @@ namespace services::dispatcher {
                         if (ordered_index && key_type.type() == components::types::logical_type::DECIMAL) {
                             message += " in an ordered index (USING hash carries DECIMAL)";
                         }
-                        return core::error_t{core::error_code_t::index_create_fail,
+                        return core::error_t{core::error_code_t::undefined_object,
                                              std::pmr::string{message.c_str(), resource}};
                     }
                 }
@@ -2603,7 +3540,8 @@ namespace services::dispatcher {
                                                                     context.function_registry,
                                                                     context.execution_context,
                                                                     check_expr_allowed_functions(),
-                                                                    context.column_uses};
+                                                                    context.column_uses,
+                                                                    context.parameter_types};
                 constraint_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                 bool saw_reduction = false;
                 if (auto error = validation::resolve_expression(expression, constraint_context, &saw_reduction);
@@ -2612,7 +3550,7 @@ namespace services::dispatcher {
                 }
                 if (saw_reduction) {
                     return core::error_t(
-                        core::error_code_t::invalid_constraint,
+                        core::error_code_t::grouping_error,
                         std::pmr::string{"CHECK constraint \"" + constraint_node->name().t +
                                              "\" uses an aggregate; a CHECK is evaluated for one row at a time",
                                          resource});

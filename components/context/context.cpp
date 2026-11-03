@@ -9,7 +9,8 @@ namespace components::pipeline {
         : parameters(init_parameters.clone(init_parameters.resource()))
         , disk_address(std::move(disk))
         , index_address(std::move(index))
-        , wal_address(std::move(wal)) {}
+        , wal_address(std::move(wal))
+        , applied_settings(init_parameters.resource()) {}
 
     context_t::context_t(session::session_id_t session,
                          actor_zeta::address_t address,
@@ -26,6 +27,7 @@ namespace components::pipeline {
         , disk_address(std::move(disk))
         , index_address(std::move(index))
         , wal_address(std::move(wal))
+        , applied_settings(init_parameters.resource())
         , address_(std::move(address)) {}
 
 } // namespace components::pipeline

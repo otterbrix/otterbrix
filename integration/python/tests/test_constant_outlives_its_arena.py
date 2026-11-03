@@ -1,13 +1,12 @@
 """A constant's bytes are pmr-allocated out of the ENGINE's arena, so the map that keeps
-them must be destroyed BEFORE the space that owns that arena.
+them must be destroyed BEFORE the arena.
 
-`ConstantExpression("OH", conn)` builds a one-row vector on
-`conn.space_ptr()->dispatcher()->resource()` and hands it to
-`expression_factory_t::add_value`, which stores it in the member map `values`. That member map
-and the `boost::intrusive_ptr<otterbrix_t> space` that owns the arena live side by side in
-expression_factory_t, and members are destroyed in REVERSE declaration order: `space` was
-declared last, so the arena went first and the map freed its strings into a memory_resource
-that no longer existed.
+`ConstantExpression("OH", conn)` builds a one-row vector on the engine arena
+(`base_otterbrix_t::arena()`) and hands it to `expression_factory_t::add_value`, which stores it
+in the member map `values`. That member map and the arena pointer live side by side in
+expression_factory_t, and members are destroyed in REVERSE declaration order: when the engine
+holder was declared last, the arena went first and the map freed its strings into a
+memory_resource that no longer existed.
 
     EXC_BAD_ACCESS (code=1, address=0x18)
       std::pmr::memory_resource::deallocate(this=0x100c55f48, __p=0x5b61484c0, __bytes=24, __align=8)
@@ -15,11 +14,10 @@ that no longer existed.
       otterbrix::expression_factory_t::~expression_factory_t
       Python`finalize_modules / _Py_Finalize
 
-There is a second half, reached by close(): close() nulls expression_factory_t's own space
-and deliberately leaves relation_factory_t's alive, so after a close the last reference to
-the arena is relation_factory_t's -- and py_connection_t listed expression_factory_t as its
-FIRST base, which under reverse-order base destruction made it the LAST to die. Same crash,
-one level up. Both halves are fixed by declaring the space-holder first.
+There was a second half, reached by close(), while close() still nulled expression_factory_t's
+own engine pointer: the last reference to the arena was then relation_factory_t's, destroyed
+first. Now each factory holds the arena itself and close() takes neither away, so the arena
+goes with the last of them.
 
 Only a constant whose payload actually allocates is affected: `ConstantExpression(7, conn)`
 stores an integer inline and exits cleanly, `ConstantExpression("OH", conn)` stored a string

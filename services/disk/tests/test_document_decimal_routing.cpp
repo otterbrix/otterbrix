@@ -20,6 +20,7 @@
 #include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -48,12 +49,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{dec_dir()};
                 c.path = dec_dir();
                 return c;
             }())
@@ -65,7 +67,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(dec_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             manager.reset();
@@ -121,18 +123,23 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
     auto table_oid = test_create_computing_table(fx, ns_oid, "docs");
     REQUIRE(table_oid >= catalog::FIRST_USER_OID);
     std::vector<components::table::column_definition_t> no_columns;
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              no_columns,
-              /*is_computed=*/true);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  no_columns,
+                  /*is_computed=*/true)
+            .has_error());
 
     {
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
                                   table_oid,
-                                  decimal_batch(&fx.resource, 10, 2, "x", 150));
+                                  std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                  decimal_batch(&fx.resource, 10, 2, "x", 150),
+                                  false);
         REQUIRE_FALSE(appended.has_error());
         REQUIRE(appended.value().count == 1);
     }
@@ -141,7 +148,9 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
                                   table_oid,
-                                  decimal_batch(&fx.resource, 12, 4, "x", 27182));
+                                  std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                  decimal_batch(&fx.resource, 12, 4, "x", 27182),
+                                  false);
         REQUIRE(appended.has_error());
     }
 
@@ -150,7 +159,9 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
                                   table_oid,
-                                  decimal_batch(&fx.resource, 10, 2, "x", 275));
+                                  std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                  decimal_batch(&fx.resource, 10, 2, "x", 275),
+                                  false);
         REQUIRE_FALSE(appended.has_error());
         REQUIRE(appended.value().start_row == 1);
         REQUIRE(appended.value().count == 1);
@@ -168,18 +179,23 @@ TEST_CASE("services::disk::document_decimal::regular_table_refuses_parameterizat
     }
     auto table_oid = test_create_table(fx, ns_oid, "prices", cols);
     REQUIRE(table_oid >= catalog::FIRST_USER_OID);
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
 
     {
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
                                   table_oid,
-                                  decimal_batch(&fx.resource, 10, 2, "x", 999));
+                                  std::pmr::vector<catalog::oid_t>(cols.size(), catalog::INVALID_OID, &fx.resource),
+                                  decimal_batch(&fx.resource, 10, 2, "x", 999),
+                                  false);
         REQUIRE_FALSE(appended.has_error());
     }
 
@@ -187,7 +203,9 @@ TEST_CASE("services::disk::document_decimal::regular_table_refuses_parameterizat
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
                                   table_oid,
-                                  decimal_batch(&fx.resource, 12, 4, "x", 12345));
+                                  std::pmr::vector<catalog::oid_t>(cols.size(), catalog::INVALID_OID, &fx.resource),
+                                  decimal_batch(&fx.resource, 12, 4, "x", 12345),
+                                  false);
         REQUIRE(appended.has_error());
     }
 }

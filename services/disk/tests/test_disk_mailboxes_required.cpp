@@ -23,5 +23,6 @@ namespace {
 // constructor argument and must arrive via set_manager_wal_sync instead.
 TEST_CASE("services::disk::manager_disk_t::a disk manager has no bootstrap sync bundle") {
     CHECK_FALSE(has_bootstrap_sync<manager_disk_t>);
-    CHECK(has_wal_setter<manager_disk_t>);
+    CHECK(has_wal_setter<manager_disk_t::bootstrap_t>);
+    CHECK_FALSE(has_wal_setter<manager_disk_t>);
 }

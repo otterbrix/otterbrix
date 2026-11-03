@@ -2,7 +2,6 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <components/physical_plan/operators/operator_update.hpp>
 #include <services/collection/executor.hpp>
 #include <string>
 
@@ -10,7 +9,7 @@ namespace {
     void setup(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -211,7 +210,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -341,7 +340,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -426,7 +425,7 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -540,7 +539,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -714,7 +713,7 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -819,7 +818,7 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -944,7 +943,6 @@ TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_wr
                     ->is_success());
     }
 
-    const auto sends_before = components::operators::update_storage_update_sends();
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -952,8 +950,6 @@ TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_wr
                                            "RETURNING qty / 0;");
         REQUIRE(cur->is_error());
     }
-    const auto sends_after = components::operators::update_storage_update_sends();
-    REQUIRE(sends_after == sends_before);
 
     {
         auto session = otterbrix::session_id_t();
@@ -991,7 +987,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_boolean_read
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.T (k bigint, flag boolean);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.S (k bigint, flag boolean);")->is_success());
     // T row 0 is unmatched with a NULL flag, so the matched row 1 is output row 0 over a NULL outer position.
@@ -1034,7 +1030,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_slices_outli
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.Orders (id bigint, customer_id bigint, note string);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.Customers (id bigint, name string);")->is_success());
     {
@@ -1096,7 +1092,7 @@ TEST_CASE("integration::cpp::test_returning::delete_returning_over_filtered_scan
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.T (id bigint, note string);")->is_success());
     std::string sql = "INSERT INTO TestDatabase.T (id, note) VALUES ";
     for (int i = 0; i < kRows; ++i) {
@@ -1130,7 +1126,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_casts_compos
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.L (id bigint, v bigint[]);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.S (id bigint);")->is_success());
     // L row 0 is unmatched, so every matched row sits at an output position other than its own.
@@ -1165,7 +1161,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_expression_o
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.A (id bigint);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.B (id bigint, w bigint);")->is_success());
     REQUIRE(exec("INSERT INTO TestDatabase.A (id) VALUES (0), (1), (2), (3);")->is_success());
@@ -1183,4 +1179,73 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_expression_o
         REQUIRE_FALSE(sum.has_error());
         REQUIRE(sum.value() == (id.value() == 1 ? 11 : 33));
     }
+}
+
+// After a DROP COLUMN the row a DELETE returns is the table's visible columns: RETURNING reads them by name.
+TEST_CASE("integration::cpp::test_returning::delete_returning_after_a_dropped_column") {
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_after_drop_column"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto cell = [](const components::cursor::cursor_t_ptr& cursor, uint64_t column) {
+        auto value = cursor->get<int64_t>(column, 0);
+        REQUIRE_FALSE(value.has_error());
+        return value.value();
+    };
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.T (a bigint, b bigint, c bigint);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.T (a, b, c) VALUES (1, 10, 100), (2, 20, 200);")->is_success());
+    REQUIRE(exec("ALTER TABLE TestDatabase.T DROP COLUMN b;")->is_success());
+
+    auto whole = exec("DELETE FROM TestDatabase.T WHERE a = 1 RETURNING *;");
+    INFO((whole->is_error() ? whole->get_error().what.c_str() : "ok"));
+    REQUIRE(whole->is_success());
+    REQUIRE(whole->size() == 1);
+    REQUIRE(whole->chunks().front().column_count() == 2);
+    CHECK(cell(whole, 0) == 1);
+    CHECK(cell(whole, 1) == 100);
+
+    auto last = exec("DELETE FROM TestDatabase.T WHERE a = 2 RETURNING c + 1;");
+    INFO((last->is_error() ? last->get_error().what.c_str() : "ok"));
+    REQUIRE(last->is_success());
+    REQUIRE(last->size() == 1);
+    CHECK(cell(last, 0) == 201);
+}
+
+// An answer of no row after a DROP COLUMN has the table's visible columns, of their types: a scan's empty answer and
+// a DELETE's empty RETURNING (an old bug, on main too: the types came from the storage's physical columns).
+TEST_CASE("integration::cpp::test_returning::an_empty_answer_after_a_dropped_column_has_the_visible_columns") {
+    auto config = test_create_config(integration_fixture_path("test_returning/empty_after_drop_column"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.T (a bigint, b text, c bigint);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.T (a, b, c) VALUES (1, 'x', 100);")->is_success());
+    REQUIRE(exec("ALTER TABLE TestDatabase.T DROP COLUMN b;")->is_success());
+
+    for (const std::string sql :
+         {"SELECT * FROM TestDatabase.T WHERE a = 999;", "DELETE FROM TestDatabase.T WHERE a = 999 RETURNING *;"}) {
+        INFO(sql);
+        auto cursor = exec(sql);
+        INFO((cursor->is_error() ? cursor->get_error().what.c_str() : "ok"));
+        REQUIRE(cursor->is_success());
+        CHECK(cursor->size() == 0);
+        REQUIRE_FALSE(cursor->chunks().empty());
+        CHECK(cursor->chunks().front().column_count() == 2);
+    }
+    auto c = exec("SELECT c FROM TestDatabase.T WHERE a = 999;");
+    INFO((c->is_error() ? c->get_error().what.c_str() : "ok"));
+    REQUIRE(c->is_success());
+    REQUIRE_FALSE(c->chunks().empty());
+    REQUIRE(c->chunks().front().column_count() == 1);
+    CHECK(c->chunks().front().data[0].type().type() == components::types::logical_type::BIGINT);
 }

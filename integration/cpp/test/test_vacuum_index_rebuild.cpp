@@ -136,7 +136,7 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE vdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA vdb;")->is_success());
     REQUIRE(exec("CREATE TABLE vdb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX k_idx ON vdb.t (k);")->is_success());
     load(d, "vdb");
@@ -185,7 +185,7 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::a_compacting_checkpoint_still
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cdb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX k_idx ON cdb.t (k);")->is_success());
     load(d, "cdb");
@@ -226,7 +226,7 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::what_a_vacuum_costs_on_an_ind
 
     constexpr int64_t kCostRows = 20000;
 
-    REQUIRE(exec("CREATE DATABASE pdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA pdb;")->is_success());
     REQUIRE(exec("CREATE TABLE pdb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX k_idx ON pdb.t (k);")->is_success());
     for (int64_t start = 1; start <= kCostRows; start += 1000) {

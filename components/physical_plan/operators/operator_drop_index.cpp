@@ -33,7 +33,7 @@ namespace components::operators {
             msg += catalog_deletes_.empty() ? " arrived with no catalog delete specs"
                                             : " cannot be scrubbed: no disk service is wired";
             msg += " — nothing this statement could verify as dropped";
-            set_error(core::error_t{core::error_code_t::index_not_exists, std::pmr::string{std::move(msg), resource_}});
+            set_error(core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
             mark_failed();
             co_return;
         }
@@ -97,7 +97,7 @@ namespace components::operators {
                     msg += std::to_string(static_cast<unsigned>(index_oid_));
                     msg += " was deleted — the index is still in the catalog";
                     set_error(
-                        core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+                        core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
                     mark_failed();
                     co_return;
                 }

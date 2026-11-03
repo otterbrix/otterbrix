@@ -21,5 +21,4 @@ namespace otterbrix {
     [[nodiscard]] auto make_otterbrix(const configuration::config& config) -> core::result_wrapper_t<otterbrix_ptr>;
     // For benchmarks and tools: a refused start prints the reason and exits the process.
     [[nodiscard]] auto make_otterbrix_or_exit(const configuration::config& config) -> otterbrix_ptr;
-    auto execute_sql(const otterbrix_ptr& otterbrix, const std::string& query) -> components::cursor::cursor_t_ptr;
 } // namespace otterbrix

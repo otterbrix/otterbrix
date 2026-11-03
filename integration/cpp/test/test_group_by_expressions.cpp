@@ -60,7 +60,7 @@ namespace {
 
     template<typename Dispatcher>
     void seed_table(Dispatcher* dispatcher) {
-        REQUIRE(succeeds(dispatcher, "CREATE DATABASE g;"));
+        REQUIRE(succeeds(dispatcher, "CREATE SCHEMA g;"));
         REQUIRE(succeeds(dispatcher, "CREATE TABLE g.t (id BIGINT, a BIGINT, b BIGINT);"));
         // a+b takes two values: 2 (rows 1,2) and 5 (rows 3,4). a alone takes three.
         REQUIRE(succeeds(dispatcher, "INSERT INTO g.t (id, a, b) VALUES (1,1,1),(2,1,1),(3,2,3),(4,4,1);"));
@@ -213,7 +213,7 @@ TEST_CASE("integration::cpp::group_by_expressions::nested_and_null_keys") {
     auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/nested"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(succeeds(dispatcher, "CREATE DATABASE g;"));
+    REQUIRE(succeeds(dispatcher, "CREATE SCHEMA g;"));
     REQUIRE(succeeds(dispatcher, "CREATE TABLE g.s (id BIGINT, v BIGINT);"));
     REQUIRE(succeeds(dispatcher, "INSERT INTO g.s (id, v) VALUES (1, 1), (2, NULL), (3, 1), (4, NULL);"));
 
@@ -226,7 +226,7 @@ TEST_CASE("integration::cpp::group_by_expressions::more_groups_than_one_chunk") 
     auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/many"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(succeeds(dispatcher, "CREATE DATABASE g;"));
+    REQUIRE(succeeds(dispatcher, "CREATE SCHEMA g;"));
     REQUIRE(succeeds(dispatcher, "CREATE TABLE g.big (id BIGINT, v BIGINT);"));
     // 3000 distinct keys: past DEFAULT_VECTOR_CAPACITY, so key blocks grow, the index rehashes,
     // and finalize emits several chunks.

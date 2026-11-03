@@ -50,7 +50,7 @@ TEST_CASE("integration::cpp::auto_checkpoint::the byte threshold starts a round"
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(test_helpers::exec(d, "CREATE DATABASE adb;")->is_success());
+    REQUIRE(test_helpers::exec(d, "CREATE SCHEMA adb;")->is_success());
     REQUIRE(test_helpers::exec(d, "CREATE TABLE adb.pad (id BIGINT, payload TEXT);")->is_success());
 
     int64_t next_id = 1;

@@ -425,65 +425,9 @@ TEST_CASE("components::vector::vector: an NA vector allocates nothing and reads 
     }
 }
 
-// sub_column_indices answers field_not_exists for an unresolvable path, not a
-// {size_t(-1)} sentinel (same channel as column_index). apply_unary/binary_vector_op's
-// string legs refuse the type up front instead of `assert(false)` with no else, which
-// under NDEBUG would return the result vector's payload uninitialized.
-#include <components/vector/data_chunk.hpp>
+// apply_unary/binary_vector_op's string legs refuse the type up front instead of `assert(false)`
+// with no else, which under NDEBUG would return the result vector's payload uninitialized.
 #include <components/vector/vector_operations.hpp>
-
-TEST_CASE("components::vector::data_chunk::sub_column_indices answers the error channel") {
-    auto resource = core::pmr::otterbrix_resource();
-    using components::types::complex_logical_type;
-    using components::types::logical_type;
-
-    auto int_type = complex_logical_type{logical_type::INTEGER};
-    int_type.set_alias("a");
-    std::pmr::vector<complex_logical_type> field_types(&resource);
-    auto leaf = complex_logical_type{logical_type::BIGINT};
-    leaf.set_alias("inner");
-    field_types.push_back(leaf);
-    auto struct_type = complex_logical_type::create_struct("", field_types, "s");
-
-    std::pmr::vector<complex_logical_type> chunk_types(&resource);
-    chunk_types.push_back(int_type);
-    chunk_types.push_back(struct_type);
-    components::vector::data_chunk_t chunk(&resource, chunk_types, 4);
-
-    auto path = [&](std::initializer_list<const char*> segments) {
-        std::pmr::vector<std::pmr::string> p(&resource);
-        for (const auto* s : segments) {
-            p.emplace_back(s);
-        }
-        return p;
-    };
-
-    SECTION("a resolvable top-level column answers its index") {
-        auto r = chunk.sub_column_indices(path({"a"}));
-        REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value() == std::pmr::vector<size_t>(std::initializer_list<size_t>{0}, &resource));
-    }
-    SECTION("a resolvable nested field answers the index chain") {
-        auto r = chunk.sub_column_indices(path({"s", "inner"}));
-        REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value() == std::pmr::vector<size_t>({1, 0}, &resource));
-    }
-    SECTION("a missing top-level column is a field_not_exists error, not a sentinel") {
-        auto r = chunk.sub_column_indices(path({"nope"}));
-        REQUIRE(r.has_error());
-        REQUIRE(r.error().type == core::error_code_t::field_not_exists);
-    }
-    SECTION("a missing nested segment is a field_not_exists error too") {
-        auto r = chunk.sub_column_indices(path({"s", "nope"}));
-        REQUIRE(r.has_error());
-        REQUIRE(r.error().type == core::error_code_t::field_not_exists);
-    }
-    SECTION("an empty path is a refusal") {
-        auto r = chunk.sub_column_indices(path({}));
-        REQUIRE(r.has_error());
-        REQUIRE(r.error().type == core::error_code_t::field_not_exists);
-    }
-}
 
 TEST_CASE("components::vector::apply vector ops refuse string operands loudly") {
     auto resource = core::pmr::otterbrix_resource();

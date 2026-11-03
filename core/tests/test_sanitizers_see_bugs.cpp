@@ -2,6 +2,7 @@
 
 #include <core/config.hpp>
 #include <core/pmr.hpp>
+#include <core/result_wrapper.hpp>
 #include <core/string_buffer/string_buffer.hpp>
 
 #include <atomic>
@@ -37,13 +38,20 @@ extern "C" __attribute__((visibility("default"), used)) const char* __asan_defau
 #if defined(OTTERBRIX_ADDRESS_SANITIZER) || defined(OTTERBRIX_TSAN_ENABLED)
 namespace {
 
-    struct child_outcome_t {
-        int status;
+    struct child_error_t {
+        int exit_code;
+        int signal;
         std::string err;
+
+        static child_error_t no_error() { return child_error_t{0, 0, {}}; }
+        bool contains_error() const noexcept { return exit_code != 0 || signal != 0; }
     };
 
+    // The value is the child's stderr after a clean exit; any other end is the error.
+    using child_result_t = core::result_wrapper_t<std::string, child_error_t>;
+
     // The child leaves through exit(0), not _exit(0): LSan and TSAN report from exit handlers.
-    child_outcome_t run_in_child(void (*body)()) {
+    child_result_t run_in_child(void (*body)()) {
         std::cout.flush();
         std::cerr.flush();
         std::fflush(nullptr);
@@ -60,36 +68,44 @@ namespace {
             std::exit(0);
         }
         ::close(fds[1]);
-        child_outcome_t outcome{0, {}};
+        std::string err;
         char buffer[4096];
         for (;;) {
             const ssize_t n = ::read(fds[0], buffer, sizeof(buffer));
             if (n > 0) {
-                outcome.err.append(buffer, static_cast<std::size_t>(n));
+                err.append(buffer, static_cast<std::size_t>(n));
             } else if (n == 0 || errno != EINTR) {
                 break;
             }
         }
         ::close(fds[0]);
-        REQUIRE(::waitpid(child, &outcome.status, 0) == child);
-        return outcome;
+        int status = 0;
+        REQUIRE(::waitpid(child, &status, 0) == child);
+        if (WIFSIGNALED(status)) {
+            return child_error_t{0, WTERMSIG(status), std::move(err)};
+        }
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            return child_error_t{WEXITSTATUS(status), 0, std::move(err)};
+        }
+        return err;
     }
 
-    // macOS's wait macros cast their argument to int*, so a const status would trip -Wcast-qual.
-    bool exited_with(const child_outcome_t& outcome, int code) {
-        int status = outcome.status;
-        return WIFEXITED(status) && WEXITSTATUS(status) == code;
+    const std::string& stderr_of(const child_result_t& outcome) {
+        return outcome.has_error() ? outcome.error().err : outcome.value();
     }
 
-    bool says(const child_outcome_t& outcome, const char* text) { return outcome.err.find(text) != std::string::npos; }
+    bool exited_with(const child_result_t& outcome, int code) {
+        return outcome.has_error() && outcome.error().signal == 0 && outcome.error().exit_code == code;
+    }
+
+    bool says(const child_result_t& outcome, const char* text) {
+        return stderr_of(outcome).find(text) != std::string::npos;
+    }
 
     volatile char sink = 0;
 
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
-    bool aborted(const child_outcome_t& outcome) {
-        int status = outcome.status;
-        return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
-    }
+    bool aborted(const child_result_t& outcome) { return outcome.has_error() && outcome.error().signal == SIGABRT; }
 
     void use_after_free() {
         core::pmr::otterbrix_resource arena;
@@ -214,7 +230,7 @@ namespace {
 TEST_CASE("core::sanitizers::asan_sees_a_use_after_free") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     const auto outcome = run_in_child(&use_after_free);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(exited_with(outcome, 1));
     CHECK(says(outcome, "AddressSanitizer: heap-use-after-free"));
 #else
@@ -225,7 +241,7 @@ TEST_CASE("core::sanitizers::asan_sees_a_use_after_free") {
 TEST_CASE("core::sanitizers::the_tracer_stops_a_double_free") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     const auto outcome = run_in_child(&double_free);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(aborted(outcome));
     CHECK(says(outcome, "[resource_tracer] deallocate of a block this tracer does not hold"));
 #else
@@ -236,7 +252,7 @@ TEST_CASE("core::sanitizers::the_tracer_stops_a_double_free") {
 TEST_CASE("core::sanitizers::the_tracer_stops_a_free_with_a_foreign_size") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     const auto outcome = run_in_child(&free_with_a_foreign_size);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(aborted(outcome));
     CHECK(says(outcome, "[resource_tracer] deallocate with a size or alignment other than allocated"));
 #else
@@ -247,7 +263,7 @@ TEST_CASE("core::sanitizers::the_tracer_stops_a_free_with_a_foreign_size") {
 TEST_CASE("core::sanitizers::asan_sees_an_overflow_between_arena_blocks") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     const auto outcome = run_in_child(&overflow_between_arena_blocks);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(exited_with(outcome, 1));
     CHECK(says(outcome, "AddressSanitizer: heap-buffer-overflow"));
 #else
@@ -258,19 +274,19 @@ TEST_CASE("core::sanitizers::asan_sees_an_overflow_between_arena_blocks") {
 TEST_CASE("core::sanitizers::asan_sees_an_overflow_between_pieces_of_an_arena") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     const auto between = run_in_child(&overflow_between_pieces_of_an_arena);
-    INFO(between.err);
+    INFO(stderr_of(between));
     CHECK(exited_with(between, 1));
     CHECK(says(between, "AddressSanitizer: use-after-poison"));
     const auto unaligned = run_in_child(&overflow_past_an_unaligned_piece_of_an_arena);
-    INFO(unaligned.err);
+    INFO(stderr_of(unaligned));
     CHECK(exited_with(unaligned, 1));
     CHECK(says(unaligned, "AddressSanitizer: use-after-poison"));
     const auto before_first = run_in_child(&underflow_before_the_first_piece_of_an_arena);
-    INFO(before_first.err);
+    INFO(stderr_of(before_first));
     CHECK(exited_with(before_first, 1));
     CHECK(says(before_first, "AddressSanitizer: use-after-poison"));
     const auto before_aligned = run_in_child(&underflow_before_an_aligned_piece_of_an_arena);
-    INFO(before_aligned.err);
+    INFO(stderr_of(before_aligned));
     CHECK(exited_with(before_aligned, 1));
     CHECK(says(before_aligned, "AddressSanitizer: use-after-poison"));
 #else
@@ -281,7 +297,7 @@ TEST_CASE("core::sanitizers::asan_sees_an_overflow_between_pieces_of_an_arena") 
 TEST_CASE("core::sanitizers::asan_sees_an_overflow_between_strings_of_an_object_buffer") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     const auto outcome = run_in_child(&overflow_between_strings_of_an_object_buffer);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(exited_with(outcome, 1));
     CHECK(says(outcome, "AddressSanitizer: use-after-poison"));
 #else
@@ -292,7 +308,7 @@ TEST_CASE("core::sanitizers::asan_sees_an_overflow_between_strings_of_an_object_
 TEST_CASE("core::sanitizers::lsan_sees_a_block_that_outlives_its_resource") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER) && defined(__linux__)
     const auto outcome = run_in_child(&leak_outliving_its_resource);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(exited_with(outcome, 1));
     CHECK(says(outcome, "LeakSanitizer: detected memory leaks"));
 #else
@@ -303,7 +319,7 @@ TEST_CASE("core::sanitizers::lsan_sees_a_block_that_outlives_its_resource") {
 TEST_CASE("core::sanitizers::tsan_sees_two_writers_into_one_block") {
 #if defined(OTTERBRIX_TSAN_ENABLED)
     const auto outcome = run_in_child(&two_writers_into_one_block);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(exited_with(outcome, 66));
     CHECK(says(outcome, "ThreadSanitizer: data race"));
 #else
@@ -314,7 +330,7 @@ TEST_CASE("core::sanitizers::tsan_sees_two_writers_into_one_block") {
 TEST_CASE("core::sanitizers::tsan_sees_a_read_past_1kb_after_free_in_another_thread") {
 #if defined(OTTERBRIX_TSAN_ENABLED)
     const auto outcome = run_in_child(&read_past_1kb_after_free_in_another_thread);
-    INFO(outcome.err);
+    INFO(stderr_of(outcome));
     CHECK(exited_with(outcome, 66));
     CHECK(says(outcome, "ThreadSanitizer: data race"));
 #else

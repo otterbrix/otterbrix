@@ -16,7 +16,7 @@ namespace otterbrix {
         : base_otterbrix_t(std::move(host)) {}
 
     core::result_wrapper_t<spaces_ptr> spaces::get_instance() {
-        return open_spaces(configuration::config::default_config());
+        return open_spaces(configuration::config::create_config(std::filesystem::current_path()));
     }
 
     core::result_wrapper_t<spaces_ptr> spaces::get_instance(const std::filesystem::path& path) {

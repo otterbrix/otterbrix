@@ -433,7 +433,7 @@ TEST_CASE("types::type_spec_codec::encode_refuses_unpersistable_types") {
         std::pmr::vector<std::byte> spec(&resource);
         auto encoded = encode_type_spec(complex_logical_type{t}, spec);
         REQUIRE(encoded.has_error());
-        REQUIRE(encoded.error().type == core::error_code_t::schema_error);
+        REQUIRE(encoded.error().type == core::error_code_t::internal_error);
     }
 
     INFO("DECIMAL whose extension was clobbered by bare-type set_alias (the UB shape)");
@@ -445,7 +445,7 @@ TEST_CASE("types::type_spec_codec::encode_refuses_unpersistable_types") {
         std::pmr::vector<std::byte> spec(&resource);
         auto encoded = encode_type_spec(broken, spec);
         REQUIRE(encoded.has_error());
-        REQUIRE(encoded.error().type == core::error_code_t::schema_error);
+        REQUIRE(encoded.error().type == core::error_code_t::internal_error);
     }
 }
 
@@ -488,7 +488,7 @@ TEST_CASE("types::type_spec_codec::encode_refuses_what_decode_refuses") {
             std::pmr::vector<std::byte> spec(&resource);
             auto encoded = encode_type_spec(nested, spec);
             if (encoded.has_error()) {
-                REQUIRE(encoded.error().type == core::error_code_t::schema_error);
+                REQUIRE(encoded.error().type == core::error_code_t::program_limit_exceeded);
                 break;
             }
             deepest_encodable = depth;

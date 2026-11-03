@@ -27,7 +27,7 @@ namespace {
     }
 
     void seed_fk_pair(otterbrix::wrapper_dispatcher_t* d) {
-        run_ok(d, "CREATE DATABASE ddr;");
+        run_ok(d, "CREATE SCHEMA ddr;");
         run_ok(d, "CREATE TABLE ddr.parent (id bigint, name text);");
         run_ok(d, "CREATE TABLE ddr.child (id bigint, pid bigint);");
         run_ok(d, "ALTER TABLE ddr.parent ADD CONSTRAINT parent_pk PRIMARY KEY (id);");
@@ -72,7 +72,7 @@ TEST_CASE("integration::cpp::drop_default_restrict::own_dependents_do_not_block"
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE ddr;");
+    run_ok(d, "CREATE SCHEMA ddr;");
     run_ok(d, "CREATE TABLE ddr.solo (id bigint, v text);");
     run_ok(d, "ALTER TABLE ddr.solo ADD CONSTRAINT solo_pk PRIMARY KEY (id);");
     run_ok(d, "CREATE INDEX solo_v_idx ON ddr.solo (v);");
@@ -91,7 +91,7 @@ TEST_CASE("integration::cpp::drop_default_restrict::bare_drop_column_with_index_
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE ddr;");
+    run_ok(d, "CREATE SCHEMA ddr;");
     run_ok(d, "CREATE TABLE ddr.t (a bigint, b bigint);");
     run_ok(d, "CREATE INDEX t_b_idx ON ddr.t (b);");
     run_ok(d, "INSERT INTO ddr.t (a, b) VALUES (1, 2);");
@@ -110,10 +110,29 @@ TEST_CASE("integration::cpp::drop_default_restrict::drop_database_stays_implicit
     auto* d = space.dispatcher();
 
     run_ok(d, "CREATE DATABASE ddr;");
+    run_ok(d, "CREATE TABLE ddr.public.t (a bigint);");
+    run_ok(d, "INSERT INTO ddr.public.t (a) VALUES (1);");
+
+    run_ok(d, "DROP DATABASE ddr;");
+    auto gone = exec(d, "SELECT a FROM ddr.public.t;");
+    CHECK_FALSE(gone->is_success());
+}
+
+// DROP SCHEMA takes the behavior word like DROP TABLE: bare is RESTRICT (PostgreSQL 18).
+TEST_CASE("integration::cpp::drop_default_restrict::drop_schema_needs_cascade", "[dropdefault]") {
+    auto config = make_test_config(fixture_path("drop_schema"));
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    run_ok(d, "CREATE SCHEMA ddr;");
     run_ok(d, "CREATE TABLE ddr.t (a bigint);");
     run_ok(d, "INSERT INTO ddr.t (a) VALUES (1);");
 
-    run_ok(d, "DROP DATABASE ddr;");
+    CHECK(exec(d, "DROP SCHEMA ddr;")->is_error());
+    REQUIRE(run_ok(d, "SELECT a FROM ddr.t;")->size() == 1);
+
+    run_ok(d, "DROP SCHEMA ddr CASCADE;");
     auto gone = exec(d, "SELECT a FROM ddr.t;");
     CHECK_FALSE(gone->is_success());
 }

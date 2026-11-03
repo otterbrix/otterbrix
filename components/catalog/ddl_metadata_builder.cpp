@@ -305,8 +305,10 @@ namespace components::catalog {
         return result;
     }
 
-    std::vector<catalog_write_t>
-    build_create_namespace_writes(std::pmr::memory_resource* resource, const std::string& name, oid_t namespace_oid) {
+    std::vector<catalog_write_t> build_create_namespace_writes(std::pmr::memory_resource* resource,
+                                                               const std::string& name,
+                                                               oid_t namespace_oid,
+                                                               oid_t database_oid) {
         std::vector<catalog_write_t> result;
 
         {
@@ -315,10 +317,43 @@ namespace components::catalog {
                 make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, namespace_oid);
                     set_str(c, 1, 0, name, r);
+                    set_oid(c, 2, 0, database_oid);
                 });
             result.push_back(make_write(pg_namespace_oid, std::move(chunk)));
         }
 
+        {
+            const auto& def = system_table(pg_depend_oid);
+            auto chunk =
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                    set_oid(c, 0, 0, well_known_oid::pg_namespace_table);
+                    set_oid(c, 1, 0, namespace_oid);
+                    set_oid(c, 2, 0, well_known_oid::pg_database_table);
+                    set_oid(c, 3, 0, database_oid);
+                    set_str(c, 4, 0, "n", r);
+                });
+            result.push_back(make_write(pg_depend_oid, std::move(chunk)));
+        }
+
+        return result;
+    }
+
+    std::vector<catalog_write_t> build_create_database_writes(std::pmr::memory_resource* resource,
+                                                              const std::string& name,
+                                                              const std::string& connection,
+                                                              oid_t database_oid) {
+        std::vector<catalog_write_t> result;
+
+        {
+            const auto& def = system_table(well_known_oid::pg_database_table);
+            auto chunk =
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                    set_oid(c, 0, 0, database_oid);
+                    set_str(c, 1, 0, name, r);
+                    set_str(c, 2, 0, connection, r);
+                });
+            result.push_back(make_write(well_known_oid::pg_database_table, std::move(chunk)));
+        }
         return result;
     }
 
@@ -473,14 +508,16 @@ namespace components::catalog {
                                               for (std::size_t i = 0; i < bindings.size(); ++i) {
                                                   const auto& b = bindings[i];
                                                   const auto refkind = static_cast<char>(b.refkind);
-                                                  set_oid(c, 0, i, view_oid);
-                                                  set_str(c, 1, i, std::string_view{&refkind, 1}, r);
-                                                  set_str(c, 2, i, b.dbname.t, r);
-                                                  set_str(c, 3, i, b.schema.t, r);
-                                                  set_str(c, 4, i, b.relname.t, r);
-                                                  set_oid(c, 5, i, b.refobjid);
-                                                  set_str(c, 6, i, b.proargmatchers, r);
-                                                  set_str(c, 7, i, b.prorettype, r);
+                                                  namespace col = pg_rewrite_ref_col;
+                                                  set_oid(c, col::ev_class, i, view_oid);
+                                                  set_str(c, col::refkind, i, std::string_view{&refkind, 1}, r);
+                                                  set_str(c, col::connection, i, b.connection.t, r);
+                                                  set_str(c, col::dbname, i, b.dbname.t, r);
+                                                  set_str(c, col::schema, i, b.schema.t, r);
+                                                  set_str(c, col::relname, i, b.relname.t, r);
+                                                  set_oid(c, col::refobjid, i, b.refobjid);
+                                                  set_str(c, col::proargmatchers, i, b.proargmatchers, r);
+                                                  set_str(c, col::prorettype, i, b.prorettype, r);
                                               }
                                           });
             append_writes(result, pg_rewrite_ref_oid, std::move(rows));
@@ -553,7 +590,7 @@ namespace components::catalog {
         // WRITER-SIDE GATE, the conkey gate's twin (see build_create_constraint_writes).
         for (std::size_t i = 0; i < column_attoids.size(); ++i) {
             if (column_attoids[i] == INVALID_OID) {
-                return core::error_t{core::error_code_t::invalid_constraint,
+                return core::error_t{core::error_code_t::internal_error,
                                      std::pmr::string{"index '" + index_name + "': indkey column #" +
                                                           std::to_string(i) +
                                                           " has no attoid; the row would claim a column without a "
@@ -758,7 +795,7 @@ namespace components::catalog {
             for (std::size_t i = 0; i < list->size(); ++i) {
                 if ((*list)[i] == INVALID_OID) {
                     const bool own = (list == &fk_column_attoids);
-                    return core::error_t{core::error_code_t::invalid_constraint,
+                    return core::error_t{core::error_code_t::internal_error,
                                          std::pmr::string{"constraint '" + constraint_name +
                                                               "': " + (own ? "conkey" : "confkey") + " column #" +
                                                               std::to_string(i) +

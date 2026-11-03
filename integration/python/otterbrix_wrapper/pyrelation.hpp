@@ -13,7 +13,7 @@
 #include <vector>
 
 namespace otterbrix {
-    class otterbrix_t;
+    struct engine_arena_t;
     class py_connection_t;
     class py_expression_t;
     class expression_factory_t;
@@ -60,18 +60,13 @@ namespace otterbrix {
         void assert_relation();
 
     private:
-        // Refused unless still open. Chaining never touches `space_`: it goes through
-        // relation_factory_t's and expression_factory_t's own copies of the space, and
-        // close() nulls only the latter -- so without this check, a closed connection could
-        // still chain successfully and produce relations with no space of their own.
+        // Refused unless still open: chaining builds through the connection's factories, which outlive its close.
         py_connection_t& live_env();
 
     private:
-        // Held, not borrowed from `env`: close() can null the connection's space while `env`
-        // itself lives on, and node_/schema_ free into this arena from a destructor, which
-        // can't refuse (py_result_t::space is held for the same reason). Declared first so
+        // node_/schema_ free into this arena from a destructor, which can't refuse. Declared first so
         // reverse-order destruction frees it last. Never null while `node_` is set.
-        boost::intrusive_ptr<otterbrix_t> space_;
+        boost::intrusive_ptr<engine_arena_t> arena_;
 
         // The eagerly-built logical_plan node (nullptr when this py_relation_t was
         // created from a result). schema_ carries the column names/types this

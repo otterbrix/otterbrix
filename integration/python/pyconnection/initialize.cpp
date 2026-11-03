@@ -30,8 +30,6 @@ namespace otterbrix {
                                                                                                "OtterBrixPyConnection",
                                                                                                py::module_local());
 
-        connection_module.def("listTables", &py_connection_t::list_tables);
-
         connection_module.def("__enter__", &py_connection_t::enter)
             .def("__exit__", &py_connection_t::exit, py::arg("exc_type"), py::arg("exc"), py::arg("traceback"))
             .def("__del__", &py_connection_t::close);

@@ -14,6 +14,7 @@
 #include <components/vector/operations/apply_quantified.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <source_location>
 #include <span>
 #include <string>
@@ -28,8 +29,6 @@ namespace services::dispatcher::validation {
     namespace {
         const complex_logical_type invalid_type{logical_type::INVALID};
         const complex_logical_type boolean_type{logical_type::BOOLEAN};
-
-        bool is_stamped(const complex_logical_type& type) noexcept { return type.type() != logical_type::INVALID; }
 
         template<typename... Args>
         std::pmr::string message(std::pmr::memory_resource* resource, const Args&... args) {
@@ -49,24 +48,6 @@ namespace services::dispatcher::validation {
                 expression_ptr{make_cast_expression(resource, slot, target, cast, components::casts::cast_kind::cast)}};
         }
 
-        [[nodiscard]] complex_logical_type unify_operands(std::pmr::memory_resource* resource,
-                                                          const components::casts::cast_registry_t& cast_registry,
-                                                          std::span<param_storage* const> operands,
-                                                          std::span<complex_logical_type> types,
-                                                          core::error_t* error,
-                                                          std::string_view what) {
-            auto common = cast_registry.find_best_common_type(types);
-            if (!common.has_value()) {
-                *error = core::error_t(core::error_code_t::invalid_parameter,
-                                       message(resource, "no type is common to every ", what));
-                return invalid_type;
-            }
-            for (size_t index = 0; index < operands.size(); index++) {
-                splice_cast(resource, *operands[index], common->type, common->casts[index]);
-            }
-            return common->type;
-        }
-
         class resolver_t {
         public:
             resolver_t(const expression_context_t& context, bool* saw_reduction)
@@ -83,12 +64,12 @@ namespace services::dispatcher::validation {
                 }
                 if (is_parameter(operand)) {
                     last_cardinality_ = cardinality_t::constant;
-                    return context_.parameters.type(as_parameter(operand));
+                    return parameter_type(as_parameter(operand));
                 }
                 if (std::holds_alternative<components::expressions::key_t>(operand)) {
-                    return column(std::get<components::expressions::key_t>(operand), inside_aggregate);
+                    return column(components::expressions::as_key(operand), inside_aggregate);
                 }
-                auto& nested = std::get<expression_ptr>(operand);
+                auto& nested = components::expressions::as_expr(operand);
                 if (!nested) {
                     last_cardinality_ = cardinality_t::constant;
                     return invalid_type;
@@ -126,7 +107,7 @@ namespace services::dispatcher::validation {
                         last_cardinality_ = cardinality_t::row;
                         break;
                     case expression_group::invalid:
-                        fail(core::error_code_t::invalid_parameter, "invalid expression");
+                        fail(core::error_code_t::protocol_violation, "invalid expression");
                         break;
                 }
                 if (error_.contains_error()) {
@@ -138,6 +119,83 @@ namespace services::dispatcher::validation {
             }
 
         private:
+            complex_logical_type parameter_type(core::parameter_id_t id) {
+                if (context_.parameter_types != nullptr && context_.parameter_types->holds(id)) {
+                    return context_.parameter_types->type_of(id);
+                }
+                return context_.parameters.type(id);
+            }
+
+            // The slot of the $n without a type that `operand` is, alone or as a constant.
+            std::optional<core::parameter_id_t> untyped_parameter(const param_storage& operand) const {
+                if (context_.parameter_types == nullptr) {
+                    return std::nullopt;
+                }
+                std::optional<core::parameter_id_t> slot;
+                if (is_parameter(operand)) {
+                    slot = as_parameter(operand);
+                } else if (components::expressions::is_expr(operand) && as_expr(operand) &&
+                           as_expr(operand)->group() == expression_group::scalar) {
+                    const auto* scalar = static_cast<const scalar_expression_t*>(as_expr(operand).get());
+                    if (scalar->type() == scalar_type::constant && !scalar->params().empty() &&
+                        is_parameter(scalar->params().front())) {
+                        slot = as_parameter(scalar->params().front());
+                    }
+                }
+                if (slot && context_.parameter_types->is_untyped(*slot)) {
+                    return slot;
+                }
+                return std::nullopt;
+            }
+
+            // A coercion of an untyped $n gives it the target type instead of a cast (PostgreSQL 18
+            // variable_coerce_param_hook). True when `operand` was such a $n.
+            bool type_parameter(param_storage& operand, const complex_logical_type& target) {
+                const auto wanted = target.type();
+                if (wanted == logical_type::NA || wanted == logical_type::ANY || wanted == logical_type::INVALID ||
+                    wanted == logical_type::UNKNOWN) {
+                    return false;
+                }
+                const auto slot = untyped_parameter(operand);
+                if (!slot) {
+                    return false;
+                }
+                if (auto refused = context_.parameter_types->give(*slot, target); refused.contains_error()) {
+                    error_ = std::move(refused);
+                    return true;
+                }
+                if (!is_parameter(operand)) {
+                    as_expr(operand)->set_result_type(target);
+                }
+                return true;
+            }
+
+            void
+            conform(param_storage& operand, const complex_logical_type& target, const components::casts::cast_t& cast) {
+                if (type_parameter(operand, target)) {
+                    return;
+                }
+                splice_cast(context_.resource, operand, target, cast);
+            }
+
+            [[nodiscard]] complex_logical_type unify_operands(std::span<param_storage* const> operands,
+                                                              std::span<complex_logical_type> types,
+                                                              std::string_view what) {
+                auto common = context_.cast_registry.find_best_common_type(types);
+                if (!common.has_value()) {
+                    error_ = core::error_t(core::error_code_t::datatype_mismatch,
+                                           message(context_.resource, "no type is common to every ", what));
+                    return invalid_type;
+                }
+                for (size_t index = 0; index < operands.size(); index++) {
+                    conform(*operands[index], common->type, common->casts[index]);
+                }
+                if (error_.contains_error()) {
+                    return invalid_type;
+                }
+                return common->type;
+            }
+
             complex_logical_type
             fail(core::error_code_t code,
                  std::pmr::string text,
@@ -245,7 +303,8 @@ namespace services::dispatcher::validation {
                 return context_.function_registry.get_function(pin.uid)->get_copy(context_.resource);
             }
 
-            // SQL LIKE / ILIKE / regexp all match through regexp_like(subject, pattern, flags).
+            // A match comparison runs like_match(subject, pattern, mode): the graph builder hands it the
+            // comparison's UTINYINT mode parameter.
             // TODO: should resolve like any other call -- there is nothing special about regex.
             void resolve_regex_uid(compare_expression_t* comparison,
                                    const complex_logical_type& subject,
@@ -253,15 +312,17 @@ namespace services::dispatcher::validation {
                 std::pmr::vector<complex_logical_type> arguments(context_.resource);
                 arguments.push_back(subject);
                 arguments.push_back(pattern);
-                arguments.emplace_back(logical_type::STRING_LITERAL);
-                auto resolved = resolve_function(context_.resource,
-                                                 context_.cast_registry,
-                                                 context_.execution_context,
-                                                 context_.function_registry,
-                                                 function_qualified_name_t{core::function_name_t{"regexp_like"}},
-                                                 arguments,
-                                                 context_.allowed_functions,
-                                                 {});
+                arguments.emplace_back(logical_type::UTINYINT);
+                const components::compute::function_pin_t pin{components::compute::like_match_uid, 0};
+                auto resolved = resolve_function(
+                    context_.resource,
+                    context_.cast_registry,
+                    context_.function_registry,
+                    function_qualified_name_t{core::function_name_t{std::string{components::compute::like_match_name}}},
+                    arguments,
+                    context_.allowed_functions,
+                    components::compute::function_scope_t{},
+                    std::span<const components::compute::function_pin_t>{&pin, 1});
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
@@ -306,7 +367,7 @@ namespace services::dispatcher::validation {
                 const bool match = comparison->inner_op() == compare_type::regex;
                 if (!match &&
                     !components::vector::operations::is_quantifiable(to_operator_code(comparison->inner_op()))) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::wrong_object_type,
                          message(context_.resource,
                                  to_string(comparison->inner_op()),
                                  " cannot be quantified with ",
@@ -319,7 +380,7 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 if (set.type() != logical_type::LIST && set.type() != logical_type::ARRAY) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::wrong_object_type,
                          message(context_.resource,
                                  "op ANY/ALL (array) requires array on right side, not ",
                                  components::catalog::format_type_be(set, false)));
@@ -327,7 +388,7 @@ namespace services::dispatcher::validation {
                 }
                 const auto& element = set.child_type();
                 auto no_operator = [&](const complex_logical_type& left, const complex_logical_type& right) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::unrecognized_function,
                          message(context_.resource,
                                  "operator does not exist: ",
                                  components::catalog::format_type_be(left, false),
@@ -358,7 +419,10 @@ namespace services::dispatcher::validation {
                     no_operator(probe, element);
                     return;
                 }
-                splice_cast(context_.resource, comparison->left(), common->type, common->left_cast);
+                conform(comparison->left(), common->type, common->left_cast);
+                if (error_.contains_error()) {
+                    return;
+                }
                 if (common->type == element) {
                     return;
                 }
@@ -380,7 +444,7 @@ namespace services::dispatcher::validation {
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
                 switch (comparison->type()) {
                     case compare_type::invalid:
-                        fail(core::error_code_t::invalid_parameter, "invalid comparison");
+                        fail(core::error_code_t::protocol_violation, "invalid comparison");
                         return;
                     case compare_type::union_and:
                     case compare_type::union_or:
@@ -447,7 +511,7 @@ namespace services::dispatcher::validation {
                             return;
                         }
                         combined = combine(combined, last_cardinality_);
-                        child = std::get<expression_ptr>(nested);
+                        child = components::expressions::as_expr(nested);
                     }
                     comparison->set_result_type(boolean_type);
                     last_cardinality_ = combined;
@@ -481,11 +545,8 @@ namespace services::dispatcher::validation {
                     side_types.push_back(left_type);
                     side_types.push_back(right_type);
                     if (!is_stamped(
-                            unify_operands(context_.resource,
-                                           context_.cast_registry,
-                                           std::span<param_storage* const>{sides},
+                            unify_operands(std::span<param_storage* const>{sides},
                                            std::span<complex_logical_type>{side_types},
-                                           &error_,
                                            message(context_.resource, "side of ", to_string(comparison->type()))))) {
                         return;
                     }
@@ -505,7 +566,7 @@ namespace services::dispatcher::validation {
                 if (complex_logical_type::contains(conversion->result_type(), [](const complex_logical_type& part) {
                         return part.to_physical_type() == components::types::physical_type::INVALID;
                     })) {
-                    fail(core::error_code_t::schema_error,
+                    fail(core::error_code_t::unimplemented_yet,
                          message(context_.resource,
                                  "type ",
                                  components::catalog::describe_type(conversion->result_type()),
@@ -516,7 +577,7 @@ namespace services::dispatcher::validation {
                                                                conversion->result_type(),
                                                                components::casts::cast_type::explicit_only);
                 if (!resolved.has_value()) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::cannot_coerce,
                          message(context_.resource,
                                  "no cast from ",
                                  components::catalog::describe_type(source),
@@ -525,6 +586,13 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 conversion->set_cast(std::move(*resolved));
+                // `$1::int` types $1 too; the NULL-cast resolved above serves whatever type the slot then holds.
+                if (const auto parameter = untyped_parameter(conversion->child()); parameter) {
+                    if (auto refused = context_.parameter_types->give(*parameter, conversion->result_type());
+                        refused.contains_error()) {
+                        error_ = std::move(refused);
+                    }
+                }
             }
 
             void resolve_aggregate(aggregate_expression_t* aggregate, bool inside_aggregate) {
@@ -548,11 +616,11 @@ namespace services::dispatcher::validation {
                 auto resolved =
                     resolve_function(context_.resource,
                                      context_.cast_registry,
-                                     context_.execution_context,
                                      context_.function_registry,
                                      aggregate->full_name(),
                                      argument_types,
                                      components::compute::create_mask(components::compute::function_type_t::aggregate),
+                                     aggregate->scope(),
                                      aggregate->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
@@ -560,10 +628,9 @@ namespace services::dispatcher::validation {
                 }
                 for (size_t index = 0; index < aggregate->params().size() && index < resolved.value().arguments.size();
                      index++) {
-                    splice_cast(context_.resource,
-                                aggregate->params()[index],
-                                resolved.value().arguments[index].target,
-                                resolved.value().arguments[index].cast);
+                    conform(aggregate->params()[index],
+                            resolved.value().arguments[index].target,
+                            resolved.value().arguments[index].cast);
                 }
                 aggregate->set_pin(resolved.value().pin);
                 aggregate->set_function(resolved_copy(resolved.value().pin));
@@ -596,11 +663,11 @@ namespace services::dispatcher::validation {
                                      : context_.allowed_functions;
                 auto resolved = resolve_function(context_.resource,
                                                  context_.cast_registry,
-                                                 context_.execution_context,
                                                  context_.function_registry,
                                                  call->full_name(),
                                                  argument_types,
                                                  allowed_functions,
+                                                 call->scope(),
                                                  call->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
@@ -608,7 +675,7 @@ namespace services::dispatcher::validation {
                 }
                 const bool reduces = resolved.value().function_type == components::compute::function_type_t::aggregate;
                 if (call->args().empty() && !call->has_star_argument() && reduces) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::wrong_object_type,
                          message(context_.resource,
                                  "(*) must be used to call the parameterless aggregate '",
                                  call->name(),
@@ -624,14 +691,14 @@ namespace services::dispatcher::validation {
                 // carry them: without this the runtime re-dispatches on the ORIGINAL argument types.
                 for (size_t index = 0; index < call->args().size() && index < resolved.value().arguments.size();
                      index++) {
-                    splice_cast(context_.resource,
-                                call->args()[index],
-                                resolved.value().arguments[index].target,
-                                resolved.value().arguments[index].cast);
+                    conform(call->args()[index],
+                            resolved.value().arguments[index].target,
+                            resolved.value().arguments[index].cast);
                 }
 
                 call->set_pin(resolved.value().pin);
                 call->set_function(resolved_copy(resolved.value().pin));
+                call->set_volatility(resolved.value().volatility);
                 call->set_result_type(resolved.value().result);
                 if (!reduces) {
                     last_cardinality_ = combined;
@@ -659,12 +726,17 @@ namespace services::dispatcher::validation {
                             scalar->set_result_type(column(key, inside_aggregate));
                             return;
                         }
+                        if (scalar->type() == scalar_type::get_field && !is_key(scalar->params()[0])) {
+                            fail(core::error_code_t::protocol_violation,
+                                 "a column read holds an operand that is not a column");
+                            return;
+                        }
                         scalar->set_result_type(slot(scalar->params()[0], inside_aggregate));
                         return;
                     }
                     case scalar_type::constant: {
                         if (scalar->params().empty()) {
-                            fail(core::error_code_t::invalid_parameter, "constant expression with no value");
+                            fail(core::error_code_t::protocol_violation, "constant expression with no value");
                             return;
                         }
                         if (is_stamped(scalar->result_type())) {
@@ -702,7 +774,7 @@ namespace services::dispatcher::validation {
                         // Structural markers: the node-level pass expands them against the schema
                         // before any expression reaches here.
                         fail(
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::protocol_violation,
                             message(context_.resource, to_string(scalar->type()), " is not valid in a value position"));
                         return;
                     case scalar_type::round:
@@ -713,16 +785,16 @@ namespace services::dispatcher::validation {
                     case scalar_type::sqrt:
                         // Legacy python-integration spellings. Every one of them is a function, so
                         // it resolves through the function arm; none is a scalar operator.
-                        fail(core::error_code_t::invalid_parameter,
+                        fail(core::error_code_t::unrecognized_function,
                              message(context_.resource,
                                      to_string(scalar->type()),
                                      " is a function, not a scalar operator"));
                         return;
                     case scalar_type::invalid:
-                        fail(core::error_code_t::invalid_parameter, "invalid scalar expression");
+                        fail(core::error_code_t::protocol_violation, "invalid scalar expression");
                         return;
                 }
-                fail(core::error_code_t::invalid_parameter,
+                fail(core::error_code_t::protocol_violation,
                      message(context_.resource, "unsupported scalar expression ", to_string(scalar->type())));
             }
 
@@ -731,7 +803,7 @@ namespace services::dispatcher::validation {
                 const bool is_case = scalar->type() == scalar_type::case_expr;
                 const size_t minimum = is_case ? 2 : 1;
                 if (scalar->params().size() < minimum) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::protocol_violation,
                          is_case ? "CASE expression with no THEN branch" : "COALESCE with no operands");
                     return;
                 }
@@ -757,11 +829,8 @@ namespace services::dispatcher::validation {
                         return;
                     }
                 }
-                const auto blend = unify_operands(context_.resource,
-                                                  context_.cast_registry,
-                                                  std::span<param_storage* const>{arms},
+                const auto blend = unify_operands(std::span<param_storage* const>{arms},
                                                   std::span<complex_logical_type>{arm_types},
-                                                  &error_,
                                                   message(context_.resource, "branch of ", to_string(scalar->type())));
                 if (!is_stamped(blend)) {
                     return;
@@ -772,7 +841,7 @@ namespace services::dispatcher::validation {
 
             void resolve_unary_operator(scalar_expression_t* scalar, bool inside_aggregate) {
                 if (scalar->params().empty()) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::protocol_violation,
                          message(context_.resource, to_string(scalar->type()), " with no operand"));
                     return;
                 }
@@ -784,7 +853,7 @@ namespace services::dispatcher::validation {
                 const auto resolved =
                     resolve_arithmetic(context_.cast_registry, to_operator_code(scalar->type()), operand);
                 if (!is_stamped(resolved.op.result)) {
-                    fail(core::error_code_t::arithmetics_failure,
+                    fail(core::error_code_t::unrecognized_function,
                          message(context_.resource,
                                  "operator ",
                                  to_string(scalar->type()),
@@ -793,13 +862,13 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
-                splice_cast(context_.resource, scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
+                conform(scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
                 last_cardinality_ = cardinality;
             }
 
             void resolve_binary_operator(scalar_expression_t* scalar, bool inside_aggregate) {
                 if (scalar->params().size() < 2) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::protocol_violation,
                          message(context_.resource, "operator ", to_string(scalar->type()), " needs two operands"));
                     return;
                 }
@@ -820,7 +889,7 @@ namespace services::dispatcher::validation {
                 const auto resolved =
                     resolve_arithmetic(context_.cast_registry, to_operator_code(scalar->type()), left, right);
                 if (!is_stamped(resolved.op.result)) {
-                    fail(core::error_code_t::arithmetics_failure,
+                    fail(core::error_code_t::unrecognized_function,
                          message(context_.resource,
                                  "operator ",
                                  to_string(scalar->type()),
@@ -831,8 +900,8 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
-                splice_cast(context_.resource, scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
-                splice_cast(context_.resource, scalar->params()[1], resolved.rhs_target, resolved.rhs_cast);
+                conform(scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
+                conform(scalar->params()[1], resolved.rhs_target, resolved.rhs_cast);
                 last_cardinality_ = combined;
             }
 
@@ -851,9 +920,12 @@ namespace services::dispatcher::validation {
                 if (wanted.type() == logical_type::ANY || actual.type() == wanted.type()) {
                     return true;
                 }
+                if (type_parameter(operand, wanted)) {
+                    return !error_.contains_error();
+                }
                 auto cast = context_.cast_registry.resolve(actual, wanted, components::casts::cast_type::implicit);
                 if (!cast.has_value()) {
-                    fail(core::error_code_t::schema_error,
+                    fail(core::error_code_t::datatype_mismatch,
                          message(context_.resource,
                                  what,
                                  " must be ",
@@ -881,14 +953,14 @@ namespace services::dispatcher::validation {
         const auto& result_type = expression->result_type();
         if (result_type.type() == logical_type::UNKNOWN || result_type.type() == logical_type::INVALID) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::indeterminate_datatype,
                 std::pmr::string{"could not resolve a concrete type for expression", context.resource});
         }
         param_storage required{expression};
         if (!resolver.require_type(required, result_type, context.required_type, "argument of the clause")) {
             return resolver.take_error();
         }
-        expression = std::get<expression_ptr>(required);
+        expression = components::expressions::as_expr(required);
         return core::error_t::no_error();
     }
 } // namespace services::dispatcher::validation

@@ -6,7 +6,6 @@ set_property(TARGET otterbrix_pmr PROPERTY EXPORT_NAME pmr)
 
 
 
-add_subdirectory(assert)
 add_subdirectory(b_plus_tree)
 add_subdirectory(date)
 add_subdirectory(regex)

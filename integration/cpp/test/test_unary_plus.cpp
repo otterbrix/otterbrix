@@ -12,7 +12,7 @@ namespace {
     void setup(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -154,7 +154,7 @@ TEST_CASE("integration::cpp::unary_plus::computing_table_identity") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();

@@ -50,7 +50,7 @@ TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_ma
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE bdb;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA bdb;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE bdb.t (id bigint, a bigint, b bigint);")->is_success());
     {
         auto cur = seed_rows(d, "bdb.t", "id, a, b", static_cast<unsigned>(kRows), [](unsigned i) {

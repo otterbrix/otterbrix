@@ -113,12 +113,12 @@ namespace {
     }
 
     void seed_plain_table(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& name) {
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE del;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA del;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE del." + name + " (a bigint, b bigint);")->is_success());
     }
 
     void seed_wide_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE del;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA del;")->is_success());
         std::string sql = "CREATE TABLE del." + kTableName + " (";
         for (int i = 0; i < kColumns; ++i) {
             if (i != 0) {

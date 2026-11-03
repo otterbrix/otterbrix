@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 
-// Otterbrix has no search_path, so a relname match in more than one USER namespace is refused
-// (ambiguous_name) instead of resolved by storage order; pg_catalog alone keeps PostgreSQL's
-// search-path precedence, so it still wins over a same-named user table.
+// A bare name looks in pg_catalog and then in the schema of the session's place (main.public for a fresh session),
+// as PostgreSQL 18 does with a one-element search_path: a same-named table in another schema never answers it, and
+// pg_catalog still wins over a same-named user table.
 
 using namespace components;
 
@@ -18,8 +18,8 @@ namespace {
     // dbone.alpha has 2 rows and dbtwo.alpha has 5, so an unqualified answer betrays which
     // table replied.
     void seed_two_alphas(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE dbone;")->is_success());
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE dbtwo;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA dbone;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA dbtwo;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE dbone.alpha (id BIGINT);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE dbtwo.alpha (id BIGINT);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO dbone.alpha (id) VALUES (1), (2);")->is_success());
@@ -27,19 +27,20 @@ namespace {
                     ->is_success());
     }
 
-    void require_ambiguous(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+    void require_missing(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql, const std::string& name) {
         auto cursor = test_helpers::exec(dispatcher, sql);
         REQUIRE(cursor);
         if (cursor->is_success()) {
             const auto n = cursor->size();
-            INFO("[" << sql << "] silently answered from ONE of two same-named tables: " << n << " row(s) — that is "
+            INFO("[" << sql << "] answered from another schema: " << n << " row(s) — that is "
                      << (n == 2   ? "dbone.alpha"
                          : n == 5 ? "dbtwo.alpha"
                                   : "neither table whole"));
             REQUIRE(cursor->is_error());
         }
         INFO("[" << sql << "] error: " << cursor->get_error().what.c_str());
-        REQUIRE(cursor->get_error().type == core::error_code_t::ambiguous_name);
+        REQUIRE(cursor->get_error().type == core::error_code_t::table_not_exists);
+        REQUIRE(std::string(cursor->get_error().what.c_str()) == "relation \"" + name + "\" does not exist");
     }
 
     void require_count(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql, std::size_t expected) {
@@ -59,14 +60,20 @@ TEST_CASE("integration::cpp::unqualified_name_ambiguity::select_is_refused_not_a
     auto* dispatcher = space.dispatcher();
     seed_two_alphas(dispatcher);
 
-    require_ambiguous(dispatcher, "SELECT * FROM alpha;");
+    require_missing(dispatcher, "SELECT * FROM alpha;", "alpha");
 
     require_count(dispatcher, "SELECT * FROM dbone.alpha;", 2);
     require_count(dispatcher, "SELECT * FROM dbtwo.alpha;", 5);
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE dbtwo.beta (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO dbtwo.beta (id) VALUES (7), (8), (9);")->is_success());
-    require_count(dispatcher, "SELECT * FROM beta;", 3);
+    require_missing(dispatcher, "SELECT * FROM beta;", "beta");
+
+    auto in_dbtwo = otterbrix::session_id_t();
+    REQUIRE(dispatcher->execute_sql(in_dbtwo, "SET search_path = 'dbtwo';")->is_success());
+    auto from_dbtwo = dispatcher->execute_sql(in_dbtwo, "SELECT * FROM alpha;");
+    REQUIRE(from_dbtwo->is_success());
+    CHECK(from_dbtwo->size() == 5);
 }
 
 // A silent pick on DML would destroy the losing table's rows, not just misreport them, so DML
@@ -80,26 +87,22 @@ TEST_CASE("integration::cpp::unqualified_name_ambiguity::dml_is_refused_and_both
 
     {
         auto cursor = test_helpers::exec(dispatcher, "DELETE FROM alpha;");
-        REQUIRE(cursor);
-        INFO("[DELETE FROM alpha;] must refuse: two tables carry that name"
-             << (cursor->is_error() ? std::string(" — got: ") + cursor->get_error().what.c_str() : ""));
         REQUIRE(cursor->is_error());
-        REQUIRE(cursor->get_error().type == core::error_code_t::ambiguous_name);
+        CHECK(cursor->get_error().type == core::error_code_t::table_not_exists);
     }
 
     require_count(dispatcher, "SELECT * FROM dbone.alpha;", 2);
     require_count(dispatcher, "SELECT * FROM dbtwo.alpha;", 5);
 }
 
-// pg_catalog is searched before user namespaces, so a same-named user table must not turn this
-// into another ambiguous_name case.
+// pg_catalog is searched before the place, so a same-named user table never shadows it.
 TEST_CASE("integration::cpp::unqualified_name_ambiguity::pg_catalog_wins_over_a_user_shadow") {
     auto config = test_helpers::make_test_config(integration_fixture_path("unqualified_ambiguity/pg_catalog_shadow"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE dbone;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA dbone;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE dbone.pg_class (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO dbone.pg_class (id) VALUES (1);")->is_success());
 
@@ -163,15 +166,16 @@ TEST_CASE("integration::cpp::unqualified_name_ambiguity::public_table_stays_reac
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE alpha (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO alpha (id) VALUES (1), (2), (3);")->is_success());
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE dbtwo;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA dbtwo;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE dbtwo.alpha (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO dbtwo.alpha (id) VALUES (10), (20), (30), (40), (50);")
                 ->is_success());
 
-    require_ambiguous(dispatcher, "SELECT * FROM alpha;");
+    require_count(dispatcher, "SELECT * FROM alpha;", 3);
     require_count(dispatcher, "SELECT * FROM public.alpha;", 3);
     REQUIRE(test_helpers::exec(dispatcher, "DROP TABLE public.alpha;")->is_success());
-    require_count(dispatcher, "SELECT * FROM alpha;", 5);
+    require_missing(dispatcher, "SELECT * FROM alpha;", "alpha");
+    require_count(dispatcher, "SELECT * FROM dbtwo.alpha;", 5);
 }
 
 TEST_CASE("integration::cpp::unqualified_name_ambiguity::create_beside_namesake") {
@@ -180,7 +184,7 @@ TEST_CASE("integration::cpp::unqualified_name_ambiguity::create_beside_namesake"
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE dbone;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA dbone;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE dbone.alpha (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO dbone.alpha (id) VALUES (1), (2);")->is_success());
 

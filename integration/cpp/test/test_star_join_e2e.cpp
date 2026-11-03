@@ -62,6 +62,20 @@ using expressions::compare_type;
 using expressions::scalar_type;
 using expressions::sort_order;
 
+namespace {
+    // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
+    size_t on_column(const components::logical_plan::node_join_t* join, bool right) {
+        REQUIRE_FALSE(join->expressions().empty());
+        const auto* on =
+            static_cast<const components::expressions::compare_expression_t*>(join->expressions().front().get());
+        const auto& operand = right ? on->right() : on->left();
+        REQUIRE(components::expressions::is_key(operand));
+        return components::expressions::as_key(operand).path()[0];
+    }
+    size_t on_left_col(const components::logical_plan::node_join_t* join) { return on_column(join, false); }
+    size_t on_right_col(const components::logical_plan::node_join_t* join) { return on_column(join, true); }
+} // namespace
+
 // A small SSB-q4-shaped 5-table star, fact LAST in the FROM list to trigger the star reorder —
 // the only test running the reorder + aggregate-arg remap under real execution. Part A checks
 // the result rows; Part B rebuilds the star as a hand plan and inspects it.
@@ -75,7 +89,7 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
 
-    dispatcher->execute_sql(session, "CREATE DATABASE " + db + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + db + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     auto create = [&](const std::string& t) { REQUIRE(run("CREATE TABLE " + db + "." + t + "();")->is_success()); };
 
@@ -307,18 +321,18 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
 
     auto* j_prt = static_cast<node_join_t*>(out->children()[0].get());
     REQUIRE(j_prt->type() == join_type::inner);
-    CHECK(j_prt->left_col() == 3);
-    CHECK(j_prt->right_col() == 0);
+    CHECK(on_left_col(j_prt) == 3);
+    CHECK(on_right_col(j_prt) == 0);
     CHECK(j_prt->children()[1].get() == prt.get());
     auto* j_supp = static_cast<node_join_t*>(j_prt->children()[0].get());
-    CHECK(j_supp->left_col() == 2);
-    CHECK(j_supp->right_col() == 0);
+    CHECK(on_left_col(j_supp) == 2);
+    CHECK(on_right_col(j_supp) == 0);
     auto* j_cust = static_cast<node_join_t*>(j_supp->children()[0].get());
-    CHECK(j_cust->left_col() == 1);
-    CHECK(j_cust->right_col() == 0);
+    CHECK(on_left_col(j_cust) == 1);
+    CHECK(on_right_col(j_cust) == 0);
     auto* j_dd = static_cast<node_join_t*>(j_cust->children()[0].get());
-    CHECK(j_dd->left_col() == 0);
-    CHECK(j_dd->right_col() == 0);
+    CHECK(on_left_col(j_dd) == 0);
+    CHECK(on_right_col(j_dd) == 0);
     CHECK(j_dd->children()[0].get() == fct.get()); // fact at the bottom-left
     CHECK(j_dd->children()[1].get() == dd.get());
 }
@@ -333,7 +347,7 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
     auto session = otterbrix::session_id_t();
 
     const std::string edb = "eageraggdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + edb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + edb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success());
     REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success());
@@ -357,6 +371,16 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
         return t;
     };
     auto has = [](const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; };
+    // The disk groups a's rows: the line under "Seq Scan on a" is its Pushed Aggregate.
+    auto pushed_on_a = [](const std::string& plan) {
+        const std::string scan = "Seq Scan on a\n";
+        const auto at = plan.find(scan);
+        if (at == std::string::npos) {
+            return false;
+        }
+        const auto next = at + scan.size();
+        return plan.substr(next, plan.find('\n', next) - next).find("Pushed Aggregate") != std::string::npos;
+    };
 
     const std::string min_sql =
         "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
@@ -368,12 +392,12 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
     const std::string min_plan = plan_text(min_sql);
     INFO(min_plan);
     CHECK(has(min_plan, "Hash Join"));
-    CHECK(has(min_plan, "Pushed Aggregate Scan on a"));
-    CHECK(has(plan_text(max_sql), "Pushed Aggregate Scan on a"));
+    CHECK(pushed_on_a(min_plan));
+    CHECK(pushed_on_a(plan_text(max_sql)));
     const std::string sum_plan = plan_text(sum_sql);
     INFO(sum_plan);
     CHECK(has(sum_plan, "Hash Join"));
-    CHECK_FALSE(has(sum_plan, "Pushed Aggregate Scan"));
+    CHECK_FALSE(has(sum_plan, "Pushed Aggregate"));
 
     auto mn = run(min_sql);
     REQUIRE(mn->is_success());
@@ -423,7 +447,7 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
     auto session = otterbrix::session_id_t();
 
     const std::string edb = "eageraggdupdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + edb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + edb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success());
     REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success());
@@ -447,6 +471,16 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
         return t;
     };
     auto has = [](const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; };
+    // The disk groups a's rows: the line under "Seq Scan on a" is its Pushed Aggregate.
+    auto pushed_on_a = [](const std::string& plan) {
+        const std::string scan = "Seq Scan on a\n";
+        const auto at = plan.find(scan);
+        if (at == std::string::npos) {
+            return false;
+        }
+        const auto next = at + scan.size();
+        return plan.substr(next, plan.find('\n', next) - next).find("Pushed Aggregate") != std::string::npos;
+    };
 
     const std::string min_sql =
         "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
@@ -455,9 +489,9 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
     const std::string sum_sql =
         "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
 
-    CHECK(has(plan_text(min_sql), "Pushed Aggregate Scan on a"));
-    CHECK(has(plan_text(max_sql), "Pushed Aggregate Scan on a"));
-    CHECK_FALSE(has(plan_text(sum_sql), "Pushed Aggregate Scan"));
+    CHECK(pushed_on_a(plan_text(min_sql)));
+    CHECK(pushed_on_a(plan_text(max_sql)));
+    CHECK_FALSE(has(plan_text(sum_sql), "Pushed Aggregate"));
 
     auto mn = run(min_sql);
     REQUIRE(mn->is_success());
@@ -488,4 +522,149 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
     auto cell21 = sm->get<int64_t>(1, 1);
     REQUIRE_FALSE(cell21.has_error());
     CHECK(cell21.value() == 30);
+}
+
+// #777: the star reorder moves every column the query reads, including those under a CAST or a function.
+// Before the reorder d1 holds merged columns 0..2, d2 3..4, f 5..7; after it f 0..2, d1 3..5, d2 6..7.
+namespace {
+    std::string star_remap_rows(const std::string& tag, const std::string& select, const std::string& tail) {
+        auto config = test_create_config(integration_fixture_path("test_star_join_e2e/remap_" + tag));
+        test_clear_directory(config);
+        test_spaces space(config);
+        auto dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
+
+        REQUIRE(run("CREATE SCHEMA m;")->is_success());
+        REQUIRE(run("CREATE TABLE m.d1 (id BIGINT, n BIGINT, small INT);")->is_success());
+        REQUIRE(run("CREATE TABLE m.d2 (id BIGINT, n BIGINT);")->is_success());
+        REQUIRE(run("CREATE TABLE m.f (a BIGINT, b BIGINT, v BIGINT);")->is_success());
+        REQUIRE(run("INSERT INTO m.d1 (id, n, small) VALUES (1, 100, 7), (2, 200, 1);")->is_success());
+        REQUIRE(run("INSERT INTO m.d2 (id, n) VALUES (1, 1000), (2, 2000);")->is_success());
+        REQUIRE(
+            run("INSERT INTO m.f (a, b, v) VALUES (1, 1, 10), (2, 2, 20), (1, 2, 30), (2, 1, 40);")->is_success());
+
+        const std::string sql = select + " FROM m.d1, m.d2, m.f WHERE f.a = d1.id AND f.b = d2.id" + tail + ";";
+        auto cur = run(sql);
+        INFO(sql);
+        INFO((cur->is_success() ? std::string{} : std::string{cur->get_error().what}));
+        REQUIRE(cur->is_success());
+        std::string out;
+        for (size_t r = 0; r < cur->size(); ++r) {
+            for (size_t c = 0; c < cur->column_count(); ++c) {
+                auto cell = cur->get<int64_t>(c, r);
+                REQUIRE_FALSE(cell.has_error());
+                out += std::to_string(cell.value());
+                out += c + 1 == cur->column_count() ? ";" : ",";
+            }
+        }
+        return out;
+    }
+} // namespace
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_where_bare_column") {
+    CHECK(star_remap_rows("bare", "SELECT d1.n, d2.n, f.v", " AND d1.n = 200 ORDER BY f.v") ==
+          "200,2000,20;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_where_implicit_cast") {
+    CHECK(star_remap_rows("implicit", "SELECT d1.n, d2.n, f.v", " AND d1.small = 1 ORDER BY f.v") ==
+          "200,2000,20;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_where_explicit_cast") {
+    CHECK(star_remap_rows("cast", "SELECT d1.n, d2.n, f.v", " AND CAST(d1.small AS BIGINT) = 1 ORDER BY f.v") ==
+          "200,2000,20;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_where_function") {
+    CHECK(star_remap_rows("fn", "SELECT d1.n, d2.n, f.v", " AND abs(d1.n) = 200 ORDER BY f.v") ==
+          "200,2000,20;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_where_arithmetic") {
+    CHECK(star_remap_rows("arith", "SELECT d1.n, d2.n, f.v", " AND d1.small + 0 = 1 ORDER BY f.v") ==
+          "200,2000,20;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_where_function_of_narrow_column") {
+    CHECK(star_remap_rows("fn_small", "SELECT d1.n, d2.n, f.v", " AND abs(d1.small) = 1 ORDER BY f.v") ==
+          "200,2000,20;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_select_function") {
+    CHECK(star_remap_rows("select_fn", "SELECT abs(d1.n), d2.n, f.v", " ORDER BY f.v") ==
+          "100,1000,10;200,2000,20;100,2000,30;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_select_cast") {
+    CHECK(star_remap_rows("select_cast", "SELECT CAST(d1.small AS BIGINT), d2.n, f.v", " ORDER BY f.v") ==
+          "7,1000,10;1,2000,20;7,2000,30;1,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_order_by_function") {
+    CHECK(star_remap_rows("order_fn", "SELECT d1.n, d2.n, f.v", " ORDER BY abs(d1.n), f.v") ==
+          "100,1000,10;100,2000,30;200,2000,20;200,1000,40;");
+}
+
+TEST_CASE("integration::cpp::star_join_e2e::remap_aggregate_over_function") {
+    CHECK(star_remap_rows("sum_fn", "SELECT d2.n, SUM(abs(d1.n)) AS s", " GROUP BY d2.n ORDER BY d2.n") ==
+          "1000,300;2000,300;");
+}
+
+// A scalar jsonb extraction in the SELECT list reads one column like any other, so the star is still reordered.
+TEST_CASE("integration::cpp::star_join_e2e::remap_select_jsonb_extract") {
+    auto config = test_create_config(integration_fixture_path("test_star_join_e2e/remap_jsonb"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto dispatcher = space.dispatcher();
+    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
+    REQUIRE(run("CREATE SCHEMA m;")->is_success());
+    REQUIRE(run("CREATE TABLE m.d1 ();")->is_success());
+    REQUIRE(run("CREATE TABLE m.d2 (id BIGINT, n BIGINT);")->is_success());
+    REQUIRE(run("CREATE TABLE m.f (a BIGINT, b BIGINT, v BIGINT);")->is_success());
+    REQUIRE(run("INSERT INTO m.d1 (id, a.b, a.c) VALUES (1, 100, 7), (2, 200, 1);")->is_success());
+    REQUIRE(run("INSERT INTO m.d2 (id, n) VALUES (1, 1000), (2, 2000);")->is_success());
+    REQUIRE(run("INSERT INTO m.f (a, b, v) VALUES (1, 1, 10), (2, 2, 20), (1, 2, 30), (2, 1, 40);")->is_success());
+
+    auto plan_of = [&](const std::string& sql) {
+        auto cur = run("EXPLAIN " + sql);
+        REQUIRE(cur->is_success());
+        std::string plan;
+        for (size_t r = 0; r < cur->size(); ++r) {
+            auto cell = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell.has_error());
+            plan += std::string(cell.value());
+            plan += '\n';
+        }
+        return plan;
+    };
+    auto count = [](const std::string& hay, const std::string& needle) {
+        size_t n = 0;
+        for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + needle.size())) {
+            ++n;
+        }
+        return n;
+    };
+
+    const std::string comma = "SELECT d1 #>> 'a.b' AS ab, d2.n, f.v FROM m.d1, m.d2, m.f "
+                              "WHERE f.a = d1.id AND f.b = d2.id ORDER BY f.v";
+    const std::string joined = "SELECT d1 #>> 'a.b' AS ab, d2.n, f.v FROM m.f JOIN m.d1 ON f.a = d1.id "
+                               "JOIN m.d2 ON f.b = d2.id ORDER BY f.v";
+    const auto comma_plan = plan_of(comma);
+    INFO(comma_plan << "\n" << plan_of(joined));
+    CHECK(count(comma_plan, "Hash Join") == 2);
+    CHECK(comma_plan == plan_of(joined));
+
+    auto cur = run(comma + ";");
+    REQUIRE(cur->is_success());
+    std::string rows;
+    for (size_t r = 0; r < cur->size(); ++r) {
+        for (size_t c = 0; c < cur->column_count(); ++c) {
+            auto cell = cur->get<int64_t>(c, r);
+            REQUIRE_FALSE(cell.has_error());
+            rows += std::to_string(cell.value());
+            rows += c + 1 == cur->column_count() ? ";" : ",";
+        }
+    }
+    CHECK(rows == "100,1000,10;200,2000,20;100,2000,30;200,1000,40;");
 }

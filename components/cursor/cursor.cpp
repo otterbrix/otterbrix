@@ -15,6 +15,7 @@ namespace components::cursor {
         : chunks_(resource)
         , chunk_starts_(1, 0, resource)
         , type_data_(resource)
+        , parameter_types_(resource)
         , error_(core::error_t::no_error()) {
         chunks_.emplace_back(empty_chunk(resource));
     }
@@ -25,6 +26,7 @@ namespace components::cursor {
         : chunks_(resource)
         , chunk_starts_(1, 0, resource)
         , type_data_(resource)
+        , parameter_types_(resource)
         , error_(core::error_on(resource, error)) {
         chunks_.emplace_back(empty_chunk(resource));
     }
@@ -38,6 +40,7 @@ namespace components::cursor {
         , chunks_(resource)
         , chunk_starts_(1, 0, resource)
         , type_data_(resource)
+        , parameter_types_(resource)
         , error_(core::error_t::no_error()) {
         // Mirror final column shape into type_data_ so callers querying the
         // result's typed-column descriptor see one entry per output column.
@@ -50,6 +53,7 @@ namespace components::cursor {
         : chunks_(std::move(chunks), resource)
         , chunk_starts_(resource)
         , type_data_(resource)
+        , parameter_types_(resource)
         , error_(core::error_t::no_error()) {
         // Keep the chunks as-is (each ≤DEFAULT_VECTOR_CAPACITY); never combine into one
         // oversized chunk.
@@ -69,10 +73,10 @@ namespace components::cursor {
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource,
                        std::pmr::vector<components::types::complex_logical_type>&& types)
-        : size_(types.size())
-        , chunks_(resource)
+        : chunks_(resource)
         , chunk_starts_(1, 0, resource)
         , type_data_(std::move(types))
+        , parameter_types_(resource)
         , error_(core::error_t::no_error()) {
         chunks_.emplace_back(empty_chunk(resource));
     }
@@ -107,7 +111,15 @@ namespace components::cursor {
     }
     core::result_wrapper_t<std::size_t> cursor_t::column_index(std::string_view key) const {
         assert(!is_write_ && "result is a row count, not a data");
-        return chunks_.front().column_index(key);
+        for (std::size_t index = 0; index < type_data_.size(); ++index) {
+            if (type_data_[index].has_alias() && type_data_[index].alias() == key) {
+                return index;
+            }
+        }
+        std::pmr::string message{"cursor_t::column_index: no column named \"", chunks_.get_allocator().resource()};
+        message.append(key);
+        message.append("\"");
+        return core::error_t{core::error_code_t::undefined_column, std::move(message)};
     }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
     void cursor_t::advance() { ++current_index_; }
@@ -133,7 +145,7 @@ namespace components::cursor {
         VALUE_OR_RETURN(const auto location, locate(row_idx));
         const auto& columns = chunks_[location.chunk].data;
         if (col_idx >= columns.size()) {
-            return make_error(core::error_code_t::field_not_exists, "column is out of range");
+            return make_error(core::error_code_t::invalid_parameter, "column is out of range");
         }
         const auto& column = columns[col_idx];
 
@@ -179,7 +191,7 @@ namespace components::cursor {
         assert(!is_write_ && "result is a row count, not a data");
         VALUE_OR_RETURN(const auto cell, resolve_cell(col_idx, row_idx, {}));
         if (cell.is_null) {
-            return make_error(core::error_code_t::conversion_failure, "cell is NULL");
+            return make_error(core::error_code_t::null_value_no_indicator_parameter, "cell is NULL");
         }
         switch (cell.vec->type().type()) {
             case types::logical_type::LIST:
@@ -209,6 +221,33 @@ namespace components::cursor {
     void cursor_t::set_written(std::uint64_t rows) noexcept {
         affected_rows_ = rows;
         is_write_ = true;
+    }
+
+    catalog::oid_t cursor_t::created_oid() const noexcept { return created_oid_; }
+
+    void cursor_t::set_created_oid(catalog::oid_t oid) noexcept { created_oid_ = oid; }
+
+    std::uint64_t cursor_t::portal_id() const noexcept { return portal_id_; }
+
+    bool cursor_t::has_more() const noexcept { return has_more_; }
+
+    void cursor_t::set_portal(std::uint64_t portal_id, bool has_more) noexcept {
+        portal_id_ = portal_id;
+        has_more_ = has_more;
+    }
+
+    session::transaction_status_t cursor_t::transaction_status() const noexcept { return transaction_status_; }
+
+    void cursor_t::set_transaction_status(session::transaction_status_t status) noexcept {
+        transaction_status_ = status;
+    }
+
+    const std::pmr::vector<components::types::complex_logical_type>& cursor_t::parameter_types() const noexcept {
+        return parameter_types_;
+    }
+
+    void cursor_t::set_parameter_types(const std::pmr::vector<components::types::complex_logical_type>& types) {
+        parameter_types_.assign(types.begin(), types.end());
     }
 
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource) { return cursor_t_ptr{new cursor_t(resource)}; }

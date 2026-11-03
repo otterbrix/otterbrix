@@ -17,7 +17,7 @@ TEST_CASE("integration::cpp::delete_affected_count::txn_re_delete_reports_zero",
 
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(exec(s, "CREATE DATABASE dc;")->is_success());
+        REQUIRE(exec(s, "CREATE SCHEMA dc;")->is_success());
         REQUIRE(exec(s, "CREATE TABLE dc.t (id bigint);")->is_success());
         REQUIRE(exec(s, "INSERT INTO dc.t (id) VALUES (1), (2), (3);")->is_success());
     }

@@ -197,3 +197,21 @@ TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size
         CHECK(allocated < data_bytes + validity_data_t::entry_count(capacity) * sizeof(uint64_t));
     }
 }
+
+TEST_CASE("validity_mask_t: count_valid counts rows in a partial last entry", "[validity-mask]") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    SECTION("an allocated all-valid mask") {
+        validity_mask_t mask(&resource, test_capacity);
+        REQUIRE(mask.is_mask_set());
+        REQUIRE(mask.count_valid(3) == 3);
+        REQUIRE(mask.count_valid(70) == 70);
+    }
+
+    SECTION("one NULL in the partial last entry") {
+        validity_mask_t mask(&resource, test_capacity);
+        mask.set_invalid(uint64_t(66));
+        REQUIRE(mask.count_valid(70) == 69);
+        REQUIRE(mask.count_valid(66) == 66);
+    }
+}

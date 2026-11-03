@@ -113,27 +113,21 @@ namespace otterbrix {
         static pyexpr_ptr sort_expression(components::expressions::sort_order type, const py_expression_t& expr);
 
     private:
-        //! Refuses unless still open: building a new expression dereferences the (possibly
-        //! null, after close()) space, which under NDEBUG is a plain null dereference, not an
-        //! assert. Same refusal as py_connection_t/py_relation_t::live_env().
+        //! Refuses unless still open, as py_connection_t/py_relation_t::live_env() do.
         py_connection_t& live_env() const;
 
-        //! Without the open check: to_string() never touches the space, so a closed
-        //! connection must still be able to print the expressions it made.
+        //! Without the open check: a closed connection still prints the expressions it made.
         expression_factory_t& factory() const;
 
     private:
-        //! The space `expr` was allocated out of, held instead of borrowed (same reason as
-        //! py_relation_t::space_ / py_result_t::space): `expr`'s pmr data lives on the space's
-        //! arena, and Python can drop the connection before this expression -- a reachable
-        //! use-after-free when it was a raw borrow. Declared first so reverse-order member
-        //! destruction frees it last, after `expr` has deallocated into it. No ref cycle:
-        //! neither py_connection_t nor otterbrix_t knows this class exists.
-        boost::intrusive_ptr<otterbrix_t> space_;
+        //! The engine arena `expr` was allocated out of, held instead of borrowed: Python can drop the connection
+        //! before this expression. Declared first so reverse-order member destruction frees it last, after `expr`
+        //! has deallocated into it.
+        boost::intrusive_ptr<engine_arena_t> arena_;
 
-        //! Held rather than borrowed, and not covered by `space_`: a CONSTANT expression is a
+        //! Held rather than borrowed, and not covered by `arena_`: a CONSTANT expression is a
         //! parameter id whose value lives in `expression_factory_t::values`, a member of the
-        //! connection object, not the arena. Measured: holding only the space made
+        //! connection object, not the arena. Measured: holding only the arena made
         //! tests/test_expression_lifetime.py's 64 constants come back as IndexError while its
         //! 64 columns read fine. std::shared_ptr because pybind11 owns py_connection_t through
         //! a shared_ptr holder (pyconnection/initialize.cpp) -- that IS its lifetime here;

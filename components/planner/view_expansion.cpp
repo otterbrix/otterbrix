@@ -26,7 +26,7 @@ namespace components::planner {
         using components::logical_plan::node_t;
         using components::logical_plan::node_type;
 
-        core::error_t schema_error(std::pmr::memory_resource* resource, const std::string& what) {
+        core::error_t view_parse_error(std::pmr::memory_resource* resource, const std::string& what) {
             return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{what, resource});
         }
 
@@ -105,35 +105,44 @@ namespace components::planner {
         return out;
     }
 
+    core::result_wrapper_t<Node*> parse_stored_body(std::pmr::memory_resource* resource,
+                                                    std::pmr::memory_resource* arena,
+                                                    const std::string& text,
+                                                    std::string_view what) {
+        auto parse_tree = raw_parser(arena, text.c_str());
+        if (parse_tree.has_error()) {
+            // No position: it would count characters of the stored body, not of the statement being run.
+            return view_parse_error(resource, parse_tree.error().what.c_str());
+        }
+        List* statements = parse_tree.value();
+        // parser.h's list is never null (a `!statements` test proves nothing) but may be EMPTY or hold several
+        // statements; linitial() alone would read past the end of an empty list, or silently drop every
+        // statement after the first — so both counts are checked before it's called.
+        if (list_length(statements) == 0) {
+            return view_parse_error(resource, "the " + std::string{what} + " parsed into no statement");
+        }
+        if (list_length(statements) > 1) {
+            return view_parse_error(resource,
+                                    "the " + std::string{what} + " parsed into " +
+                                        std::to_string(list_length(statements)) +
+                                        " statements; exactly one is expected");
+        }
+        void* parse_cell = linitial(statements);
+        if (!parse_cell) {
+            return view_parse_error(resource, "the " + std::string{what} + " parsed into an empty statement");
+        }
+        return &components::sql::transform::pg_cell_to_node_cast(parse_cell);
+    }
+
     core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
                                                          const core::body_sql_t& view_sql) {
         core::pmr::arena_resource_t parser_arena(resource);
-        void* parse_cell = nullptr;
-        // raw_parser really does throw; wrapper_dispatcher_t::execute_sql wraps it the same way. This is the
-        // exception -> error_t boundary — removing it would let an exception escape into an actor coroutine.
-        try {
-            auto* parsed = raw_parser(&parser_arena, view_sql.t.c_str());
-            // parser.h's list is never null (a `!parsed` test proves nothing) but may be EMPTY or hold several
-            // statements; linitial() alone would read past the end of an empty list, or silently drop every
-            // statement after the first — so both counts are checked before it's called.
-            if (list_length(parsed) == 0) {
-                return schema_error(resource, "the view body parsed into no statement");
-            }
-            if (list_length(parsed) > 1) {
-                return schema_error(resource,
-                                    "the view body parsed into " + std::to_string(list_length(parsed)) +
-                                        " statements; exactly one is expected");
-            }
-            parse_cell = linitial(parsed);
-        } catch (const std::exception& ex) {
-            return schema_error(resource, ex.what());
-        }
-        if (!parse_cell) {
-            return schema_error(resource, "the view body parsed into an empty statement");
+        auto statement = parse_stored_body(resource, &parser_arena, view_sql.t, "view body");
+        if (statement.has_error()) {
+            return statement.error();
         }
         components::sql::transform::transformer local_transformer(resource, view_sql.t.c_str());
-        auto parsed =
-            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
+        auto parsed = local_transformer.transform(*statement.value()).finalize();
         if (parsed.has_error()) {
             // error_on, not a bare copy: error_t's copy assignment rebuilds the message via std::pmr::string's
             // copy ctor, which doesn't propagate the allocator, landing it on the process default (see
@@ -143,7 +152,7 @@ namespace components::planner {
         // Taking only the last of several flattened plans (a sub-query in the view) would drop the
         // sub_query_results binding ids it carries in the OUTER plan's parameter space — refuse instead.
         if (parsed.value().sub_queries.size() > 1) {
-            return schema_error(resource, "a view body containing a sub-query is not supported yet");
+            return view_parse_error(resource, "a view body containing a sub-query is not supported yet");
         }
         return view_body_t{std::move(parsed.value().sub_queries.back()),
                            std::move(parsed.value().parameters),
@@ -165,11 +174,11 @@ namespace components::planner {
             return core::error_t::no_error();
         }
         if (!body) {
-            return schema_error(ref->resource(), "view body lowered to an empty plan");
+            return view_parse_error(ref->resource(), "view body lowered to an empty plan");
         }
         if (has_correlated_join(body.get())) {
-            return schema_error(ref->resource(),
-                                "a view body containing a correlated (LATERAL) join is not supported yet");
+            return view_parse_error(ref->resource(),
+                                    "a view body containing a correlated (LATERAL) join is not supported yet");
         }
         // The name the outer query addresses the body's columns by: the alias if the
         // reference was aliased (`FROM v AS x`), otherwise the view's own name.
@@ -196,8 +205,9 @@ namespace components::planner {
                 const auto* entry = resolves.table_entry(target);
                 if (entry != nullptr && entry->table_md.has_value() &&
                     entry->table_md->relkind == components::catalog::relkind::view) {
-                    return schema_error(n->resource(),
-                                        "cannot INSERT / UPDATE / DELETE through view \"" + target.collection.t + "\"");
+                    return view_parse_error(n->resource(),
+                                            "cannot INSERT / UPDATE / DELETE through view \"" + target.collection.t +
+                                                "\"");
                 }
             }
             for (const auto& c : n->children()) {
@@ -215,13 +225,13 @@ namespace components::planner {
         msg.append("\" is stale: ");
         msg.append(why);
         msg.append("; recreate the view");
-        return core::error_t(core::error_code_t::schema_error, std::move(msg));
+        return core::error_t(core::error_code_t::undefined_object, std::move(msg));
     }
 
     namespace {
         std::string written_name(const logical_plan::resolve_entry_t& entry) {
             std::string out;
-            for (const auto* part : {&entry.uid, &entry.dbname, &entry.schema}) {
+            for (const auto* part : {&entry.connection, &entry.database, &entry.schema}) {
                 if (!part->empty()) {
                     out += *part;
                     out += '.';
@@ -281,9 +291,9 @@ namespace components::planner {
         for (auto& entry : body_resolves.tables->entries()) {
             const auto binding =
                 std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
-                    return (b.refkind == components::catalog::view_refkind::relation ||
-                            b.refkind == components::catalog::view_refkind::host_name) &&
-                           b.dbname.t == entry.dbname && b.schema.t == entry.schema && b.relname.t == entry.relname;
+                    return b.refkind == components::catalog::view_refkind::relation &&
+                           b.connection.t == entry.connection && b.dbname.t == entry.database &&
+                           b.schema.t == entry.schema && b.relname.t == entry.relname;
                 });
             if (binding == view.view_bindings.end()) {
                 return view_stale_error(resource,
@@ -291,12 +301,8 @@ namespace components::planner {
                                         "its body names \"" + written_name(entry) +
                                             "\", which was not bound when the view was created");
             }
-            if (binding->refkind == components::catalog::view_refkind::relation) {
-                entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
-                entry.pin.oid = binding->refobjid;
-            } else {
-                entry.pin.kind = logical_plan::view_pin_t::kind_t::storage;
-            }
+            entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
+            entry.pin.oid = binding->refobjid;
             entry.pin.view = core::viewname_t{view.name};
         }
         return core::error_t::no_error();
@@ -329,21 +335,13 @@ namespace components::planner {
                     existing.table_md.has_value() && existing.table_md->table_oid != pin.oid;
                 const bool pinned_elsewhere = existing.pin.kind == pin_kind::relation && existing.pin.oid != pin.oid;
                 if (pin.kind == pin_kind::relation) {
-                    if (existing.pin.kind == pin_kind::storage || resolved_elsewhere || pinned_elsewhere) {
+                    if (resolved_elsewhere || pinned_elsewhere) {
                         return view_stale_error(resource,
                                                 pin.view.t,
                                                 "\"" + written +
                                                     "\" in this statement no longer names the relation it was bound "
                                                     "to (oid " +
                                                     std::to_string(pin.oid) + ")");
-                    }
-                    existing.pin = pin;
-                } else if (pin.kind == pin_kind::storage) {
-                    if (existing.table_md.has_value() || existing.pin.kind == pin_kind::relation) {
-                        return view_stale_error(resource,
-                                                pin.view.t,
-                                                "\"" + written +
-                                                    "\" was resolved by the host and now names a catalog relation");
                     }
                     existing.pin = pin;
                 }
@@ -371,10 +369,29 @@ namespace components::planner {
         return wrapper;
     }
 
+    namespace {
+        // The matview the REFRESH found, by the name the catalog has for it.
+        qualified_name_t matview_name_of(const logical_plan::resolved_table_metadata_t& matview) {
+            return qualified_name_t{core::dbname_t{matview.database},
+                                    core::schema_t{matview.schema},
+                                    core::relname_t{matview.name}};
+        }
+
+        // Read again by its oid, never looked up by name.
+        void register_matview(std::pmr::memory_resource* resource,
+                              logical_plan::catalog_resolves_t& resolves,
+                              const logical_plan::resolved_table_metadata_t& matview) {
+            logical_plan::resolve_entry_t entry;
+            entry.database = matview.database;
+            entry.schema = matview.schema;
+            entry.relname = matview.name;
+            entry.relation_oid = matview.table_oid;
+            resolves.ensure(resource, logical_plan::resolve_kind::table).add(std::move(entry));
+        }
+    } // namespace
+
     core::result_wrapper_t<refresh_matview_plan_t>
-    refresh_matview_plan(std::pmr::memory_resource* resource,
-                         const logical_plan::resolved_table_metadata_t& matview,
-                         const core::dbname_t& dbname) {
+    refresh_matview_plan(std::pmr::memory_resource* resource, const logical_plan::resolved_table_metadata_t& matview) {
         auto bound = bind_view_body(resource, matview);
         if (bound.has_error()) {
             return bound.error();
@@ -383,7 +400,7 @@ namespace components::planner {
 
         auto reference = logical_plan::make_node_aggregate(resource, qualified_name_t{});
         RETURN_IF_ERROR(splice_view_body(reference.get(), project_view_body(resource, std::move(body.plan), matview)));
-        const qualified_name_t target{dbname, core::relname_t{matview.name}};
+        const auto target = matview_name_of(matview);
         auto insert = logical_plan::make_node_insert(resource);
         insert->set_target(target);
         insert->append_child(reference);
@@ -392,33 +409,23 @@ namespace components::planner {
                                             insert,
                                             body.params ? body.params : logical_plan::make_parameter_node(resource)};
         plan.catalog_resolves = std::move(body.resolves);
-        sql::transform::register_catalog_resolve_write_target(resource,
-                                                              &plan.catalog_resolves,
-                                                              target,
-                                                              sql::transform::constraint_resolve_kind::outgoing);
+        register_matview(resource, plan.catalog_resolves, matview);
         return refresh_matview_plan_t{std::move(plan), std::move(reference)};
     }
 
     logical_plan::execution_plan_t refresh_matview_delete_plan(std::pmr::memory_resource* resource,
-                                                               const logical_plan::resolved_table_metadata_t& matview,
-                                                               const core::dbname_t& dbname) {
-        const core::relname_t relname{matview.name};
-        const qualified_name_t target{dbname, relname};
-        auto del = sql::transform::name_catalog_target(
-            dbname,
-            relname,
-            logical_plan::make_node_delete(
+                                                               const logical_plan::resolved_table_metadata_t& matview) {
+        const auto target = matview_name_of(matview);
+        auto del = logical_plan::make_node_delete(
+            resource,
+            logical_plan::make_node_match(
                 resource,
-                logical_plan::make_node_match(
-                    resource,
-                    target,
-                    expressions::make_compare_expression(resource, expressions::compare_type::all_true)),
-                logical_plan::make_node_limit(resource, logical_plan::limit_t::all())));
+                target,
+                expressions::make_compare_expression(resource, expressions::compare_type::all_true)),
+            logical_plan::make_node_limit(resource, logical_plan::limit_t::all()));
+        del->set_target(target);
         logical_plan::execution_plan_t plan{resource, std::move(del), logical_plan::make_parameter_node(resource)};
-        sql::transform::register_catalog_resolve_write_target(resource,
-                                                              &plan.catalog_resolves,
-                                                              target,
-                                                              sql::transform::constraint_resolve_kind::referencing);
+        register_matview(resource, plan.catalog_resolves, matview);
         return plan;
     }
 

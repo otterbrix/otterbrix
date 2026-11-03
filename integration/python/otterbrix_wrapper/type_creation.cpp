@@ -167,7 +167,7 @@ namespace otterbrix { namespace type_creation {
             return it->second;
         }
         return core::error_t(
-            core::error_code_t::conversion_failure,
+            core::error_code_t::undefined_object,
             std::pmr::string("Has no function to transform str " + type_str + " to OtterBrix type", resource));
     }
 

@@ -94,7 +94,7 @@ namespace components::catalog {
         msg.append(" depends on ");
         msg.append(target);
         msg.append("\nHINT: Use DROP ... CASCADE to drop the dependent objects too.");
-        return core::error_t{core::error_code_t::other_error, std::move(msg)};
+        return core::error_t{core::error_code_t::dependent_objects_still_exist, std::move(msg)};
     }
 
 } // namespace components::catalog

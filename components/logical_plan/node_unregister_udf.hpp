@@ -10,10 +10,7 @@
 
 namespace components::logical_plan {
 
-    // UNREGISTER_UDF — leaf carrying the function name + argument types that
-    // identify a single overload to drop. The operator probes the global
-    // default function_registry_t to confirm the overload exists, removes it
-    // from the registry, and purges all matching pg_proc rows.
+    // UNREGISTER_UDF: one overload by its name and argument types, whose pg_proc rows the statement drops.
     class node_unregister_udf_t final : public node_t {
     public:
         node_unregister_udf_t(std::pmr::memory_resource* resource,
@@ -22,6 +19,9 @@ namespace components::logical_plan {
                               components::catalog::drop_behavior_t behavior);
 
         const std::string& function_name() const noexcept { return function_name_; }
+        // The schema of the session's place, the one the overload is dropped from: the executor stamps it.
+        void set_schema_oid(std::uint32_t schema_oid) noexcept { schema_oid_ = schema_oid; }
+        std::uint32_t schema_oid() const noexcept { return schema_oid_; }
         const std::pmr::vector<types::complex_logical_type>& inputs() const noexcept { return inputs_; }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
 
@@ -32,6 +32,7 @@ namespace components::logical_plan {
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
         components::catalog::drop_behavior_t behavior_;
+        std::uint32_t schema_oid_{0};
     };
 
     using node_unregister_udf_ptr = boost::intrusive_ptr<node_unregister_udf_t>;

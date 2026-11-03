@@ -92,7 +92,8 @@ namespace components::operators {
                 std::string msg = "computed_field_unregister: pg_computed_column answered with ";
                 msg += std::to_string(chunk.column_count());
                 msg += " column(s), fewer than the 7 this build reads — the field cannot be resolved";
-                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                set_error(
+                    core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
             for (uint64_t i = 0; i < chunk.size(); ++i) {
@@ -165,7 +166,7 @@ namespace components::operators {
             msg += "\" of relation \"";
             msg += rel;
             msg += "\" does not exist; use DROP COLUMN IF EXISTS to ignore it";
-            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+            set_error(core::error_t{core::error_code_t::undefined_column, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }

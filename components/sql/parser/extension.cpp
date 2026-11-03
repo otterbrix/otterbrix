@@ -7,7 +7,7 @@ namespace components::sql::parser {
         auto name = extension.name;
         auto [it, inserted] = extensions_.try_emplace(std::move(name), std::move(extension));
         if (!inserted) {
-            return core::error_t(core::error_code_t::already_exists,
+            return core::error_t(core::error_code_t::duplicate_object,
                                  std::pmr::string{
                                      "parser extension '" + it->first + "' already registered",
                                  });

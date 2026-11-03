@@ -6,6 +6,7 @@
 
 #include <components/vector/arrow/arrow.hpp>
 #include <components/vector/arrow/arrow_converter.hpp>
+#include <util/util.hpp>
 
 #include <memory_resource>
 #include <string>
@@ -47,7 +48,9 @@ namespace otterbrix {
             }
 
             ArrowSchema schema;
-            components::vector::arrow::to_arrow_schema(&schema, schema_types);
+            if (auto err = components::vector::arrow::to_arrow_schema(resource, &schema, schema_types); err.contains_error()) {
+                util::raise_no_cursor_error(std::string(err.what));
+            }
             auto schema_obj = schema_import_func(reinterpret_cast<uint64_t>(&schema));
 
             return py::cast<otterbrix::pyarrow::arrow_table_t>(from_batches_func(batches, schema_obj));

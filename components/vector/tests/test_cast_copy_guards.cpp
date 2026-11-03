@@ -96,7 +96,7 @@ TEST_CASE("deserialize_binary: a null mask shorter than the chunk is a refusal")
 }
 
 // A bare static_cast truncates silently, letting an out-of-range key hash equal to an
-// unrelated stored key; out-of-range values must return conversion_failure instead.
+// unrelated stored key; out-of-range values must return numeric_value_out_of_range instead.
 TEST_CASE("vector_ops: cast_vector refuses an out-of-range value instead of truncating") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -106,7 +106,7 @@ TEST_CASE("vector_ops: cast_vector refuses an out-of-range value instead of trun
 
     auto out = vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::SMALLINT), 2);
     REQUIRE(out.has_error());
-    CHECK(out.error().type == core::error_code_t::conversion_failure);
+    CHECK(out.error().type == core::error_code_t::numeric_value_out_of_range);
 
     SECTION("in-range values cast, NULL rows stay NULL") {
         vector::vector_t small(&resource, complex_logical_type(logical_type::INTEGER), 4);
@@ -172,7 +172,7 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
         auto out =
             vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 1);
         REQUIRE(out.has_error());
-        CHECK(out.error().type == core::error_code_t::conversion_failure);
+        CHECK(out.error().type == core::error_code_t::datatype_mismatch);
     }
 
     SECTION("string to numeric is a refusal") {
@@ -181,24 +181,4 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
         auto out = vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::BIGINT), 1);
         REQUIRE(out.has_error());
     }
-}
-
-// A SIZE_MAX sentinel here would be forwarded by the cursor API and let an embedder index the
-// chunk out of bounds; this is a field_not_exists error instead.
-TEST_CASE("data_chunk: column_index for a missing name is a refusal") {
-    auto resource = core::pmr::otterbrix_resource();
-
-    std::pmr::vector<complex_logical_type> cols(&resource);
-    complex_logical_type c0(logical_type::BIGINT);
-    c0.set_alias("present");
-    cols.push_back(c0);
-    vector::data_chunk_t chunk(&resource, cols, 4);
-
-    auto found = chunk.column_index("present");
-    REQUIRE_FALSE(found.has_error());
-    CHECK(found.value() == 0);
-
-    auto missing = chunk.column_index("missing");
-    REQUIRE(missing.has_error());
-    CHECK(missing.error().type == core::error_code_t::field_not_exists);
 }

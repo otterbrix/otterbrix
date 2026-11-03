@@ -45,7 +45,7 @@ namespace {
 
     template<typename D>
     void seed(D* d) {
-        REQUIRE(okq(d, "CREATE DATABASE m;"));
+        REQUIRE(okq(d, "CREATE SCHEMA m;"));
         REQUIRE(okq(d, "CREATE TABLE m.t (a INT, b INT, z INT);"));
         // a=1: two rows, a=2: three rows -- so a key and a reduction over the same group differ.
         REQUIRE(okq(d, "INSERT INTO m.t (a, b, z) VALUES (1,10,100),(1,20,200),(2,30,300),(2,40,400),(2,50,500);"));

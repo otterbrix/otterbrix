@@ -1,5 +1,7 @@
 #include "pushdown_limit.hpp"
 
+#include <algorithm>
+
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -38,9 +40,17 @@ namespace components::planner::optimizer {
 
             // DISTINCT is a FLAG on the aggregate and operator_distinct is layered
             // ABOVE the terminal scan — capping any source below would dedup too few
-            // rows and drop distinct values operator_limit can never recover. Stamp
-            // nothing: no source gets a cap, operator_limit windows after dedup.
+            // rows and drop distinct values operator_limit can never recover. No source
+            // gets a cap; operator_limit windows after dedup. DISTINCT ON over a sorted
+            // input keeps the first row per key in sort order, so it alone may stop
+            // after limit+offset kept rows.
             if (aggregate->is_distinct()) {
+                if (!aggregate->distinct_on_keys().empty() &&
+                    std::any_of(node->children().begin(), node->children().end(), [](const lp::node_ptr& child) {
+                        return child->type() == lp::node_type::sort_t;
+                    })) {
+                    aggregate->set_distinct_on_read_cap(limit.read_cap());
+                }
                 return;
             }
 

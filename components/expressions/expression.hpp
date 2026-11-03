@@ -73,7 +73,11 @@ namespace components::expressions {
                 } else if constexpr (std::is_same_v<type, key_t>) {
                     stream << "\"" << p << "\"";
                 } else if constexpr (std::is_same_v<type, expression_ptr>) {
-                    stream << p->to_string();
+                    if (p) {
+                        stream << p->to_string();
+                    } else {
+                        stream << "null";
+                    }
                 }
             },
             param);

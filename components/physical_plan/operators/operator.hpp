@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/table/storage_address.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <actor-zeta/detail/future.hpp>
@@ -31,10 +32,8 @@ namespace components::operators {
         match,
         // Placed above the group operator (never over a scan), unlike `match`; rendered "Having".
         having,
-        full_scan,
         transfer_scan,
         index_scan,
-        pushed_reduce_scan,
         insert,
         insert_on_conflict,
         remove,
@@ -43,14 +42,12 @@ namespace components::operators {
         select,
         // Whole-row dedup layered outermost (under limit); rendered "Unique", not "Filter".
         distinct,
-        // Wraps a terminal whose source can't apply a merged outer limit itself (UNION, pushed GROUP BY).
+        // Wraps a terminal whose source can't apply a merged outer limit itself (UNION, a taken GROUP BY).
         limit,
         join,
         // Substituted for `join` by create_plan_join when the ON condition is a single eq(left.key, right.key).
         hash_join,
         aggregate,
-        // Coordinator terminal above pushed_reduce_scan; owns the empty-input scalar row a sharded slice lacks.
-        group_merge,
         raw_data,
         function,
         union_op,
@@ -66,11 +63,14 @@ namespace components::operators {
         alter_column_add,
         alter_column_rename,
         alter_column_drop,
+        alter_column_set_not_null,
         // Walks pg_depend at runtime, replacing the dispatcher BFS duplicated across the drop_* handlers.
         dynamic_cascade_delete,
         checkpoint,
         // session_catalog_t mutation stays in the dispatcher post-success; touches no shared state.
         set_setting,
+        // PREPARE / DEALLOCATE: the session's store changes in the dispatcher after success, as a SET's settings do.
+        prepared_statement,
         vacuum,
         register_udf,
         unregister_udf,
@@ -94,13 +94,14 @@ namespace components::operators {
         resolve_type,
         resolve_constraint,
         allocate_oids,
-        extension,
-        batch
+        // What a backend took: the rows it answers, or the write it runs.
+        remote_scan,
+        remote_write,
+        batch,
+        // FETCH / MOVE and CLOSE of a portal: see operator_portal.hpp.
+        portal_fetch,
+        portal_close
     };
-
-    inline bool is_scan(operator_type t) {
-        return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan;
-    }
 
     enum class operator_state
     {
@@ -189,6 +190,10 @@ namespace components::operators {
         // Catalog-mode DML returns 0 too: its single-shot path must not be mid-flushed.
         [[nodiscard]] virtual uint64_t buffered_rows() const noexcept { return 0; }
 
+        [[nodiscard]] uint64_t flush_row_threshold(uint64_t engine) const noexcept {
+            return flush_row_threshold_impl(engine);
+        }
+
         // The rows a write changed; the executor reads it from the plan root of an INSERT / UPDATE / DELETE.
         [[nodiscard]] uint64_t written() const noexcept { return written_; }
 
@@ -233,7 +238,7 @@ namespace components::operators {
         // Operators that emit a typed result over zero input rows override this to avoid the NA sentinel.
         virtual void set_output_types(const std::pmr::vector<types::complex_logical_type>& types);
 
-        // Written only by execute_pipeline when ctx->analyze is set; read only by the EXPLAIN renderer.
+        // Written only by pump_pipeline_ when ctx->analyze is set; read only by the EXPLAIN renderer.
         void record_analyze(uint64_t rows, std::chrono::nanoseconds dt) noexcept {
             analyze_rows_ += rows;
             analyze_time_ += dt;
@@ -268,8 +273,9 @@ namespace components::operators {
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
         virtual bool opens_at_start_impl() const noexcept { return false; }
+        virtual uint64_t flush_row_threshold_impl(uint64_t engine) const noexcept { return engine; }
 
-        // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
+        // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Remote Query".
         virtual std::pmr::string explain_label_impl() const { return std::pmr::string{resource_}; }
         virtual std::pmr::vector<std::pmr::string> explain_details_impl() const {
             return std::pmr::vector<std::pmr::string>{resource_};
@@ -309,5 +315,12 @@ namespace components::operators {
     };
 
     using operator_ptr = operator_t::ptr;
+
+    // EXPLAIN's line of an operator over a table of a connection: `verb` as PostgreSQL 18 names a foreign table's
+    // operator, then `name`; empty for a table of otterbrix's own (the line is then the engine's name for the operator).
+    std::pmr::string foreign_label(std::pmr::memory_resource* resource,
+                                   const table::storage_address_t& address,
+                                   std::string_view verb,
+                                   std::string_view name);
 
 } // namespace components::operators

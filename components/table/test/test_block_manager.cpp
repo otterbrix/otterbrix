@@ -5,6 +5,7 @@
 #include <core/file/local_file_system.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/tests/skip_under_root.hpp>
 
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
@@ -364,6 +365,34 @@ TEST_CASE("single_file_block_manager: load missing file -> io_error, nothing cre
     REQUIRE_FALSE(std::filesystem::exists(path));
 }
 
+TEST_CASE("single_file_block_manager: load under an unsearchable directory -> io_error naming the file") {
+    using namespace components::table::storage;
+    test_helpers::skip_under_root();
+    const std::filesystem::path directory = corrupt_db_path("unsearchable");
+    std::error_code stale;
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all, stale);
+    std::filesystem::remove_all(directory, stale);
+    std::filesystem::create_directories(directory);
+    const auto path = (directory / "table.otbx").string();
+    {
+        std::ofstream f(path, std::ios::out | std::ios::binary | std::ios::trunc);
+        REQUIRE(f.is_open());
+    }
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+
+    std::filesystem::permissions(directory, std::filesystem::perms::none);
+    auto result = bm.load_existing_database();
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+    std::filesystem::remove_all(directory);
+
+    REQUIRE(result.has_error());
+    INFO("refusal: " << result.error().what.c_str());
+    CHECK(result.error().type == core::error_code_t::io_error);
+    CHECK(std::string(result.error().what.c_str()).find(path) != std::string::npos);
+}
+
 TEST_CASE("single_file_block_manager: load empty file -> io_error (error value)") {
     using namespace components::table::storage;
     const std::string path = corrupt_db_path("empty");
@@ -682,7 +711,7 @@ TEST_CASE("block_manager: a handle's death writes nothing on its manager") {
     cleanup_test_file();
 }
 
-TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned") {
+TEST_CASE("partial_block_manager: every packed segment offset is 16-byte aligned") {
     using namespace components::table::storage;
     cleanup_test_file();
 
@@ -696,18 +725,18 @@ TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned"
     // Offsets are later dereferenced as the segment's own element type, so misalignment is UB.
     auto first = pbm.place(bytes.data(), 4); // CONSTANT INT32 main segment
     REQUIRE_FALSE(first.has_error());
-    REQUIRE(first.value().offset_in_block % 8 == 0);
+    REQUIRE(first.value().offset_in_block % PAYLOAD_ALIGNMENT == 0);
     auto validity = pbm.place(bytes.data(), 128); // 1024-row validity bitmap
     REQUIRE_FALSE(validity.has_error());
     REQUIRE(validity.value().block_id == first.value().block_id);
-    REQUIRE(validity.value().offset_in_block % 8 == 0);
+    REQUIRE(validity.value().offset_in_block % PAYLOAD_ALIGNMENT == 0);
 
     // Byte-granular sizes (RLE, dictionary, big-string) must still keep every placement aligned.
     const uint64_t odd_sizes[] = {1, 3, 20, 7, 8, 9, 4096, 5, 133};
     for (auto size : odd_sizes) {
         auto alloc = pbm.place(bytes.data(), size);
         REQUIRE_FALSE(alloc.has_error());
-        REQUIRE(alloc.value().offset_in_block % 8 == 0);
+        REQUIRE(alloc.value().offset_in_block % PAYLOAD_ALIGNMENT == 0);
     }
 
     cleanup_test_file();

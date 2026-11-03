@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cstdlib>
 
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
@@ -16,24 +18,36 @@ namespace services::planner::impl {
 
     namespace {
         // has_join marks an unbounded join sub-tree (never tie-broken); has_filter is evidence for the tie-break below.
+        // A WHERE (or GROUP BY) a storage took stands as the node_remote_t its table's block reads: it filters as well.
         struct subplan_shape_t {
             bool has_join{false};
             bool has_filter{false};
         };
 
-        void probe_subplan_shape(const components::logical_plan::node_ptr& n, subplan_shape_t& out) {
+        void probe_subplan_shape(const components::logical_plan::node_ptr& n,
+                                 subplan_shape_t& out,
+                                 bool under_block = false) {
             if (!n) {
                 return;
             }
             using components::logical_plan::node_type;
             if (n->type() == node_type::join_t) {
                 out.has_join = true;
-            } else if (n->type() == node_type::match_t) {
+            } else if (n->type() == node_type::match_t || (under_block && n->type() == node_type::remote_t)) {
                 out.has_filter = true;
             }
             for (const auto& child : n->children()) {
-                probe_subplan_shape(child, out);
+                probe_subplan_shape(child, out, n->type() == node_type::aggregate_t);
             }
+        }
+
+        components::expressions::expression_ptr key_expression(std::pmr::memory_resource* resource,
+                                                               const components::expressions::param_storage& operand) {
+            using namespace components::expressions;
+            if (is_key(operand)) {
+                return make_scalar_expression(resource, scalar_type::get_field, as_key(operand));
+            }
+            return as_expr(operand);
         }
 
     } // namespace
@@ -114,29 +128,34 @@ namespace services::planner::impl {
                 }
             }
 
-            // After a swap the probe is the logical-right table and the build is the logical-left
-            // table, so the ctor key columns swap too (see operator_hash_join_t's ctor contract).
-            const std::size_t probe_key_col = swap_build_side ? join_node->right_col() : join_node->left_col();
-            const std::size_t build_key_col = swap_build_side ? join_node->left_col() : join_node->right_col();
+            // rewrite_hash_joins put the left side's operand first; after a swap the probe is the
+            // logical-right table, so the right operand is the probe key.
+            const auto* on =
+                static_cast<const components::expressions::compare_expression_t*>(node->expressions().front().get());
+            std::pmr::vector<components::expressions::expression_ptr> probe_keys(resource);
+            std::pmr::vector<components::expressions::expression_ptr> build_keys(resource);
+            probe_keys.push_back(key_expression(resource, swap_build_side ? on->right() : on->left()));
+            build_keys.push_back(key_expression(resource, swap_build_side ? on->left() : on->right()));
             components::operators::operator_ptr hash_join =
                 boost::intrusive_ptr(new components::operators::operator_hash_join_t(resource,
                                                                                      log.clone(),
                                                                                      join_node->type(),
-                                                                                     probe_key_col,
-                                                                                     build_key_col,
-                                                                                     swap_build_side));
-            // The hash path covers inner/left/right/full only; cross never carries an equi-key.
+                                                                                     std::move(probe_keys),
+                                                                                     std::move(build_keys),
+                                                                                     swap_build_side,
+                                                                                     join_node->single_match()));
+            // Cross never carries an equi-key.
             switch (join_node->type()) {
                 case join_type::left:
                 case join_type::right:
                 case join_type::inner:
                 case join_type::full:
+                case join_type::semi:
+                case join_type::anti:
                     break;
                 case join_type::cross:
                 case join_type::invalid:
-                case join_type::semi:
-                case join_type::anti:
-                    assert(false && "a hash join is only inner, left, right or full");
+                    assert(false && "a hash join is never cross or invalid");
                     std::abort();
             }
             const auto& probe_child = swap_build_side ? node->children().back() : node->children().front();
@@ -150,8 +169,12 @@ namespace services::planner::impl {
         const auto& expression = node->expressions()[0];
 
         // Equi-join selection happens in rewrite_hash_joins; anything left as plain join_t lands here.
-        components::operators::operator_ptr join = boost::intrusive_ptr(
-            new components::operators::operator_join_t(resource, std::move(log), join_node->type(), expression));
+        components::operators::operator_ptr join =
+            boost::intrusive_ptr(new components::operators::operator_join_t(resource,
+                                                                            std::move(log),
+                                                                            join_node->type(),
+                                                                            expression,
+                                                                            join_node->single_match()));
 
         switch (join_node->type()) {
             case join_type::left:
@@ -159,12 +182,11 @@ namespace services::planner::impl {
             case join_type::cross:
             case join_type::inner:
             case join_type::full:
-                break;
-            case join_type::invalid:
             case join_type::semi:
             case join_type::anti:
-                // invalid never fires (validation); semi/anti appear only as LATERAL joins (handled above).
-                assert(false && "a semi, anti or invalid join outside LATERAL");
+                break;
+            case join_type::invalid:
+                assert(false && "an invalid join never reaches plan generation");
                 std::abort();
         }
         VALUE_OR_RETURN(auto left, lower_input(node->children().front()));

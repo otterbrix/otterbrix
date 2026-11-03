@@ -16,6 +16,8 @@ namespace otterbrix {
 
     private:
         const session_id_t session_{};
+        // Declared before cursor_store_: the answers outlive the engine, not its memory.
+        const engine_arena_ptr arena_;
         boost::intrusive_ptr<otterbrix_t> instance_;
         components::cursor::cursor_t_ptr cursor_store_{nullptr};
     };

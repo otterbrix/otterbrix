@@ -6,7 +6,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
@@ -25,7 +25,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -487,7 +487,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -603,18 +603,18 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("not exists database");
+    INFO("not exists schema");
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::database_not_exists);
+        REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
     }
 
     INFO("create database");
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, R"_(CREATE DATABASE TestDatabase;)_");
+        dispatcher->execute_sql(session, R"_(CREATE SCHEMA TestDatabase;)_");
     }
 
     INFO("not exists database");
@@ -636,7 +636,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -797,7 +797,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, R"_(CREATE DATABASE TestDatabase;)_");
+            dispatcher->execute_sql(session, R"_(CREATE SCHEMA TestDatabase;)_");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -841,7 +841,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
 
     INFO("compare on enum column");
     {
-        // TODO: push-down filter for ENUM is broken — the planner pushes the WHERE into full_scan as a
+        // TODO: push-down filter for ENUM is broken — the disk takes the WHERE (storage_offer) as a
         // constant_filter_t, and storage segments hand the comparator a raw int32_t (fixed_size_check_row<int32_t>)
         // wrapped as a typeless INTEGER value. The ENUM extension is gone by then. Fix needs the column's logical_type
         // threaded into constant_filter_t at construction so the literal is pre-resolved into the ordinal once.
@@ -1033,7 +1033,7 @@ TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_s
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.t (a integer);")->is_success());
     REQUIRE(exec("INSERT INTO TestDatabase.t (a) VALUES (NULL);")->is_success());
 
@@ -1070,7 +1070,7 @@ TEST_CASE("integration::cpp::test_collection::sql::union_null_branch_keeps_left_
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.prices (price integer);")->is_success());
     REQUIRE(exec("INSERT INTO TestDatabase.prices (price) VALUES (10), (20);")->is_success());
 

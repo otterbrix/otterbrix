@@ -2,7 +2,7 @@
 
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
-#include <components/planner/optimizer.hpp>
+#include <components/planner/host_hooks.hpp>
 #include <core/executor.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/collection/context_storage.hpp>

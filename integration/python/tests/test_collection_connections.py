@@ -7,7 +7,7 @@ _path = os.getcwd() + "/test_collection_connections"
 if os.path.exists(_path):
     shutil.rmtree(_path)
 client = Client(_path)
-client.execute("CREATE DATABASE schema;")
+client.execute("CREATE SCHEMA schema;")
 client.execute("CREATE TABLE schema.table();")
 
 def gen_id(num):

@@ -2,17 +2,15 @@ project(physical_plan)
 
 
 set(${PROJECT_NAME}_SOURCES
-        table_storage.cpp
         operators/operator.cpp
         operators/operator_data.cpp
         operators/operator_write_data.cpp
         operators/operator_empty.cpp
         operators/operator_raw_data.cpp
+        operators/operator_remote.cpp
         operators/operator_function.cpp
         operators/operator_lateral_join.cpp
 
-        operators/scan/full_scan.cpp
-        operators/scan/pushed_reduce_scan.cpp
         operators/scan/index_scan.cpp
         operators/scan/transfer_scan.cpp
         operators/scan/guard_chunk.cpp
@@ -27,7 +25,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_having.cpp
         operators/operator_distinct.cpp
         operators/operator_hash_group.cpp
-        operators/operator_group_merge.cpp
         operators/operator_select.cpp
         operators/operator_limit.cpp
         operators/operator_sort.cpp
@@ -53,8 +50,11 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_alter_column_add.cpp
         operators/operator_alter_column_drop.cpp
         operators/operator_alter_column_rename.cpp
+        operators/operator_alter_column_set_not_null.cpp
         operators/operator_checkpoint.cpp
+        operators/operator_portal.cpp
         operators/operator_set_setting.cpp
+        operators/operator_prepared_statement.cpp
         operators/operator_vacuum.cpp
         operators/operator_register_udf.cpp
         operators/operator_unregister_udf.cpp
@@ -69,6 +69,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_computed_field_register.cpp
         operators/operator_computed_field_unregister.cpp
         operators/operator_resolve_namespace.cpp
+        operators/catalog_name_lookup.cpp
         operators/operator_resolve_database.cpp
         operators/operator_resolve_table.cpp
         operators/operator_resolve_type.cpp

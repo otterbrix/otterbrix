@@ -7,7 +7,7 @@
 namespace components::expressions {
 
     // Deep copy of an expression tree onto `resource`: every expression node
-    // (compare / scalar / aggregate / sort / function) is rebuilt, including
+    // (compare / scalar / aggregate / sort / function / cast) is rebuilt, including
     // nested expression operands inside param_storage, so mutating the copy's
     // keys (e.g. key_t::set_path re-localization in the filter-pushdown rule)
     // never leaks into the original. key_t / parameter_id_t operands are plain

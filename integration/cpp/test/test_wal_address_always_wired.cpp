@@ -41,7 +41,7 @@ TEST_CASE("integration::cpp::wal_address_always_wired::a statement reaches the j
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE w;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA w;")->is_success());
         REQUIRE(exec("CREATE TABLE w.t (id BIGINT);")->is_success());
         REQUIRE(exec("INSERT INTO w.t (id) VALUES (1);")->is_success());
     }

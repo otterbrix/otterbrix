@@ -50,10 +50,23 @@ namespace components::table {
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> visible_types(const transaction_data& txn) const;
         // Every physical column's attoid, in physical order
         [[nodiscard]] std::pmr::vector<std::uint32_t> column_attoids() const;
+        // A write names its payload's columns: they must be the ones `txn` sees, in their order.
+        [[nodiscard]] core::error_t check_payload_columns(const transaction_data& txn,
+                                                          std::span<const std::uint32_t> attoids) const;
+        // A widened (physical) chunk: a NULL in a NOT NULL column `txn` sees refuses the write.
+        [[nodiscard]] core::error_t refuse_null_values(const transaction_data& txn,
+                                                       const vector::data_chunk_t& physical) const;
+        // A widened (physical) chunk's columns `txn` sees, copied.
+        [[nodiscard]] vector::data_chunk_t visible_copy(const transaction_data& txn,
+                                                        const vector::data_chunk_t& physical) const;
 
         void stamp_column_identity(uint64_t position, std::uint32_t attoid);
+        // The committed NOT NULL pg_attribute holds: a crash before the checkpoint loses the file's flag, not the row.
+        void adopt_column_not_null(uint64_t position);
         void stamp_column_added(uint64_t position, uint64_t stamp, uint64_t sub_id);
         void stamp_column_dropped(uint64_t position, uint64_t stamp, uint64_t sub_id);
+        // ALTER's PRIMARY KEY over the column at `position`: refused while a row visible to `txn` holds NULL in it.
+        [[nodiscard]] core::error_t stamp_column_not_null(const transaction_data& txn, uint64_t position);
         uint64_t publish_column_stamps(uint64_t txn_id, uint64_t commit_id);
         uint64_t revert_column_stamps(uint64_t txn_id, uint64_t from_sub_id);
 
@@ -62,8 +75,7 @@ namespace components::table {
         [[nodiscard]] static write_decision_t decide_claim(const transaction_data& txn, uint64_t stamp) noexcept;
 
         // Prepare for commit
-        [[nodiscard]] core::error_t prepare(const transaction_data& txn,
-                                            const std::pmr::vector<row_range_t>& own_appends);
+        [[nodiscard]] core::error_t prepare(const transaction_data& txn);
         // Transform prepared into commit marker (commit is finished everywhere)
         void release_prepared(uint64_t txn_id);
 
@@ -219,6 +231,8 @@ namespace components::table {
         std::pmr::vector<uint64_t> prepared_;
 
         [[nodiscard]] bool stands_at_commit(const transaction_data& txn, uint64_t stamp) const noexcept;
+        // The rows `txn` appended, found by their insert stamp: only the rare commit that must check them reads it.
+        [[nodiscard]] std::pmr::vector<row_range_t> own_appends(const transaction_data& txn) const;
         [[nodiscard]] core::error_t refuse_nulls_at_commit(const transaction_data& txn,
                                                            const std::pmr::vector<storage_index_t>& columns,
                                                            std::span<const row_range_t> ranges);

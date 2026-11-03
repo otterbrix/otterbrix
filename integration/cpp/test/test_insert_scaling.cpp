@@ -51,7 +51,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::insert_scan_cost_does_not_grow
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA B0;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE B0.items (_id text, v bigint);")->is_success());
 
     fill_rows(d, "B0.items", "small_", 0, kSmallRows);
@@ -75,7 +75,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_without_constrain
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA B0;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE B0.docs (_id text, v bigint);")->is_success());
     {
         auto cur = exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('k', 1);");
@@ -103,7 +103,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_with_primary_key_
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA B0;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE B0.docs (_id text, v bigint);")->is_success());
     REQUIRE(exec(d, "ALTER TABLE B0.docs ADD CONSTRAINT pk_docs_id PRIMARY KEY (_id);")->is_success());
     REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('k', 1);")->is_success());
@@ -132,7 +132,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_rejection_survive
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA B0;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE B0.docs (_id text, v bigint);")->is_success());
         REQUIRE(exec(d, "ALTER TABLE B0.docs ADD CONSTRAINT pk_docs_id PRIMARY KEY (_id);")->is_success());
         REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('a', 1), ('b', 2);")->is_success());

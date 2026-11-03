@@ -85,27 +85,24 @@ namespace components::expressions {
     // Encapsulated access to the `key_t` alternative of `param_storage` (a
     // std::variant type alias). New code names is_key/as_key instead of
     // std::holds_alternative/std::get<key_t>, so no new site names std::variant.
-    // as_key must be guarded by is_key (it delegates to std::get, which throws on a
-    // mismatched alternative).
+    // as_key must be guarded by is_key: it aborts in every build on another alternative.
     bool is_key(const param_storage& param) noexcept;
-    const key_t& as_key(const param_storage& param);
-    key_t& as_key(param_storage& param);
+    const key_t& as_key(const param_storage& param) noexcept;
+    key_t& as_key(param_storage& param) noexcept;
 
     // Same encapsulation for the nested-expression alternative of `param_storage` (a
     // compare/scalar/function operand that is itself an expression). New code reads it
     // via is_expr/as_expr instead of std::holds_alternative/std::get.
-    // as_expr must be guarded by is_expr (it delegates to std::get, which throws on a
-    // mismatched alternative).
+    // as_expr must be guarded by is_expr: it aborts in every build on another alternative.
     bool is_expr(const param_storage& param) noexcept;
-    const expression_ptr& as_expr(const param_storage& param);
-    expression_ptr& as_expr(param_storage& param);
+    const expression_ptr& as_expr(const param_storage& param) noexcept;
+    expression_ptr& as_expr(param_storage& param) noexcept;
 
     // Same encapsulation for the parameter-id alternative of `param_storage`.
-    // as_parameter must be guarded by is_parameter (it delegates to std::get,
-    // which throws on a mismatched alternative).
+    // as_parameter must be guarded by is_parameter: it aborts in every build on another alternative.
     bool is_parameter(const param_storage& param) noexcept;
-    const core::parameter_id_t& as_parameter(const param_storage& param);
-    core::parameter_id_t& as_parameter(param_storage& param);
+    const core::parameter_id_t& as_parameter(const param_storage& param) noexcept;
+    core::parameter_id_t& as_parameter(param_storage& param) noexcept;
 
     // usefull reduction from compare_type
     enum class condition_kind

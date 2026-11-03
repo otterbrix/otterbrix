@@ -52,17 +52,32 @@ namespace components::sql::transform {
         // The parameter takes row `row` of `value`, whatever its vector type.
         transform_result& bind(size_t id, const vector::vector_t& value, uint64_t source_row = 0);
 
+        // A $id the statement does not name has `type` (a declared parameter of PREPARE).
+        transform_result& declare(size_t id, const types::complex_logical_type& type);
+
         size_t parameter_count() const;
+        // Does the statement name $id?
+        bool names_parameter(size_t id) const;
 
         bool all_bound() const;
 
         core::result_wrapper_t<logical_plan::execution_plan_t> finalize();
+        // As finalize(), with $n left unbound: a describe types them by their context.
+        core::result_wrapper_t<logical_plan::execution_plan_t> finalize_for_describe();
 
         [[nodiscard]] bool has_error() const noexcept;
 
         const core::error_t& get_error() const noexcept;
 
     private:
+        core::result_wrapper_t<logical_plan::execution_plan_t> finalize_(bool all_must_be_bound);
+
+        // Writes `value` into every VALUES cell of parameter $id.
+        [[nodiscard]] core::error_t bind_insert_cells_(size_t id,
+                                                       const std::pmr::vector<insert_location_t>& locations,
+                                                       const vector::vector_t& value,
+                                                       uint64_t source_row);
+
         using key_translation_t = std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>;
 
         std::pmr::memory_resource* resource_;
@@ -73,6 +88,7 @@ namespace components::sql::transform {
         std::vector<deferred_limit_t> deferred_limits_;
 
         std::pmr::unordered_map<size_t, bool> bound_flags_;
+        std::pmr::unordered_map<size_t, types::complex_logical_type> bound_types_;
         core::error_t last_error_;
         // Fixed at construction: the plan is gone once finalize() moved it out.
         size_t parameter_count_{0};

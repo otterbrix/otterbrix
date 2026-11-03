@@ -12,6 +12,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_insert.cpp
         impl/create_plan_insert_on_conflict.cpp
         impl/create_plan_match.cpp
+        impl/create_plan_remote.cpp
         impl/create_plan_select.cpp
         impl/create_plan_sort.cpp
         impl/create_plan_update.cpp
@@ -26,7 +27,9 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_sequence.cpp
         impl/create_plan_dynamic_cascade_delete.cpp
         impl/create_plan_checkpoint.cpp
+        impl/create_plan_cursor.cpp
         impl/create_plan_set_setting.cpp
+        impl/create_plan_prepared_statement.cpp
         impl/create_plan_vacuum.cpp
         impl/create_plan_create_matview.cpp
         impl/create_plan_register_udf.cpp

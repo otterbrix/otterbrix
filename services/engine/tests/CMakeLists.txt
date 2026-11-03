@@ -28,6 +28,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
     ..
 )
 
+target_compile_definitions(${PROJECT_NAME} PRIVATE OTTERBRIX_SOURCE_ROOT="${otterbrix_SOURCE_DIR}")
+
 include(CTest)
 include(Catch)
 catch_discover_tests(${PROJECT_NAME})

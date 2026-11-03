@@ -13,7 +13,10 @@
 #include <core/file/local_file_system.hpp>
 
 #include <components/vector/cell_equal.hpp>
+#include <cstring>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <unistd.h>
 
 #include "table_segment_scan.hpp"
@@ -1614,6 +1617,621 @@ TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segmen
         });
         REQUIRE(scanned == NUM_ROWS);
     }
+
+    cleanup_test_file();
+}
+
+namespace {
+    int64_t spread_value(uint64_t row) { return static_cast<int64_t>(row) * 1000003 + 17; }
+    bool null_row(uint64_t row) { return row % 7 == 3; }
+
+    void append_spread_bigints(test_env_t& env,
+                               components::table::storage::block_manager_t& bm,
+                               components::table::column_data_t& column,
+                               uint64_t first_row,
+                               uint64_t rows) {
+        using namespace components::table;
+        using namespace components::types;
+        using namespace components::vector;
+        auto pbm = storage::partial_block_manager_t::for_checkpoint(bm);
+        column_append_state state{&pbm};
+        REQUIRE_FALSE(column.initialize_append(state).has_error());
+        for (uint64_t offset = 0; offset < rows; offset += DEFAULT_VECTOR_CAPACITY) {
+            const uint64_t batch = std::min(rows - offset, uint64_t(DEFAULT_VECTOR_CAPACITY));
+            vector_t v(&env.resource, logical_type::BIGINT, batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                const uint64_t row = first_row + offset + i;
+                if (null_row(row)) {
+                    v.set_null(i, true);
+                } else {
+                    v.set_value(i, spread_value(row));
+                }
+            }
+            REQUIRE_FALSE(column.append(state, v, 0, batch).has_error());
+        }
+        REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
+    }
+
+    void require_spread_bigints(test_env_t& env, components::table::column_data_t& column, uint64_t rows) {
+        using namespace components::table;
+        using namespace components::types;
+        using namespace components::vector;
+        REQUIRE(column.count() == rows);
+        column_scan_state state;
+        state.initialize(complex_logical_type{logical_type::BIGINT});
+        column.initialize_scan(state);
+        for (uint64_t offset = 0; offset < rows; offset += DEFAULT_VECTOR_CAPACITY) {
+            const uint64_t batch = std::min(rows - offset, uint64_t(DEFAULT_VECTOR_CAPACITY));
+            vector_t result(&env.resource, logical_type::BIGINT, DEFAULT_VECTOR_CAPACITY);
+            const auto scanned = column.scan(offset / DEFAULT_VECTOR_CAPACITY, state, result);
+            REQUIRE_FALSE(state.has_error());
+            REQUIRE(scanned == batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                const uint64_t row = offset + i;
+                INFO("row " << row);
+                REQUIRE(result.is_null(i) == null_row(row));
+                if (!null_row(row)) {
+                    REQUIRE(result.get_value<int64_t>(i) == spread_value(row));
+                }
+            }
+        }
+    }
+
+    void require_no_empty_segment(const components::table::persistent_column_data_t& persistent) {
+        CHECK(persistent.segment_statistics.size() == persistent.data_pointers.size());
+        for (const auto& dp : persistent.data_pointers) {
+            CHECK(dp.tuple_count > 0);
+        }
+        for (const auto& child : persistent.child_columns) {
+            require_no_empty_segment(*child);
+        }
+    }
+} // namespace
+
+TEST_CASE("checkpoint_load: a partly filled fixed segment persists only its rows") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+
+    for (const uint64_t rows : {uint64_t{1}, uint64_t{500}, uint64_t{1500}}) {
+        INFO("rows " << rows);
+        cleanup_test_file();
+        test_env_t env;
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        const complex_logical_type type{logical_type::BIGINT};
+        auto column = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+        append_spread_bigints(env, bm, *column, 0, rows);
+
+        auto pbm = partial_block_manager_t::for_checkpoint(bm);
+        auto persistent = column->checkpoint(pbm);
+        REQUIRE_FALSE(persistent.has_error());
+        REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
+        const auto& p = persistent.value();
+
+        uint64_t persisted_rows = 0;
+        for (const auto& dp : p.data_pointers) {
+            REQUIRE(dp.compression == compression::compression_type::UNCOMPRESSED);
+            CHECK(dp.segment_size == dp.tuple_count * sizeof(int64_t));
+            persisted_rows += dp.tuple_count;
+        }
+        REQUIRE(persisted_rows == rows);
+        if (rows == 1) {
+            CHECK(p.data_pointers[0].segment_size == 8);
+        }
+        if (rows == 500) {
+            CHECK(p.data_pointers[0].segment_size == 4000);
+        }
+
+        REQUIRE(p.child_columns.size() == 1);
+        uint64_t validity_rows = 0;
+        for (const auto& dp : p.child_columns[0]->data_pointers) {
+            CHECK(dp.segment_size == (dp.tuple_count + DEFAULT_VECTOR_CAPACITY - 1) / DEFAULT_VECTOR_CAPACITY *
+                                         validity_mask_t::STANDARD_MASK_SIZE);
+            validity_rows += dp.tuple_count;
+        }
+        REQUIRE(validity_rows == rows);
+
+        auto reloaded = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+        REQUIRE_FALSE(reloaded->initialize_column(p).has_error());
+        require_spread_bigints(env, *reloaded, rows);
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("checkpoint_load: a LIST of NULLs persists no empty child segment and reloads") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    constexpr uint64_t NULL_ROWS = 3;
+
+    for (const auto element : {logical_type::BIGINT, logical_type::STRING_LITERAL}) {
+        INFO("element type " << static_cast<int>(element));
+        cleanup_test_file();
+        test_env_t env;
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        const auto list_type = complex_logical_type::create_list(element);
+        auto column = column_data_t::create_column(&env.resource, bm, 0, 0, list_type);
+        {
+            auto append_pbm = partial_block_manager_t::for_checkpoint(bm);
+            column_append_state append_state{&append_pbm};
+            REQUIRE_FALSE(column->initialize_append(append_state).has_error());
+            vector_t input(&env.resource, list_type, NULL_ROWS);
+            for (uint64_t i = 0; i < NULL_ROWS; i++) {
+                input.set_null(i, true);
+            }
+            REQUIRE_FALSE(column->append(append_state, input, 0, NULL_ROWS).has_error());
+            REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
+        }
+
+        auto pbm = partial_block_manager_t::for_checkpoint(bm);
+        auto persistent = column->checkpoint(pbm);
+        REQUIRE_FALSE(persistent.has_error());
+        REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
+        require_no_empty_segment(persistent.value());
+
+        auto reloaded = column_data_t::create_column(&env.resource, bm, 0, 0, list_type);
+        REQUIRE_FALSE(reloaded->initialize_column(persistent.value()).has_error());
+        REQUIRE(reloaded->count() == NULL_ROWS);
+        column_scan_state scan_state;
+        scan_state.initialize(list_type);
+        reloaded->initialize_scan(scan_state);
+        vector_t result(&env.resource, list_type, DEFAULT_VECTOR_CAPACITY);
+        REQUIRE(reloaded->scan_count(scan_state, result, NULL_ROWS) == NULL_ROWS);
+        REQUIRE_FALSE(scan_state.has_error());
+        for (uint64_t i = 0; i < NULL_ROWS; i++) {
+            CHECK(result.is_null(i));
+        }
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("checkpoint_load: dropping an empty segment keeps every segment's statistics on its own segment") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    constexpr uint64_t ROWS = 100;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    const complex_logical_type type{logical_type::BIGINT};
+    auto column = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+    append_spread_bigints(env, bm, *column, 0, ROWS);
+    auto pbm = partial_block_manager_t::for_checkpoint(bm);
+    auto persistent = column->checkpoint(pbm);
+    REQUIRE_FALSE(persistent.has_error());
+    REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
+    auto& p = persistent.value();
+    REQUIRE(p.data_pointers.size() == 1);
+    REQUIRE(p.segment_statistics.size() == 1);
+    REQUIRE(p.segment_statistics[0].has_bounds());
+    const auto real_min = p.segment_statistics[0].min_as<int64_t>();
+    const auto real_max = p.segment_statistics[0].max_as<int64_t>();
+
+    // A file written before empty segments were dropped: an empty segment ahead of the real one,
+    // carrying statistics of its own that must not land on the real segment.
+    auto empty = p.data_pointers[0];
+    empty.tuple_count = 0;
+    vector_t far(&env.resource, logical_type::BIGINT, 2);
+    far.set_value(0, int64_t{5'000'000'000'000});
+    far.set_value(1, int64_t{6'000'000'000'000});
+    base_statistics_t far_stats(&env.resource, logical_type::BIGINT);
+    far_stats.update(far, 0, 2);
+    p.data_pointers.insert(p.data_pointers.begin(), empty);
+    p.segment_statistics.insert(p.segment_statistics.begin(), std::move(far_stats));
+
+    auto reloaded = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+    REQUIRE_FALSE(reloaded->initialize_column(p).has_error());
+
+    auto pbm2 = partial_block_manager_t::for_checkpoint(bm);
+    auto again = reloaded->checkpoint(pbm2);
+    REQUIRE_FALSE(again.has_error());
+    REQUIRE_FALSE(pbm2.flush_partial_blocks().has_error());
+    const auto& p2 = again.value();
+    REQUIRE(p2.data_pointers.size() == 1);
+    REQUIRE(p2.segment_statistics.size() == 1);
+    CHECK(p2.data_pointers[0].tuple_count == ROWS);
+    REQUIRE(p2.segment_statistics[0].has_bounds());
+    CHECK(p2.segment_statistics[0].min_as<int64_t>() == real_min);
+    CHECK(p2.segment_statistics[0].max_as<int64_t>() == real_max);
+
+    auto final_column = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+    REQUIRE_FALSE(final_column->initialize_column(p2).has_error());
+    require_spread_bigints(env, *final_column, ROWS);
+
+    cleanup_test_file();
+}
+
+namespace {
+    constexpr unsigned char POISON = 0xA5;
+    constexpr std::size_t POISON_RUN = 8;
+
+    // Every buffer the buffer manager hands out starts as POISON, so a byte the engine never wrote
+    // is recognisable in the file.
+    class poison_resource_t final : public std::pmr::memory_resource {
+    public:
+        explicit poison_resource_t(std::pmr::memory_resource* upstream)
+            : upstream_(upstream) {}
+
+    private:
+        void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+            void* p = upstream_->allocate(bytes, alignment);
+            std::memset(p, POISON, bytes);
+            return p;
+        }
+        void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+            upstream_->deallocate(p, bytes, alignment);
+        }
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
+
+        std::pmr::memory_resource* upstream_;
+    };
+
+    struct poisoned_env_t {
+        core::pmr::otterbrix_resource resource;
+        poison_resource_t poison{&resource};
+        core::filesystem::local_file_system_t fs;
+        components::table::storage::buffer_pool_t buffer_pool;
+        components::table::storage::standard_buffer_manager_t buffer_manager;
+
+        poisoned_env_t()
+            : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+            , buffer_manager(&poison, fs, buffer_pool) {}
+    };
+
+    // Offset of the first run of POISON_RUN poison bytes, bytes.size() when there is none.
+    std::size_t first_poison_run(const std::vector<unsigned char>& bytes) {
+        std::size_t run = 0;
+        for (std::size_t i = 0; i < bytes.size(); i++) {
+            run = bytes[i] == POISON ? run + 1 : 0;
+            if (run == POISON_RUN) {
+                return i + 1 - POISON_RUN;
+            }
+        }
+        return bytes.size();
+    }
+
+    std::vector<unsigned char> file_bytes(const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::vector<unsigned char>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+} // namespace
+
+TEST_CASE("checkpoint_load: the file holds no byte the engine never wrote") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    constexpr uint64_t NUM_ROWS = 300;
+    cleanup_test_file();
+
+    poisoned_env_t env;
+    meta_block_pointer_t table_pointer;
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("id", logical_type::BIGINT);
+        columns.emplace_back("l", complex_logical_type::create_list(logical_type::BIGINT));
+        columns.emplace_back("s", logical_type::STRING_LITERAL);
+        columns.emplace_back("n", complex_logical_type::create_list(logical_type::BIGINT));
+        auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "poisoned");
+        {
+            auto types = table->copy_types();
+            data_chunk_t chunk(&env.resource, types, NUM_ROWS);
+            chunk.set_cardinality(NUM_ROWS);
+            for (uint64_t i = 0; i < NUM_ROWS; i++) {
+                if (null_row(i)) {
+                    chunk.data[0].set_null(i, true);
+                    chunk.data[1].set_null(i, true);
+                    chunk.data[2].set_null(i, true);
+                } else {
+                    chunk.set_value(0, i, spread_value(i));
+                    chunk.set_value(1, i, std::vector<int64_t>{spread_value(i), spread_value(i + 1)});
+                    const std::string text = "s_" + std::to_string(i);
+                    chunk.set_value(2, i, std::string_view{text});
+                }
+                chunk.data[3].set_null(i, true);
+            }
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data::committed());
+        }
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
+        table_pointer = writer.get_block_pointer();
+
+        database_header_t header{};
+        header.initialize();
+        REQUIRE_FALSE(bm.write_header(header).has_error());
+    }
+
+    const auto bytes = file_bytes(test_db_path());
+    REQUIRE_FALSE(bytes.empty());
+    const auto run = first_poison_run(bytes);
+    INFO("file size " << bytes.size() << ", first run of never-written bytes at offset " << run);
+    CHECK(run == bytes.size());
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+
+        uint64_t scanned = 0;
+        otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                const uint64_t row = scanned + i;
+                INFO("row " << row);
+                REQUIRE(chunk.data[0].is_null(i) == null_row(row));
+                REQUIRE(chunk.data[3].is_null(i));
+                if (!null_row(row)) {
+                    REQUIRE(chunk.data[0].get_value<int64_t>(i) == spread_value(row));
+                    const auto text = "s_" + std::to_string(row);
+                    REQUIRE(chunk.data[2].get_value<std::string_view>(i) == text);
+                    REQUIRE(sequence_of(chunk.data[1], i).length == 2);
+                }
+            }
+            scanned += chunk.size();
+        });
+        REQUIRE(scanned == NUM_ROWS);
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("checkpoint_load: a HUGEINT segment packed after an 8-byte segment is read through an aligned pointer") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    constexpr uint64_t ROWS = DEFAULT_VECTOR_CAPACITY;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    const complex_logical_type narrow_type{logical_type::BIGINT};
+    const complex_logical_type wide_type{logical_type::HUGEINT};
+    auto narrow = column_data_t::create_column(&env.resource, bm, 0, 0, narrow_type);
+    auto wide = column_data_t::create_column(&env.resource, bm, 1, 0, wide_type);
+    {
+        auto append_pbm = partial_block_manager_t::for_checkpoint(bm);
+        column_append_state narrow_state{&append_pbm};
+        REQUIRE_FALSE(narrow->initialize_append(narrow_state).has_error());
+        vector_t one(&env.resource, logical_type::BIGINT, 1);
+        one.set_value(0, int64_t{42});
+        REQUIRE_FALSE(narrow->append(narrow_state, one, 0, 1).has_error());
+
+        column_append_state wide_state{&append_pbm};
+        REQUIRE_FALSE(wide->initialize_append(wide_state).has_error());
+        vector_t values(&env.resource, logical_type::HUGEINT, ROWS);
+        for (uint64_t i = 0; i < ROWS; i++) {
+            values.set_value(i, int128_t(spread_value(i)));
+        }
+        REQUIRE_FALSE(wide->append(wide_state, values, 0, ROWS).has_error());
+        REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
+    }
+
+    auto pbm = partial_block_manager_t::for_checkpoint(bm);
+    auto narrow_persistent = narrow->checkpoint(pbm);
+    REQUIRE_FALSE(narrow_persistent.has_error());
+    auto wide_persistent = wide->checkpoint(pbm);
+    REQUIRE_FALSE(wide_persistent.has_error());
+    REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
+    REQUIRE(wide_persistent.value().data_pointers.size() == 1);
+    const auto& wide_dp = wide_persistent.value().data_pointers[0];
+    REQUIRE(wide_dp.compression == compression::compression_type::UNCOMPRESSED);
+    REQUIRE(wide_dp.block_pointer.block_id == narrow_persistent.value().data_pointers[0].block_pointer.block_id);
+    CHECK(wide_dp.block_pointer.offset % alignof(int128_t) == 0);
+
+    auto reloaded = column_data_t::create_column(&env.resource, bm, 1, 0, wide_type);
+    REQUIRE_FALSE(reloaded->initialize_column(wide_persistent.value()).has_error());
+    column_scan_state state;
+    state.initialize(wide_type);
+    reloaded->initialize_scan(state);
+    vector_t result(&env.resource, wide_type, DEFAULT_VECTOR_CAPACITY);
+    result.set_vector_type(vector_type::CONSTANT);
+    REQUIRE(reloaded->scan(state, result, ROWS) == ROWS);
+    REQUIRE_FALSE(state.has_error());
+    const auto address = reinterpret_cast<std::uintptr_t>(result.data());
+    INFO("in-block offset " << wide_dp.block_pointer.offset << ", pointer mod 16 = " << address % 16);
+    CHECK(address % alignof(int128_t) == 0);
+    for (uint64_t i = 0; i < ROWS; i++) {
+        int128_t value;
+        std::memcpy(&value, result.data() + i * sizeof(int128_t), sizeof(int128_t));
+        REQUIRE(value == int128_t(spread_value(i)));
+    }
+
+    cleanup_test_file();
+}
+
+namespace {
+    // The 16 bytes of int128_t(spread_value(row)); one bit pattern serves every 16-byte type.
+    void write_wide(components::vector::vector_t& v, uint64_t i, uint64_t row) {
+        const components::types::int128_t value(spread_value(row));
+        std::memcpy(v.data() + i * sizeof(value), &value, sizeof(value));
+    }
+
+    bool wide_equals(const std::byte* p, uint64_t row) {
+        const components::types::int128_t expected(spread_value(row));
+        return std::memcmp(p, &expected, sizeof(expected)) == 0;
+    }
+} // namespace
+
+TEST_CASE("checkpoint_load: NULL rows of HUGEINT, UHUGEINT, UUID and DECIMAL(38) are stored and read back") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    constexpr uint64_t ROWS = 300;
+
+    test_env_t env;
+    auto decimal = complex_logical_type::create_decimal(&env.resource, 38, 4);
+    REQUIRE_FALSE(decimal.has_error());
+    const std::vector<complex_logical_type> types{complex_logical_type{logical_type::HUGEINT},
+                                                  complex_logical_type{logical_type::UHUGEINT},
+                                                  complex_logical_type{logical_type::UUID},
+                                                  decimal.value()};
+    for (const auto& type : types) {
+        INFO("logical type " << static_cast<int>(type.type()));
+        cleanup_test_file();
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        auto column = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+        {
+            auto append_pbm = partial_block_manager_t::for_checkpoint(bm);
+            column_append_state state{&append_pbm};
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            vector_t input(&env.resource, type, ROWS);
+            for (uint64_t i = 0; i < ROWS; i++) {
+                if (null_row(i)) {
+                    input.set_null(i, true);
+                } else {
+                    write_wide(input, i, i);
+                }
+            }
+            REQUIRE_FALSE(column->append(state, input, 0, ROWS).has_error());
+            REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
+        }
+
+        column_scan_state scan_state;
+        scan_state.initialize(type);
+        column->initialize_scan(scan_state);
+        vector_t result(&env.resource, type, DEFAULT_VECTOR_CAPACITY);
+        REQUIRE(column->scan_count(scan_state, result, ROWS) == ROWS);
+        REQUIRE_FALSE(scan_state.has_error());
+        for (uint64_t i = 0; i < ROWS; i++) {
+            INFO("row " << i);
+            REQUIRE(result.is_null(i) == null_row(i));
+            if (!null_row(i)) {
+                REQUIRE(wide_equals(result.data() + i * sizeof(int128_t), i));
+            }
+        }
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("checkpoint_load: a HUGEINT segment placed 8 bytes off a 16-byte boundary by an older file reads back") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    constexpr uint64_t ROWS = DEFAULT_VECTOR_CAPACITY;
+    constexpr uint32_t OLD_OFFSET = 8;
+    constexpr uint64_t SHIFT = 5;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    const complex_logical_type type{logical_type::HUGEINT};
+    auto column = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+    {
+        auto append_pbm = partial_block_manager_t::for_checkpoint(bm);
+        column_append_state state{&append_pbm};
+        REQUIRE_FALSE(column->initialize_append(state).has_error());
+        vector_t input(&env.resource, type, ROWS);
+        for (uint64_t i = 0; i < ROWS; i++) {
+            write_wide(input, i, i);
+        }
+        REQUIRE_FALSE(column->append(state, input, 0, ROWS).has_error());
+        REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
+    }
+    auto pbm = partial_block_manager_t::for_checkpoint(bm);
+    auto persistent = column->checkpoint(pbm);
+    REQUIRE_FALSE(persistent.has_error());
+    REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
+    auto& p = persistent.value();
+    REQUIRE(p.data_pointers.size() == 1);
+    REQUIRE(p.data_pointers[0].compression == compression::compression_type::UNCOMPRESSED);
+
+    // The same segment as an older file laid it out: at an 8-aligned offset that is not 16-aligned,
+    // holding different values so the read provably comes from this block.
+    const uint64_t old_block = bm.free_block_id();
+    block_t image(&env.resource, old_block, static_cast<uint64_t>(bm.block_size()));
+    std::memset(image.buffer(), 0, static_cast<size_t>(bm.block_size()));
+    for (uint64_t i = 0; i < ROWS; i++) {
+        const int128_t value(spread_value(i + SHIFT));
+        std::memcpy(image.buffer() + OLD_OFFSET + i * sizeof(value), &value, sizeof(value));
+    }
+    REQUIRE_FALSE(bm.write(image, old_block).has_error());
+    p.data_pointers[0].block_pointer = block_pointer_t(old_block, OLD_OFFSET);
+    p.data_pointers[0].segment_size = ROWS * sizeof(int128_t);
+
+    auto reloaded = column_data_t::create_column(&env.resource, bm, 0, 0, type);
+    REQUIRE_FALSE(reloaded->initialize_column(p).has_error());
+    column_scan_state state;
+    state.initialize(type);
+    reloaded->initialize_scan(state);
+    vector_t result(&env.resource, type, DEFAULT_VECTOR_CAPACITY);
+    result.set_vector_type(vector_type::CONSTANT);
+    REQUIRE(reloaded->scan(state, result, ROWS) == ROWS);
+    REQUIRE_FALSE(state.has_error());
+    const auto address = reinterpret_cast<std::uintptr_t>(result.data());
+    INFO("pointer mod 16 = " << address % 16);
+    CHECK(address % alignof(int128_t) == 0);
+    for (uint64_t i = 0; i < ROWS; i++) {
+        INFO("row " << i);
+        REQUIRE(wide_equals(result.data() + i * sizeof(int128_t), i + SHIFT));
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("checkpoint_load: every buffer payload the buffer manager hands out is 16-byte aligned") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+    const auto aligned = [](const std::byte* p) { return reinterpret_cast<std::uintptr_t>(p) % alignof(int128_t) == 0; };
+
+    auto tiny = env.buffer_manager.register_transient_memory(1024, bm.block_size());
+    REQUIRE_FALSE(tiny.has_error());
+    auto tiny_pin = env.buffer_manager.pin(tiny.value());
+    REQUIRE_FALSE(tiny_pin.has_error());
+    CHECK(aligned(tiny_pin.value().ptr()));
+
+    auto managed = env.buffer_manager.allocate(memory_tag::TRANSIENT_TABLE, bm.block_size());
+    REQUIRE_FALSE(managed.has_error());
+    CHECK(aligned(managed.value().ptr()));
+
+    const uint64_t block_id = bm.free_block_id();
+    block_t image(&env.resource, block_id, static_cast<uint64_t>(bm.block_size()));
+    CHECK(aligned(image.buffer()));
+    std::memset(image.buffer(), 0, static_cast<size_t>(bm.block_size()));
+    REQUIRE_FALSE(bm.write(image, block_id).has_error());
+    auto loaded = bm.register_block(block_id);
+    auto loaded_pin = env.buffer_manager.pin(loaded);
+    REQUIRE_FALSE(loaded_pin.has_error());
+    CHECK(aligned(loaded_pin.value().ptr()));
 
     cleanup_test_file();
 }

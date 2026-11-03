@@ -62,7 +62,7 @@ TEST_CASE("integration::cpp::large_aggregate_dml::group_by_over_1024_distinct_gr
     auto* dispatcher = space.dispatcher();
 
     constexpr unsigned kGroups = 2000; // > 1024
-    REQUIRE(exec(dispatcher, "CREATE DATABASE AggDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA AggDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE AggDb.t (k bigint, v bigint);")->is_success());
 
     insert_in_batches(dispatcher, "AggDb.t (k, v)", kGroups * 2, 500, [](unsigned i) {
@@ -88,7 +88,7 @@ TEST_CASE("integration::cpp::large_aggregate_dml::count_distinct_over_hot_group_
     auto* dispatcher = space.dispatcher();
 
     constexpr unsigned kRows = 3000; // all one group, > 1024
-    REQUIRE(exec(dispatcher, "CREATE DATABASE AggDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA AggDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE AggDb.t (k bigint, val bigint);")->is_success());
 
     insert_in_batches(dispatcher, "AggDb.t (k, val)", kRows, 500, [](unsigned i) {
@@ -115,7 +115,7 @@ TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_o
     auto* dispatcher = space.dispatcher();
 
     constexpr unsigned kUsing = 2000; // > 1024
-    REQUIRE(exec(dispatcher, "CREATE DATABASE AggDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA AggDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE AggDb.target (k bigint, v bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE AggDb.using_tbl (k bigint);")->is_success());
 
@@ -164,7 +164,7 @@ TEST_CASE("integration::cpp::large_aggregate_dml::cascade_delete_over_1024_child
     auto* dispatcher = space.dispatcher();
 
     constexpr unsigned kChildren = 2000; // > 1024 children of the deleted parent
-    REQUIRE(exec(dispatcher, "CREATE DATABASE AggDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA AggDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE AggDb.parent (id bigint, val text);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE AggDb.child (id bigint, parent_id bigint);")->is_success());
     REQUIRE(exec(dispatcher,

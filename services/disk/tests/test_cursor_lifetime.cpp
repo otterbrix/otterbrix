@@ -22,6 +22,7 @@
 #include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -53,12 +54,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{cursor_dir()};
                 c.path = cursor_dir();
                 return c;
             }())
@@ -70,7 +72,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(cursor_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             manager.reset();
@@ -94,12 +96,15 @@ namespace {
         columns.emplace_back("value", complex_logical_type{logical_type::BIGINT});
         auto table_oid = test_create_table(fx, ns_oid, "rows", columns);
         REQUIRE(table_oid >= FIRST_USER_OID);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  columns,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      columns,
+                      /*is_computed=*/false)
+                .has_error());
 
         constexpr uint64_t kRows = 3 * components::vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t written = 0;
@@ -120,7 +125,12 @@ namespace {
                                                        components::table::transaction_data::committed(),
                                                        {},
                                                        table_oid};
-            auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            auto r = fx.invoke(&manager_disk_t::storage_append,
+                               append_ctx,
+                               table_oid,
+                               attoids_of(&fx.resource, columns),
+                               std::move(batch),
+                               false);
             REQUIRE_FALSE(r.has_error());
             written += rows;
         }
@@ -132,7 +142,6 @@ namespace {
                                session_id_t{},
                                table_oid,
                                uint64_t{0}, // 0 == OPEN
-                               std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                int64_t{-1},
                                std::vector<size_t>{},
                                with_open_snapshot(0, 0));
@@ -154,7 +163,7 @@ TEST_CASE("services::disk::cursor_lifetime::open_cursor_holds_the_compact_gate")
     REQUIRE(cursor_id != 0);
 
     INFO("an open fetch-next cursor must gate compact on its table");
-    CHECK(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK(fx.boot.has_active_scan_for_oid_sync(table_oid));
 }
 
 TEST_CASE("services::disk::cursor_lifetime::closing_an_abandoned_cursor_lifts_the_compact_gate") {
@@ -162,12 +171,12 @@ TEST_CASE("services::disk::cursor_lifetime::closing_an_abandoned_cursor_lifts_th
     auto table_oid = make_seeded_table(fx);
     auto cursor_id = open_undrained_cursor(fx, table_oid);
 
-    REQUIRE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    REQUIRE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, cursor_id);
 
     INFO("releasing an abandoned cursor must lift the compact gate");
-    CHECK_FALSE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK_FALSE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 }
 
 TEST_CASE("services::disk::cursor_lifetime::closing_a_cursor_is_idempotent") {
@@ -177,10 +186,10 @@ TEST_CASE("services::disk::cursor_lifetime::closing_a_cursor_is_idempotent") {
     // Idempotence matters because the drain paths erase the entry themselves too, so a source
     // that drains then releases must not error; a never-minted id (424242) is the same shape.
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, uint64_t{424242});
-    CHECK_FALSE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK_FALSE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 
     auto cursor_id = open_undrained_cursor(fx, table_oid);
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, cursor_id);
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, cursor_id);
-    CHECK_FALSE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK_FALSE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 }

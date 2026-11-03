@@ -145,7 +145,7 @@ namespace components::vector::arrow {
             auto extra_info = split_string(format, ':');
             if (extra_info.size() != 2) {
                 return core::error_t(
-                    core::error_code_t::conversion_failure,
+                    core::error_code_t::invalid_parameter,
                     std::pmr::string("Decimal format of Arrow object is incomplete, it is missing the scale and width",
                                      resource));
             }
@@ -153,7 +153,7 @@ namespace components::vector::arrow {
             // Parameters must always be 2 or 3 values (i.e., width, scale and an optional bit-width)
             if (parameters.size() != 2 && parameters.size() != 3) {
                 return core::error_t(
-                    core::error_code_t::conversion_failure,
+                    core::error_code_t::invalid_parameter,
                     std::pmr::string("Decimal format of Arrow object is incomplete, it is missing the scale or width",
                                      resource));
             }
@@ -166,13 +166,13 @@ namespace components::vector::arrow {
             };
             if (!parse_u64(parameters[0], width) || !parse_u64(parameters[1], scale)) {
                 return core::error_t(
-                    core::error_code_t::conversion_failure,
+                    core::error_code_t::invalid_parameter,
                     std::pmr::string("Decimal format of Arrow object has invalid width or scale", resource));
             }
             if (parameters.size() == 3 && !parse_u64(parameters[2], bitwidth)) {
                 // We have a bit-width defined
                 return core::error_t(
-                    core::error_code_t::conversion_failure,
+                    core::error_code_t::invalid_parameter,
                     std::pmr::string("Decimal format of Arrow object has invalid bit-width", resource));
             }
             if (width > types::DECIMAL_MAX_WIDTH || bitwidth > 128) {
@@ -279,7 +279,7 @@ namespace components::vector::arrow {
             int fixed_size_raw{};
             auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
             if (ec != std::errc{}) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string("Arrow fixed-size binary format has invalid size", resource));
             }
             auto fixed_size = static_cast<size_t>(fixed_size_raw);
@@ -335,7 +335,7 @@ namespace components::vector::arrow {
             int fixed_size_raw{};
             auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
             if (ec != std::errc{}) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string("Arrow fixed-size list format has invalid size", resource));
             }
             auto fixed_size = static_cast<size_t>(fixed_size_raw);

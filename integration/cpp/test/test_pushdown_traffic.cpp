@@ -33,13 +33,13 @@ TEST_CASE("integration::cpp::pushdown_traffic::scalar_ships_one_row") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TrafficDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TrafficDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TrafficDb.t (id bigint, g bigint, v bigint);")->is_success());
     seed(dispatcher, "TrafficDb.t");
 
     const uint64_t matched = kRowCount - static_cast<unsigned>(kFilterLo);
 
-    services::disk::reset_pushdown_reply_rows();
+    services::disk::reset_disk_block_rows();
     {
         std::stringstream q;
         q << "SELECT SUM(v) AS s, COUNT(*) AS c FROM TrafficDb.t WHERE v >= " << kFilterLo << ";";
@@ -49,7 +49,7 @@ TEST_CASE("integration::cpp::pushdown_traffic::scalar_ships_one_row") {
         REQUIRE(cur->size() == 1);
         // Value correctness lives in test_aggregate_pushdown_e2e; this file only asserts traffic.
     }
-    const uint64_t reply_rows = services::disk::pushdown_reply_rows();
+    const uint64_t reply_rows = services::disk::disk_block_rows();
 
     REQUIRE(reply_rows == 1);
     REQUIRE(reply_rows < matched);
@@ -60,13 +60,13 @@ TEST_CASE("integration::cpp::pushdown_traffic::grouped_ships_one_row_per_group")
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TrafficDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TrafficDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TrafficDb.t (id bigint, g bigint, v bigint);")->is_success());
     seed(dispatcher, "TrafficDb.t");
 
     const uint64_t matched = kRowCount - static_cast<unsigned>(kFilterLo);
 
-    services::disk::reset_pushdown_reply_rows();
+    services::disk::reset_disk_block_rows();
     {
         std::stringstream q;
         q << "SELECT g, COUNT(*) AS c FROM TrafficDb.t WHERE v >= " << kFilterLo << " GROUP BY g ORDER BY g ASC;";
@@ -76,7 +76,7 @@ TEST_CASE("integration::cpp::pushdown_traffic::grouped_ships_one_row_per_group")
         REQUIRE(cur->size() == kGroups);
         // Per-group value correctness lives in test_aggregate_pushdown_e2e.
     }
-    const uint64_t reply_rows = services::disk::pushdown_reply_rows();
+    const uint64_t reply_rows = services::disk::disk_block_rows();
 
     REQUIRE(reply_rows == kGroups);
     REQUIRE(reply_rows < matched);

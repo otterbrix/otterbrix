@@ -26,7 +26,7 @@ print("ANSWER:%r" % (conn.execute(statements[-1]).fetchall(),))
 """
 
 _TABLE = [
-    "CREATE DATABASE d;",
+    "CREATE SCHEMA d;",
     "CREATE TABLE d.t (id INTEGER, a INTEGER, b INTEGER, c INTEGER);",
     "INSERT INTO d.t (id, a, b, c) VALUES (1, 1, 1, 2), (2, 1, NULL, 2), (3, 2, 5, 1), (4, NULL, 1, 1);",
 ]

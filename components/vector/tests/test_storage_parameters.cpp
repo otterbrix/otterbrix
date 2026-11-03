@@ -343,7 +343,10 @@ TEST_CASE("compact_to_single_value: two rows are refused") {
     chunks.emplace_back(bigint_chunk(&resource, 1, 1));
     chunks.emplace_back(bigint_chunk(&resource, 2, 1));
 
-    CHECK(compact_to_single_value(&resource, chunks, bigint()).has_error());
+    auto compacted = compact_to_single_value(&resource, chunks, bigint());
+    REQUIRE(compacted.has_error());
+    CHECK(compacted.error().type == core::error_code_t::cardinality_violation);
+    CHECK(std::string_view{compacted.error().what} == "more than one row returned by a subquery used as an expression");
 }
 
 TEST_CASE("compact_to_bool_value: any row is true") {

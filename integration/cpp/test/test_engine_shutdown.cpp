@@ -89,7 +89,7 @@ namespace {
             }
             otterbrix::otterbrix_t space(std::move(opened.value()));
             auto* d = space.dispatcher();
-            if (!exec(d, "CREATE DATABASE sdb;")->is_success() ||
+            if (!exec(d, "CREATE SCHEMA sdb;")->is_success() ||
                 !exec(d, "CREATE TABLE sdb.t (id bigint, k bigint, payload text);")->is_success() ||
                 !exec(d, "CREATE INDEX t_k ON sdb.t USING hash (k);")->is_success()) {
                 return 2;

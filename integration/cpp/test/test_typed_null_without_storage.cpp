@@ -40,7 +40,7 @@ namespace {
     void backfills_null(const char* name, const std::string& column, const std::string& later_value) {
         test_spaces space(config_for(name));
         auto* d = space.dispatcher();
-        run_ok(d, "CREATE DATABASE d;");
+        run_ok(d, "CREATE SCHEMA d;");
         run_ok(d, "CREATE TABLE d.t (id bigint);");
         run_ok(d, "INSERT INTO d.t (id) VALUES (1);");
         run_ok(d, "ALTER TABLE d.t ADD COLUMN x " + column + ";");
@@ -63,7 +63,7 @@ namespace {
     void is_refused(const char* name, const std::string& column) {
         test_spaces space(config_for(name));
         auto* d = space.dispatcher();
-        run_ok(d, "CREATE DATABASE d;");
+        run_ok(d, "CREATE SCHEMA d;");
         run_ok(d, "CREATE TABLE d.t (id bigint);");
         run_ok(d, "INSERT INTO d.t (id) VALUES (1);");
         run_refused(d, "ALTER TABLE d.t ADD COLUMN x " + column + ";");
@@ -98,7 +98,7 @@ TEST_CASE("integration::cpp::typed_null_without_storage::add_struct_column_backf
     test_spaces space(config_for("struct"));
     auto* d = space.dispatcher();
     run_ok(d, "CREATE TYPE pair_t AS (x bigint, y bigint);");
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE TABLE d.t (id bigint);");
     run_ok(d, "INSERT INTO d.t (id) VALUES (1);");
     run_ok(d, "ALTER TABLE d.t ADD COLUMN p pair_t;");
@@ -120,7 +120,7 @@ TEST_CASE("integration::cpp::typed_null_without_storage::add_pointer_column_is_r
 TEST_CASE("integration::cpp::typed_null_without_storage::cast_null_to_blob_is_refused") {
     test_spaces space(config_for("cast_blob"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_refused(d, "SELECT CAST(NULL AS blob) AS x;");
     run_refused(d, "SELECT CAST(NULL AS bit) AS x;");
     run_refused(d, "SELECT CAST(NULL AS pointer) AS x;");
@@ -135,7 +135,7 @@ TEST_CASE("integration::cpp::typed_null_without_storage::cast_null_to_blob_is_re
 TEST_CASE("integration::cpp::typed_null_without_storage::matview_over_cast_null_to_blob_never_crashes") {
     test_spaces space(config_for("matview_blob"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE TABLE d.src (a bigint);");
     run_ok(d, "INSERT INTO d.src (a) VALUES (1), (2);");
     auto created =

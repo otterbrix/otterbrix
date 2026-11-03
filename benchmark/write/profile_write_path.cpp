@@ -177,7 +177,7 @@ namespace {
     }
 
     bool create_schema(otterbrix::wrapper_dispatcher_t* dispatcher, const options_t& o) {
-        if (!run_sql(dispatcher, "CREATE DATABASE wp;", nullptr)) {
+        if (!run_sql(dispatcher, "CREATE SCHEMA wp;", nullptr)) {
             return false;
         }
         std::string ddl = "CREATE TABLE wp.t (id bigint, k bigint";

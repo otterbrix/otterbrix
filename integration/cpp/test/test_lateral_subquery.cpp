@@ -43,7 +43,7 @@ namespace {
 
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher) {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE s;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA s;");
         dispatcher->execute_sql(session, "CREATE TABLE s.outer_t (id BIGINT, n BIGINT);");
         dispatcher->execute_sql(session, "INSERT INTO s.outer_t (id, n) VALUES (1, 10), (2, 20);");
         dispatcher->execute_sql(session, "CREATE TABLE s.inner_t (k BIGINT, v BIGINT);");
@@ -129,7 +129,7 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.outer_big (id BIGINT);");
     dispatcher->execute_sql(session, "CREATE TABLE s.inr (k BIGINT, v BIGINT);");
     auto insert_batched = [&](const std::string& head, auto tuple_for) {
@@ -316,7 +316,7 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
     auto* dispatcher = space.dispatcher();
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE s;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA s;");
         dispatcher->execute_sql(s, "CREATE TABLE s.os (id BIGINT, tag TEXT);");
         dispatcher->execute_sql(s, "INSERT INTO s.os (id, tag) VALUES (1, 'a'), (2, 'bb');");
         dispatcher->execute_sql(s, "CREATE TABLE s.inner_t (k BIGINT, v BIGINT);");
@@ -400,7 +400,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series")
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id) VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10);");
     dispatcher->execute_sql(session, "CREATE TABLE s.src (lo BIGINT, hi BIGINT);");
@@ -432,7 +432,7 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_correlated_subquer
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT, val BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id, val) VALUES (1, 0), (2, 0), (3, 0);");
     dispatcher->execute_sql(session, "CREATE TABLE s.a (k BIGINT);");
@@ -469,7 +469,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source"
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id) VALUES (1),(2),(3),(4),(5);");
     dispatcher->execute_sql(session, "CREATE TABLE s.src (x BIGINT);");
@@ -498,7 +498,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_empty_join_preser
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id) VALUES (100),(200),(300);");
     dispatcher->execute_sql(session, "CREATE TABLE s.src (lo BIGINT, hi BIGINT);");
@@ -521,7 +521,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_duplicate_matches
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id) VALUES (1),(2),(3);");
     dispatcher->execute_sql(session, "CREATE TABLE s.src (lo BIGINT, hi BIGINT);");
@@ -545,7 +545,7 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_chan
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT, val BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id, val) VALUES (1, 0), (2, 0), (3, 0);");
     dispatcher->execute_sql(session, "CREATE TABLE s.a (k BIGINT);");
@@ -576,7 +576,7 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_duplicate_matches_
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT, val BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id, val) VALUES (1, 0), (2, 0), (3, 0);");
     dispatcher->execute_sql(session, "CREATE TABLE s.a (k BIGINT);");
@@ -614,7 +614,7 @@ TEST_CASE("integration::cpp::lateral_subquery::body_evaluated_per_outer_row") {
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.owners (id BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.owners (id) VALUES (1), (2);");
     dispatcher->execute_sql(session, "CREATE TABLE s.items (owner_id BIGINT, amount BIGINT);");

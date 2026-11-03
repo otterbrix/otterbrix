@@ -1,7 +1,9 @@
 #pragma once
 
 #include "node.hpp"
+
 #include <components/base/identifier_types.hpp>
+#include <components/table/storage_address.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/table/column_definition.hpp>
@@ -33,6 +35,12 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
+        // The storage the table is created at, chosen by the executor from its database's connection.
+        const components::table::storage_address_t& storage_address() const noexcept { return storage_address_; }
+        void set_storage_address(components::table::storage_address_t address) {
+            storage_address_ = std::move(address);
+        }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -41,6 +49,7 @@ namespace components::logical_plan {
         std::vector<table::table_constraint_t> constraints_;
         bool if_not_exists_{false};
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
+        components::table::storage_address_t storage_address_;
     };
 
     using node_create_collection_ptr = boost::intrusive_ptr<node_create_collection_t>;

@@ -1,18 +1,23 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
-#include <components/index/forward.hpp>
 #include <components/log/log.hpp>
+#include <components/logical_plan/index_facts.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 #include <unordered_map>
 #include <unordered_set>
+
+namespace components::compute {
+    class function_registry_t;
+} // namespace components::compute
 
 namespace services {
 
@@ -25,24 +30,21 @@ namespace services {
         std::pmr::memory_resource* resource;
         log_t log;
         components::graph_execution_context execution_context;
+        // The statement's place; the resolve operators complete short names with it.
+        components::catalog::place_t place;
+        // The disk's address: the storage of the catalog tables, which have no resolved metadata.
+        actor_zeta::actor::address_t disk_address{actor_zeta::actor::address_t::empty_address()};
         // oid-only routing. Plan generators ask "do we know about this table?"
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.
         std::unordered_set<components::catalog::oid_t> known_oids;
-        // Keyed by table_oid, never flattened: flattening would let one table's
-        // predicate be judged by another table's index set (bogus index_scan).
-        struct table_index_info_t {
-            std::pmr::vector<components::index::keys_base_storage_t> keys;
-            std::pmr::vector<components::index::index_description_t> descriptions;
-
-            explicit table_index_info_t(std::pmr::memory_resource* resource)
-                : keys(resource)
-                , descriptions(resource) {}
-        };
-        std::pmr::unordered_map<components::catalog::oid_t, table_index_info_t> table_indexes;
+        // Filled by enrich before the optimizer runs; the optimizer chooses the indexes from them.
+        components::logical_plan::index_facts_t indexes;
         const components::logical_plan::storage_parameters* parameters = nullptr;
         // Every catalog lookup the plan depends on, owned by the execution_plan_t
         const components::logical_plan::catalog_resolves_t* catalog_resolves = nullptr;
+        // The functions the statement sees, which the executor sets as it lowers the plan.
+        const components::compute::function_registry_t* functions = nullptr;
         // Set for a COMMIT plan only;
         commit_input_t* commit_input = nullptr;
         // oid -> resolved_table_metadata_t* stamped by Pass 1's
@@ -67,10 +69,8 @@ namespace services {
                           const components::catalog::session_catalog_t& settings)
             : resource(resource)
             , log(std::move(log))
-            , execution_context{.timezone_offset = settings.timezone_offset,
-                                .decimal_width = settings.decimal_width,
-                                .decimal_scale = settings.decimal_scale}
-            , table_indexes(resource)
+            , execution_context{.timezone_offset = settings.timezone_offset}
+            , indexes(resource)
             , cte_working_sets(resource)
             , row_counts(resource) {}
 
@@ -80,7 +80,7 @@ namespace services {
             : resource(resource)
             , log(std::move(log))
             , execution_context(inherited)
-            , table_indexes(resource)
+            , indexes(resource)
             , cte_working_sets(resource)
             , row_counts(resource) {}
 
@@ -92,87 +92,6 @@ namespace services {
         table_metadata_for(components::catalog::oid_t oid) const noexcept {
             auto it = table_metadata.find(oid);
             return it != table_metadata.end() ? it->second : nullptr;
-        }
-
-        const table_index_info_t* index_info_for(components::catalog::oid_t oid) const noexcept {
-            auto it = table_indexes.find(oid);
-            return it != table_indexes.end() ? &it->second : nullptr;
-        }
-
-        // Only mutation point for table_indexes; other code reads via index_info_for.
-        table_index_info_t& index_info_slot(components::catalog::oid_t oid) {
-            auto it = table_indexes.find(oid);
-            if (it == table_indexes.end()) {
-                it = table_indexes.emplace(oid, table_index_info_t{resource}).first;
-            }
-            return it->second;
-        }
-
-        bool has_index_on(components::catalog::oid_t oid, const components::expressions::key_t& key) const {
-            const auto* info = index_info_for(oid);
-            if (info == nullptr) {
-                return false;
-            }
-            for (const auto& keys : info->keys) {
-                if (keys.size() == 1 && keys[0].as_string() == key.as_string()) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        bool has_index_on(components::catalog::oid_t oid,
-                          const components::expressions::key_t& key,
-                          components::logical_plan::index_type type) const {
-            const auto* info = index_info_for(oid);
-            if (info == nullptr) {
-                return false;
-            }
-            for (const auto& desc : info->descriptions) {
-                if (desc.type != type) {
-                    continue;
-                }
-                if (desc.keys.size() == 1 && desc.keys[0].as_string() == key.as_string()) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        bool has_index_on_with_other_type(components::catalog::oid_t oid,
-                                          const components::expressions::key_t& key,
-                                          components::logical_plan::index_type type) const {
-            const auto* info = index_info_for(oid);
-            if (info == nullptr) {
-                return false;
-            }
-            for (const auto& desc : info->descriptions) {
-                if (desc.type == type) {
-                    continue;
-                }
-                if (desc.keys.size() == 1 && desc.keys[0].as_string() == key.as_string()) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        components::logical_plan::index_type
-        preferred_index_type_for_compare(components::catalog::oid_t oid,
-                                         const components::expressions::key_t& key,
-                                         components::expressions::compare_type compare) const {
-            const bool is_range = compare == components::expressions::compare_type::lt ||
-                                  compare == components::expressions::compare_type::lte ||
-                                  compare == components::expressions::compare_type::gt ||
-                                  compare == components::expressions::compare_type::gte;
-
-            if (!is_range && has_index_on(oid, key, components::logical_plan::index_type::hashed)) {
-                return components::logical_plan::index_type::hashed;
-            }
-            if (is_range && has_index_on(oid, key, components::logical_plan::index_type::single)) {
-                return components::logical_plan::index_type::single;
-            }
-            return components::logical_plan::index_type::no_valid;
         }
     };
 

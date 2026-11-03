@@ -18,7 +18,7 @@ TEST_CASE("integration::cpp::concurrency::unique::interleaved", "[interleaved]")
     engine_t engine("unique_interleaved");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(first, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
     require_ok(first, "ALTER TABLE db.t ADD CONSTRAINT key_t_id " + key + " (id);");
@@ -72,7 +72,7 @@ TEST_CASE("integration::cpp::concurrency::unique::overlapping", "[overlapping]")
     engine_t engine("unique_overlapping");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.big (id bigint, v bigint);");
     insert_numbered_rows(first, "db.big", PAUSABLE_TABLE_ROWS);
     require_ok(first, "CREATE TABLE db.t (id bigint, v bigint);");
@@ -98,7 +98,7 @@ TEST_CASE("integration::cpp::concurrency::unique::parallel", "[parallel]") {
     constexpr int64_t KEYS = 13;
     engine_t engine("unique_parallel");
     session_t admin(engine, "admin");
-    require_ok(admin, "CREATE DATABASE db;");
+    require_ok(admin, "CREATE SCHEMA db;");
     require_ok(admin, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(admin, "ALTER TABLE db.t ADD CONSTRAINT uq_t_id UNIQUE (id);");
 
@@ -138,7 +138,7 @@ TEST_CASE("integration::cpp::concurrency::on_conflict::interleaved", "[interleav
     engine_t engine("on_conflict_interleaved");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(first, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
     require_ok(first, "ALTER TABLE db.t ADD CONSTRAINT uq_t_id UNIQUE (id);");
@@ -187,7 +187,7 @@ TEST_CASE("integration::cpp::concurrency::on_conflict::interleaved", "[interleav
              "INSERT INTO db.t (id, v) VALUES (1, 5) ON CONFLICT (id) DO UPDATE SET v = t.v + excluded.v;",
              fails},
             {first, "COMMIT;"},
-            {second, "COMMIT;", fails},
+            {second, "COMMIT;", succeeds, ends_idle},
         });
         CHECK(values(first) == after);
     }
@@ -198,7 +198,7 @@ TEST_CASE("integration::cpp::concurrency::foreign_key::interleaved", "[interleav
     engine_t engine("foreign_key_interleaved");
     session_t parent(engine, "parent");
     session_t child(engine, "child");
-    require_ok(parent, "CREATE DATABASE db;");
+    require_ok(parent, "CREATE SCHEMA db;");
     require_ok(parent, "CREATE TABLE db.parents (id bigint);");
     require_ok(parent, "INSERT INTO db.parents (id) VALUES (1), (2);");
     require_ok(parent, "CREATE TABLE db.children (id bigint, parent_id bigint);");

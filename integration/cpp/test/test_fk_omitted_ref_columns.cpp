@@ -34,7 +34,7 @@ namespace {
 
     // Seeded before the constraint exists, so these inserts never run through the FK check themselves.
     void seed(otterbrix::wrapper_dispatcher_t* d, const std::string& del_action) {
-        REQUIRE(exec(d, "CREATE DATABASE fkr;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA fkr;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE fkr.parent (id bigint, val text);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE fkr.child (id bigint, pid bigint);")->is_success());
         REQUIRE(exec(d, "ALTER TABLE fkr.parent ADD CONSTRAINT parent_pk PRIMARY KEY (id);")->is_success());
@@ -121,7 +121,7 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::no_primary_key_refuses_the_
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE fkr;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA fkr;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE fkr.parent (id bigint, val text);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE fkr.child (id bigint, pid bigint);")->is_success());
     REQUIRE(exec(d, "INSERT INTO fkr.parent (id, val) VALUES (1, 'p1');")->is_success());
@@ -143,7 +143,7 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::arity_against_primary_key_i
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE fkr;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA fkr;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE fkr.parent (id bigint, val text);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE fkr.child (id bigint, pid bigint, pid2 bigint);")->is_success());
     REQUIRE(exec(d, "ALTER TABLE fkr.parent ADD CONSTRAINT parent_pk PRIMARY KEY (id);")->is_success());

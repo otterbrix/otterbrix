@@ -67,7 +67,7 @@ namespace components::sql::transform {
         // entry by name, whose metadata carries view_sql (Phase A.A2 reads
         // pg_rewrite.ev_action for relkind='m').
         set_target(*node, qn, target_slots::relation);
-        register_table(qn.database.t, qn.collection.t, constraint_resolve_kind::none);
+        register_table(qn, constraint_resolve_kind::none);
         return node;
     }
 } // namespace components::sql::transform

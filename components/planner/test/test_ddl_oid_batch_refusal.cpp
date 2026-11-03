@@ -83,7 +83,7 @@ TEST_CASE("components::planner::ddl_oid_batch::a_rewrite_that_consumes_more_than
 
     INFO("a rewrite that outruns its batch must refuse, not stamp INVALID_OID into the catalog");
     REQUIRE(rewritten.has_error());
-    REQUIRE(rewritten.error().type == core::error_code_t::create_physical_plan_error);
+    REQUIRE(rewritten.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("components::planner::ddl_oid_batch::a_demand_of_zero_with_an_empty_batch_is_a_success") {

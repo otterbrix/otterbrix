@@ -20,7 +20,7 @@ TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA t;")->is_success());
     REQUIRE(exec("CREATE TABLE t.u (x BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO t.u (x) VALUES (9);")->is_success());
 
@@ -62,7 +62,7 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA t;")->is_success());
     REQUIRE(exec("CREATE TABLE t.ua (x BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO t.ua (x) VALUES (9);")->is_success());
 
@@ -88,7 +88,7 @@ TEST_CASE("integration::cpp::test_update::set_function_call") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA t;")->is_success());
     REQUIRE(exec("CREATE TABLE t.fn (x BIGINT, s TEXT);")->is_success());
     REQUIRE(exec("INSERT INTO t.fn (x, s) VALUES (9, 'ab'), (-4, 'Cd');")->is_success());
 
@@ -126,7 +126,7 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA t;")->is_success());
     REQUIRE(exec("CREATE TABLE t.uf (x BIGINT, s TEXT);")->is_success());
     REQUIRE(exec("INSERT INTO t.uf (x, s) VALUES (9, 'ab');")->is_success());
 
@@ -159,7 +159,7 @@ TEST_CASE("integration::cpp::test_update::set_null") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA t;")->is_success());
     REQUIRE(exec("CREATE TABLE t.un (x BIGINT, y BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO t.un (x, y) VALUES (9, 1), (10, 2);")->is_success());
 
@@ -195,7 +195,7 @@ TEST_CASE("integration::cpp::test_update::gather_is_one_copy_per_column") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE g;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA g;")->is_success());
     REQUIRE(exec("CREATE TABLE g.t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, e BIGINT);")->is_success());
 
     constexpr int kRows = 5000; // > 4 scan batches of DEFAULT_VECTOR_CAPACITY (1024)

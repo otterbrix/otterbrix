@@ -45,7 +45,7 @@ namespace {
             auto cursor = exec(dispatcher, sql);
             return cursor && cursor->is_success();
         };
-        REQUIRE(ok("CREATE DATABASE m;"));
+        REQUIRE(ok("CREATE SCHEMA m;"));
         REQUIRE(ok("CREATE TABLE m.t (a INT, b INT, z INT);"));
         REQUIRE(ok("INSERT INTO m.t (a, b, z) VALUES (1,10,100),(1,20,200),(2,30,300);"));
         REQUIRE(ok("CREATE TABLE m.empty (a INT, b INT);"));

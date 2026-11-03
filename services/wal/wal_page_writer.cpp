@@ -18,7 +18,17 @@ namespace services::wal {
         , last_error_(core::error_t::no_error()) {
         auto parent = path_.parent_path();
         if (!parent.empty()) {
-            std::filesystem::create_directories(parent);
+            std::error_code dir_ec;
+            std::filesystem::create_directories(parent, dir_ec);
+            if (dir_ec) {
+                std::pmr::string message{resource_};
+                message.append("wal segment directory ");
+                message.append(parent.string());
+                message.append(" could not be created: ");
+                message.append(dir_ec.message());
+                open_error_ = core::error_t(core::error_code_t::io_error, std::move(message));
+                return;
+            }
         }
 
         auto flags = core::filesystem::file_flags::WRITE | core::filesystem::file_flags::READ |

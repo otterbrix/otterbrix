@@ -33,7 +33,7 @@ namespace components::planner::optimizer {
     //
     // ANNOTATION-FREE STRUCTURAL rewrite; runs AFTER rewrite_hash_joins (so the
     // equi-key indices are settled and can be re-stamped) and BEFORE
-    // pushdown_aggregate + column_pruning (so the partial gets the normal
+    // column_pruning (so the partial gets the normal
     // single-table lowering and the join frame-split stays consistent).
     logical_plan::node_ptr eager_aggregation(std::pmr::memory_resource* resource, logical_plan::node_ptr root);
 

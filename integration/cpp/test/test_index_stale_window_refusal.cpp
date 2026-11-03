@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
     gate_guard_t guard;
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE rdb;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA rdb;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE rdb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec(d, "CREATE INDEX k_idx ON rdb.t (k);")->is_success());
     insert_range(d, 1, kRows);

@@ -19,7 +19,7 @@ namespace {
 
     // Same two magnitudes (-2, 3) in every table type, so one set of expectations covers all of them.
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+        REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
         REQUIRE(run(d, "CREATE TABLE sel.i16 (x SMALLINT);")->is_success());
         REQUIRE(run(d, "CREATE TABLE sel.i32 (x INTEGER);")->is_success());
         REQUIRE(run(d, "CREATE TABLE sel.i64 (x BIGINT);")->is_success());
@@ -153,7 +153,7 @@ TEST_CASE("integration::cpp::select_rework::two columns of different types unify
     auto config = make_test_config(integration_fixture_path("test_select_rework/mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.pair (a INTEGER, b DOUBLE PRECISION);")->is_success());
     REQUIRE(run(d, "INSERT INTO sel.pair (a, b) VALUES (1, 2.5);")->is_success());
 
@@ -184,7 +184,7 @@ TEST_CASE("integration::cpp::select_rework::comparison unifies its operands firs
     auto config = make_test_config(integration_fixture_path("test_select_rework/comparison_mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.pair (a INTEGER, b DOUBLE PRECISION);")->is_success());
     REQUIRE(run(d, "INSERT INTO sel.pair (a, b) VALUES (1, 2.5), (9, 2.5);")->is_success());
 
@@ -234,7 +234,7 @@ TEST_CASE("integration::cpp::select_rework::function argument is cast into the d
     auto config = make_test_config(integration_fixture_path("test_select_rework/function_cast"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.u (x UBIGINT);")->is_success());
 
     REQUIRE(run(d, "INSERT INTO sel.u (x) VALUES (7);")->is_success());
@@ -317,7 +317,7 @@ TEST_CASE("integration::cpp::select_rework::a stored literal cast survives as a 
     auto config = make_test_config(integration_fixture_path("test_select_rework/literal_cast_stored"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE lit;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA lit;")->is_success());
     REQUIRE(run(d, "CREATE TABLE lit.t (id BIGINT, v INT);")->is_success());
     REQUIRE(run(d, "INSERT INTO lit.t (id, v) VALUES (1, 1.9::INT);")->is_success());
 
@@ -350,7 +350,7 @@ TEST_CASE("integration::cpp::select_rework::star expands in place among computed
     auto config = make_test_config(integration_fixture_path("test_select_rework/star_mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.pair (a INTEGER, b INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO sel.pair (a, b) VALUES (1, 20);")->is_success());
 
@@ -392,7 +392,7 @@ TEST_CASE("integration::cpp::select_rework::star inside a call is not expanded")
     auto config = make_test_config(integration_fixture_path("test_select_rework/star_call"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.one (x INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO sel.one (x) VALUES (1), (2), (NULL);")->is_success());
 
@@ -406,7 +406,7 @@ TEST_CASE("integration::cpp::select_rework::bare star is a passthrough") {
     auto config = make_test_config(integration_fixture_path("test_select_rework/star_bare"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.pair (a INTEGER, b INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO sel.pair (a, b) VALUES (1, 2);")->is_success());
 
@@ -421,7 +421,7 @@ TEST_CASE("integration::cpp::select_rework::bare star is a passthrough") {
 namespace {
 
     void seed_with_nulls(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(run(d, "CREATE DATABASE nul;")->is_success());
+        REQUIRE(run(d, "CREATE SCHEMA nul;")->is_success());
         REQUIRE(run(d, "CREATE TABLE nul.i32 (x INTEGER);")->is_success());
         REQUIRE(run(d, "CREATE TABLE nul.f64 (x DOUBLE PRECISION);")->is_success());
         REQUIRE(run(d, "CREATE TABLE nul.dec (x DECIMAL(10,2));")->is_success());
@@ -550,7 +550,7 @@ TEST_CASE("integration::cpp::select_rework::cast fails hard on a value that does
     auto config = make_test_config(integration_fixture_path("test_select_rework/cast_overflow"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA cst;")->is_success());
     REQUIRE(run(d, "CREATE TABLE cst.t (x INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO cst.t (x) VALUES (100000), (1);")->is_success());
 
@@ -562,7 +562,7 @@ TEST_CASE("integration::cpp::select_rework::cast of an unparsable string fails")
     auto config = make_test_config(integration_fixture_path("test_select_rework/cast_parse"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA cst;")->is_success());
     REQUIRE(run(d, "CREATE TABLE cst.s (x TEXT);")->is_success());
     REQUIRE(run(d, "INSERT INTO cst.s (x) VALUES ('42'), ('abc');")->is_success());
 
@@ -583,7 +583,7 @@ TEST_CASE("integration::cpp::select_rework::try_cast nulls the failing rows") {
     auto config = make_test_config(integration_fixture_path("test_select_rework/try_cast"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA cst;")->is_success());
     REQUIRE(run(d, "CREATE TABLE cst.t (x INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO cst.t (x) VALUES (100000), (1);")->is_success());
 
@@ -602,7 +602,7 @@ TEST_CASE("integration::cpp::select_rework::try_cast over unparsable strings") {
     auto config = make_test_config(integration_fixture_path("test_select_rework/try_cast_parse"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE cst;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA cst;")->is_success());
     REQUIRE(run(d, "CREATE TABLE cst.s (x TEXT);")->is_success());
     REQUIRE(run(d, "INSERT INTO cst.s (x) VALUES ('42'), ('abc');")->is_success());
 
@@ -702,7 +702,7 @@ TEST_CASE("integration::cpp::select_rework::where unifies its operands", "[.push
     auto config = make_test_config(integration_fixture_path("test_select_rework/where_mixed"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.pair (a INTEGER, b DOUBLE PRECISION);")->is_success());
     REQUIRE(run(d, "INSERT INTO sel.pair (a, b) VALUES (1, 2.5), (9, 2.5);")->is_success());
 
@@ -728,7 +728,7 @@ TEST_CASE("integration::cpp::select_rework::where like filters", "[.pushdown_fil
     auto config = make_test_config(integration_fixture_path("test_select_rework/where_like"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE sel;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA sel;")->is_success());
     REQUIRE(run(d, "CREATE TABLE sel.s (x TEXT);")->is_success());
     REQUIRE(run(d, "INSERT INTO sel.s (x) VALUES ('alpha'), ('beta');")->is_success());
 
@@ -775,7 +775,7 @@ TEST_CASE("integration::cpp::select_rework::group by a key") {
     auto config = make_test_config(integration_fixture_path("test_select_rework/agg_group"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE grp;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA grp;")->is_success());
     REQUIRE(run(d, "CREATE TABLE grp.t (k INTEGER, v INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO grp.t (k, v) VALUES (1, 10), (1, 20), (2, 5);")->is_success());
 
@@ -795,7 +795,7 @@ TEST_CASE("integration::cpp::select_rework::having filters groups") {
     auto config = make_test_config(integration_fixture_path("test_select_rework/agg_having"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE grp;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA grp;")->is_success());
     REQUIRE(run(d, "CREATE TABLE grp.t (k INTEGER, v INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO grp.t (k, v) VALUES (1, 10), (1, 20), (2, 5);")->is_success());
 
@@ -811,7 +811,7 @@ TEST_CASE("integration::cpp::select_rework::grouped operator over a call and a c
     auto config = make_test_config(integration_fixture_path("test_select_rework/agg_operand_kinds"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE grp;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA grp;")->is_success());
     REQUIRE(run(d, "CREATE TABLE grp.t (k INTEGER, v INTEGER);")->is_success());
     REQUIRE(run(d, "INSERT INTO grp.t (k, v) VALUES (-1, 10), (-1, 20), (2, 5);")->is_success());
 
@@ -838,7 +838,7 @@ TEST_CASE("integration::cpp::select_rework::large groups span several chunks") {
     auto config = make_test_config(integration_fixture_path("test_select_rework/agg_large_groups"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(run(d, "CREATE DATABASE big;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA big;")->is_success());
     REQUIRE(run(d, "CREATE TABLE big.t (k INTEGER, v INTEGER);")->is_success());
 
     constexpr int row_count = 5000;

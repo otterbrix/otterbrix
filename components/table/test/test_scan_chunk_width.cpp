@@ -9,14 +9,9 @@
 #include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
 
-#include <cerrno>
-#include <csignal>
 #include <cstdio>
-#include <cstdlib>
-#include <iostream>
 #include <memory>
 #include <string>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
@@ -56,7 +51,6 @@ namespace {
     }
 
     // (k BIGINT, v LIST<STRING>), three committed rows, row i's list has i + 1 elements; nullptr on any error.
-    // No Catch macros: the death test's forked child runs it too.
     std::unique_ptr<data_table_t> seeded_table(env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("k", logical_type::BIGINT);

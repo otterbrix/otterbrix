@@ -116,7 +116,7 @@ namespace {
     }
 
     void create_the_table(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE rdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA rdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE rdb.t (id bigint, payload text);")->is_success());
     }
 

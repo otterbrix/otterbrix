@@ -2,12 +2,21 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "../otterbrix.h"
+#include "mirrored_error_codes.hpp"
 
+#include <climits>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <sys/stat.h>
 #include <thread>
 #include <type_traits>
 #include <unistd.h>
+#include <utility>
 
 namespace {
 
@@ -17,9 +26,6 @@ namespace {
     constexpr int32_t LT_BIGINT = 14;
     constexpr int32_t LT_DOUBLE = 24;
     constexpr int32_t LT_STRING_LITERAL = 35;
-
-    // core::error_code_t::invalid_parameter, mirrored like the logical types above.
-    constexpr int32_t EC_INVALID_PARAMETER = 22;
 
     string_view_t sv(const std::string& s) { return string_view_t{s.data(), s.size()}; }
 
@@ -71,6 +77,20 @@ namespace {
         release_cursor(cur);
     }
 
+    // How many times the log files under `directory` hold `needle`.
+    std::size_t log_mentions(const std::string& directory, const std::string& needle) {
+        std::size_t count = 0;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it{directory, ec}, end; !ec && it != end; it.increment(ec)) {
+            std::ifstream in(it->path());
+            const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+            for (auto at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
 } // namespace
 
 // Mirrors ddl.rs create_database_returns_cursor / create_collection_returns_cursor; the DROP path
@@ -92,7 +112,7 @@ TEST_CASE("c-api: CREATE TABLE without columns returns successful empty cursor",
     test_db_t t("create_collection");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE mydb;");
+    run_ok(t.ptr, "CREATE SCHEMA mydb;");
 
     cursor_ptr cur = execute_sql(t.ptr, sv(std::string("CREATE TABLE mydb.users();")));
     REQUIRE(cur != nullptr);
@@ -101,20 +121,20 @@ TEST_CASE("c-api: CREATE TABLE without columns returns successful empty cursor",
     release_cursor(cur);
 }
 
-TEST_CASE("c-api: CREATE TABLE in a database that does not exist is refused", "[c-api][ddl]") {
+TEST_CASE("c-api: CREATE TABLE in a schema that does not exist is refused", "[c-api][ddl]") {
     test_db_t t("create_collection_no_db");
     REQUIRE(t.ptr != nullptr);
 
     cursor_ptr cur = execute_sql(t.ptr, sv(std::string("CREATE TABLE nodb.t();")));
     REQUIRE(cur != nullptr);
     REQUIRE(cursor_is_error(cur));
-    error_message refusal = cursor_get_error(cur);
-    REQUIRE(refusal.message != nullptr);
-    CHECK(std::string(refusal.message) == "database \"nodb\" does not exist");
-    otterbrix_free_string(refusal.message);
+    const char* reason = cursor_error_message(cur);
+    REQUIRE(reason != nullptr);
+    CHECK(std::string(reason) == "schema \"nodb\" does not exist");
+    CHECK(cursor_error_code(cur) == EC_SCHEMA_NOT_EXISTS);
     release_cursor(cur);
 
-    run_ok(t.ptr, "CREATE DATABASE otherdb;");
+    run_ok(t.ptr, "CREATE SCHEMA otherdb;");
     cursor_ptr other = execute_sql(t.ptr, sv(std::string("CREATE TABLE otherdb.t();")));
     REQUIRE(other != nullptr);
     CHECK(cursor_is_success(other));
@@ -125,7 +145,7 @@ TEST_CASE("c-api: document flow in a database created through the C API", "[c-ap
     test_db_t t("document_flow");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE docdb;");
+    run_ok(t.ptr, "CREATE SCHEMA docdb;");
     run_ok(t.ptr, "CREATE TABLE docdb.docs();");
 
     run_ok(t.ptr, "INSERT INTO docdb.docs (id, name) VALUES (1, 'a'), (2, 'b');");
@@ -141,9 +161,9 @@ TEST_CASE("c-api: DROP TABLE then DROP DATABASE succeed with empty cursors", "[c
     REQUIRE(t.ptr != nullptr);
 
     run_ok(t.ptr, "CREATE DATABASE dropme;");
-    run_ok(t.ptr, "CREATE TABLE dropme.t();");
+    run_ok(t.ptr, "CREATE TABLE dropme.public.t();");
 
-    cursor_ptr drop_coll = execute_sql(t.ptr, sv(std::string("DROP TABLE dropme.t;")));
+    cursor_ptr drop_coll = execute_sql(t.ptr, sv(std::string("DROP TABLE dropme.public.t;")));
     REQUIRE(drop_coll != nullptr);
     REQUIRE(cursor_is_success(drop_coll));
     REQUIRE_FALSE(cursor_is_error(drop_coll));
@@ -162,7 +182,7 @@ TEST_CASE("c-api: DDL via execute_sql returns successful empty cursors", "[c-api
     test_db_t t("ddl_sql");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr db_cur = execute_sql(t.ptr, sv(std::string("CREATE DATABASE testdb;")));
+    cursor_ptr db_cur = execute_sql(t.ptr, sv(std::string("CREATE SCHEMA testdb;")));
     REQUIRE(db_cur != nullptr);
     REQUIRE(cursor_is_success(db_cur));
     REQUIRE(cursor_size(db_cur) == 0);
@@ -181,7 +201,7 @@ TEST_CASE("c-api: cursor_size matches inserted row count", "[c-api][cursor]") {
     test_db_t t("select_size");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE test_db;");
+    run_ok(t.ptr, "CREATE SCHEMA test_db;");
     run_ok(t.ptr, "CREATE TABLE test_db.users (name string, age bigint);");
     run_ok(t.ptr, "INSERT INTO test_db.users (name, age) VALUES ('Alice', 30), ('Bob', 25);");
 
@@ -196,7 +216,7 @@ TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-ap
     test_db_t t("affected_rows");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE test_db;");
+    run_ok(t.ptr, "CREATE SCHEMA test_db;");
     run_ok(t.ptr, "CREATE TABLE test_db.users (name string, age bigint);");
 
     auto affected = [&](const std::string& sql, uint64_t* rows) {
@@ -227,20 +247,96 @@ TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-ap
     release_cursor(select);
 }
 
+TEST_CASE("c-api: cursor_created_oid reports the table a CREATE TABLE created", "[c-api][cursor]") {
+    test_db_t t("created_oid");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr database = execute_sql(t.ptr, sv(std::string("CREATE SCHEMA test_db;")));
+    REQUIRE(cursor_is_success(database));
+    uint32_t oid = 7;
+    CHECK_FALSE(cursor_created_oid(database, &oid));
+    CHECK(oid == 7);
+    release_cursor(database);
+
+    cursor_ptr table = execute_sql(t.ptr, sv(std::string("CREATE TABLE test_db.users (name string, age bigint);")));
+    REQUIRE(cursor_is_success(table));
+    REQUIRE(cursor_created_oid(table, &oid));
+    release_cursor(table);
+
+    cursor_ptr catalog =
+        execute_sql(t.ptr, sv(std::string("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'users';")));
+    REQUIRE(cursor_is_success(catalog));
+    REQUIRE(cursor_size(catalog) == 1);
+    value_ptr stored = cursor_get_value(catalog, 0, 0);
+    REQUIRE(stored != nullptr);
+    REQUIRE(value_is_uint(stored));
+    CHECK(value_get_uint(stored) == oid);
+    release_value(stored);
+    uint32_t untouched = 7;
+    CHECK_FALSE(cursor_created_oid(catalog, &untouched));
+    CHECK(untouched == 7);
+    release_cursor(catalog);
+}
+
 namespace {
-    void require_parameter_refusal(otterbrix_ptr db, const sql_param_t& param, const std::string& reason) {
-        const std::string query = "SELECT $1;";
-        cursor_ptr cur = execute_sql_params(db, sv(query), &param, 1);
+    void require_error_cursor(cursor_ptr cur, int32_t code, const std::string& reason) {
         REQUIRE(cur != nullptr);
         REQUIRE(cursor_is_error(cur));
-        error_message refusal = cursor_get_error(cur);
-        CHECK(refusal.code == EC_INVALID_PARAMETER);
-        REQUIRE(refusal.message != nullptr);
-        CHECK(std::string(refusal.message) == reason);
-        otterbrix_free_string(refusal.message);
+        CHECK(cursor_error_code(cur) == code);
+        const char* message = cursor_error_message(cur);
+        REQUIRE(message != nullptr);
+        CHECK(std::string(message) == reason);
         release_cursor(cur);
     }
+
+    void require_parameter_refusal(otterbrix_ptr db, const sql_param_t& param, const std::string& reason) {
+        const std::string query = "SELECT $1;";
+        require_error_cursor(execute_sql_params(db, sv(query), &param, 1), EC_INVALID_PARAMETER, reason);
+    }
 } // namespace
+
+TEST_CASE("c-api: a parse error answers an error cursor and the engine goes on", "[c-api][errors]") {
+    test_db_t t("parse_error");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string broken = "SELECT FROM";
+    require_error_cursor(execute_sql(t.ptr, sv(broken)), EC_SQL_PARSE_ERROR, "syntax error at end of input");
+
+    sql_param_t param{};
+    param.index = 1;
+    param.kind = SQL_PARAM_INT64;
+    param.int64_value = 1;
+    const std::string broken_with_param = "SELECT FROM $1";
+    require_error_cursor(execute_sql_params(t.ptr, sv(broken_with_param), &param, 1),
+                         EC_SQL_PARSE_ERROR,
+                         "syntax error at or near \"$1\"");
+
+    run_ok(t.ptr, "SELECT 1;");
+}
+
+TEST_CASE("c-api: cursor_error_code and cursor_error_message on an error and a success cursor", "[c-api][errors]") {
+    test_db_t t("error_accessors");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr refused = execute_sql(t.ptr, sv(std::string("SELECT FROM")));
+    REQUIRE(refused != nullptr);
+    REQUIRE(cursor_is_error(refused));
+    CHECK(cursor_error_code(refused) == EC_SQL_PARSE_ERROR);
+    const char* reason = cursor_error_message(refused);
+    REQUIRE(reason != nullptr);
+    CHECK(cursor_error_message(refused) == reason);
+    CHECK(std::string(reason) == "syntax error at end of input");
+    release_cursor(refused);
+
+    cursor_ptr fine = execute_sql(t.ptr, sv(std::string("SELECT 1;")));
+    REQUIRE(fine != nullptr);
+    REQUIRE(cursor_is_success(fine));
+    CHECK(cursor_error_code(fine) == 0);
+    const char* none = cursor_error_message(fine);
+    REQUIRE(none != nullptr);
+    CHECK(std::string(none).empty());
+    release_cursor(fine);
+}
 
 TEST_CASE("c-api: execute_sql_params answers an error cursor for an index below 1", "[c-api][params]") {
     test_db_t t("params_index");
@@ -271,7 +367,7 @@ TEST_CASE("c-api: cursor_column_logical_type rejects negative and OOB indices", 
     test_db_t t("col_type_oob");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE typedb;");
+    run_ok(t.ptr, "CREATE SCHEMA typedb;");
     run_ok(t.ptr, "CREATE TABLE typedb.t (n integer);");
     run_ok(t.ptr, "INSERT INTO typedb.t (n) VALUES (1);");
 
@@ -290,7 +386,7 @@ TEST_CASE("c-api: cursor_column_name returns nullptr for OOB index", "[c-api][cu
     test_db_t t("col_name_oob");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE namedb;");
+    run_ok(t.ptr, "CREATE SCHEMA namedb;");
     run_ok(t.ptr, "CREATE TABLE namedb.t (n integer);");
     run_ok(t.ptr, "INSERT INTO namedb.t (n) VALUES (1);");
 
@@ -301,12 +397,48 @@ TEST_CASE("c-api: cursor_column_name returns nullptr for OOB index", "[c-api][cu
 
     REQUIRE(cursor_column_name(cur, 100) == nullptr);
 
-    // In-bounds name is heap-allocated and must be freed via otterbrix_free_string.
-    char* name = cursor_column_name(cur, 0);
+    const char* name = cursor_column_name(cur, 0);
     REQUIRE(name != nullptr);
     REQUIRE(std::string(name) == "n");
-    otterbrix_free_string(name);
 
+    release_cursor(cur);
+}
+
+TEST_CASE("c-api: cursor_column_name and value_get_string lend the handle's own string", "[c-api][cursor]") {
+    test_db_t t("borrowed_strings");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA db;");
+    run_ok(t.ptr, "CREATE TABLE db.t (name string);");
+    run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('lent');");
+
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT name FROM db.t;")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_success(cur));
+
+    const char* name = cursor_column_name(cur, 0);
+    REQUIRE(name != nullptr);
+    CHECK(cursor_has_next(cur));
+    value_ptr by_index = cursor_get_value(cur, 0, 0);
+    REQUIRE(by_index != nullptr);
+    release_value(by_index);
+    value_ptr by_name = cursor_get_value_by_name(cur, 0, sv(std::string("name")));
+    REQUIRE(by_name != nullptr);
+    release_value(by_name);
+    CHECK(cursor_column_name(cur, 0) == name);
+
+    value_ptr val = cursor_get_value(cur, 0, 0);
+    REQUIRE(val != nullptr);
+    const char* text = value_get_string(val);
+    REQUIRE(text != nullptr);
+    CHECK(value_is_string(val));
+    CHECK(value_get_string(val) == text);
+
+    CHECK(cursor_column_name(cur, 0) == name);
+    CHECK(std::string(name) == "name");
+    CHECK(std::string(text) == "lent");
+
+    release_value(val);
     release_cursor(cur);
 }
 
@@ -316,7 +448,7 @@ TEST_CASE("c-api: cursor_column_logical_type reports basic types", "[c-api][curs
     test_db_t t("col_types");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE typedb;");
+    run_ok(t.ptr, "CREATE SCHEMA typedb;");
     run_ok(t.ptr, "CREATE TABLE typedb.mix (i integer, big bigint, flag boolean, val double, label string);");
     run_ok(t.ptr, "INSERT INTO typedb.mix (i, big, flag, val, label) VALUES (1, 2, true, 3.5, 'x');");
 
@@ -340,7 +472,7 @@ TEST_CASE("c-api: cursor_has_next is true on non-empty SELECT", "[c-api][cursor]
     test_db_t t("has_next");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t();");
 
     run_ok(t.ptr, "INSERT INTO db.t (x) VALUES (1), (2), (3);");
@@ -359,7 +491,7 @@ TEST_CASE("c-api: value dispatch for an integer column", "[c-api][value]") {
     test_db_t t("value_int");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (num bigint);");
     run_ok(t.ptr, "INSERT INTO db.t (num) VALUES (42);");
 
@@ -385,7 +517,7 @@ TEST_CASE("c-api: value dispatch for a string column", "[c-api][value]") {
     test_db_t t("value_string");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (name string);");
     run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('hello');");
 
@@ -400,10 +532,9 @@ TEST_CASE("c-api: value dispatch for a string column", "[c-api][value]") {
     REQUIRE_FALSE(value_is_int(val));
     REQUIRE_FALSE(value_is_null(val));
 
-    char* str = value_get_string(val);
+    const char* str = value_get_string(val);
     REQUIRE(str != nullptr);
     REQUIRE(std::string(str) == "hello");
-    otterbrix_free_string(str);
 
     release_value(val);
     release_cursor(cur);
@@ -415,7 +546,7 @@ TEST_CASE("c-api: cursor_get_value returns nullptr for OOB row/column", "[c-api]
     test_db_t t("value_oob");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (num bigint);");
     run_ok(t.ptr, "INSERT INTO db.t (num) VALUES (7);");
 
@@ -442,6 +573,93 @@ namespace {
     struct has_wal_on<T, std::void_t<decltype(std::declval<const T&>().wal_on)>> : std::true_type {};
 } // namespace
 
+namespace {
+    template<typename R, typename... A>
+    constexpr bool is_noexcept(R (*)(A...) noexcept) {
+        return true;
+    }
+    template<typename R, typename... A>
+    constexpr bool is_noexcept(R (*)(A...)) {
+        return false;
+    }
+} // namespace
+
+#define OTTERBRIX_ENTRY_POINTS(X)                                                                                      \
+    X(otterbrix_create)                                                                                                \
+    X(otterbrix_destroy)                                                                                               \
+    X(execute_sql)                                                                                                     \
+    X(execute_sql_params)                                                                                              \
+    X(release_cursor)                                                                                                  \
+    X(cursor_size)                                                                                                     \
+    X(cursor_affected_rows)                                                                                            \
+    X(cursor_created_oid)                                                                                              \
+    X(cursor_column_count)                                                                                             \
+    X(cursor_column_logical_type)                                                                                      \
+    X(cursor_has_next)                                                                                                 \
+    X(cursor_is_success)                                                                                               \
+    X(cursor_is_error)                                                                                                 \
+    X(cursor_error_code)                                                                                               \
+    X(cursor_error_message)                                                                                            \
+    X(cursor_error_position)                                                                                           \
+    X(cursor_transaction_status)                                                                                       \
+    X(cursor_column_name)                                                                                              \
+    X(cursor_get_value)                                                                                                \
+    X(cursor_get_value_by_name)                                                                                        \
+    X(release_value)                                                                                                   \
+    X(value_is_null)                                                                                                   \
+    X(value_is_bool)                                                                                                   \
+    X(value_is_int)                                                                                                    \
+    X(value_is_uint)                                                                                                   \
+    X(value_is_double)                                                                                                 \
+    X(value_is_string)                                                                                                 \
+    X(value_get_bool)                                                                                                  \
+    X(value_get_int)                                                                                                   \
+    X(value_get_uint)                                                                                                  \
+    X(value_get_double)                                                                                                \
+    X(value_get_string)                                                                                                \
+    X(otterbrix_free_string)
+
+#define OTTERBRIX_ASSERT_NOEXCEPT(f) static_assert(is_noexcept(&f));
+OTTERBRIX_ENTRY_POINTS(OTTERBRIX_ASSERT_NOEXCEPT)
+#undef OTTERBRIX_ASSERT_NOEXCEPT
+
+#define OTTERBRIX_COUNT_ONE(f) +1
+constexpr std::size_t entry_point_count = 0 OTTERBRIX_ENTRY_POINTS(OTTERBRIX_COUNT_ONE);
+#undef OTTERBRIX_COUNT_ONE
+#undef OTTERBRIX_ENTRY_POINTS
+
+TEST_CASE("c-api: every function declared in otterbrix.h is OTTERBRIX_NOEXCEPT", "[c-api][abi]") {
+    constexpr std::string_view otterbrix_h_text =
+#include "otterbrix_h_text.inc"
+        ;
+    std::istringstream header{std::string{otterbrix_h_text}};
+    std::string code;
+    std::string line;
+    while (std::getline(header, line)) {
+        const auto first = line.find_first_not_of(" \t");
+        if (first != std::string::npos && line[first] == '#') {
+            continue;
+        }
+        code += line.substr(0, line.find("//"));
+        code += ' ';
+    }
+    std::size_t declarations = 0;
+    std::istringstream statements(code);
+    std::string statement;
+    while (std::getline(statements, statement, ';')) {
+        const auto first = statement.find_first_not_of(" \t");
+        const auto last = statement.find_last_not_of(" \t");
+        if (first == std::string::npos || statement.find('(') == std::string::npos ||
+            statement.compare(first, 7, "typedef") == 0) {
+            continue;
+        }
+        ++declarations;
+        INFO(statement.substr(first, last - first + 1));
+        CHECK((last + 1 >= 18 && statement.compare(last + 1 - 18, 18, "OTTERBRIX_NOEXCEPT") == 0));
+    }
+    CHECK(declarations == entry_point_count);
+}
+
 // The C struct is the contract the hand-written C# mirror copies field for field, and nothing
 // there is checked by a compiler -- so the shape is pinned here instead.
 TEST_CASE("c-api: config_t carries no boolean switches", "[c-api][abi]") {
@@ -461,7 +679,7 @@ TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][li
 
     error_message refusal{};
     REQUIRE(otterbrix_create(cfg, &refusal) == nullptr);
-    REQUIRE(refusal.code != 0);
+    CHECK(refusal.code == EC_LOCK_FILE_EXISTS);
     REQUIRE(refusal.message != nullptr);
     const std::string reason{refusal.message};
     otterbrix_free_string(refusal.message);
@@ -476,11 +694,63 @@ TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][li
     CHECK(none.message == nullptr);
 }
 
+namespace {
+    class working_directory_guard_t {
+    public:
+        working_directory_guard_t() { REQUIRE(::getcwd(saved_, sizeof saved_) != nullptr); }
+        ~working_directory_guard_t() { CHECK(::chdir(saved_) == 0); }
+        working_directory_guard_t(const working_directory_guard_t&) = delete;
+        working_directory_guard_t& operator=(const working_directory_guard_t&) = delete;
+
+    private:
+        char saved_[PATH_MAX];
+    };
+
+    void enter_deleted_directory(const std::string& tag) {
+        const std::string gone = "/tmp/otterbrix_c_test_" + tag + "_" + std::to_string(::getpid());
+        REQUIRE(::mkdir(gone.c_str(), 0755) == 0);
+        REQUIRE(::chdir(gone.c_str()) == 0);
+        REQUIRE(::rmdir(gone.c_str()) == 0);
+    }
+} // namespace
+
+TEST_CASE("c-api: an engine on absolute paths starts in a deleted working directory", "[c-api][lifecycle]") {
+    const working_directory_guard_t guard;
+    enter_deleted_directory("deleted_cwd_dir");
+
+    test_db_t t("deleted_cwd");
+    REQUIRE(t.ptr != nullptr);
+    run_ok(t.ptr, "SELECT 1;");
+}
+
+TEST_CASE("c-api: an engine on relative paths in a deleted working directory is refused", "[c-api][lifecycle]") {
+    const working_directory_guard_t guard;
+    enter_deleted_directory("deleted_cwd_relative");
+
+    config_t cfg{};
+    const std::string log_path = "rel/log";
+    const std::string wal_path = "rel/wal";
+    const std::string disk_path = "rel/disk";
+    const std::string main_path = "rel/main";
+    cfg.log_path = sv(log_path);
+    cfg.wal_path = sv(wal_path);
+    cfg.disk_path = sv(disk_path);
+    cfg.main_path = sv(main_path);
+
+    error_message refusal{};
+    REQUIRE(otterbrix_create(cfg, &refusal) == nullptr);
+    REQUIRE(refusal.message != nullptr);
+    const std::string reason{refusal.message};
+    otterbrix_free_string(refusal.message);
+    INFO("refusal: " << reason);
+    CHECK(refusal.code == EC_IO_ERROR);
+}
+
 TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][lifecycle]") {
     test_db_t t("outlive_destroy");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (name string);");
     run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('kept');");
 
@@ -496,16 +766,14 @@ TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][life
     const config_t cfg = t.config();
 
     CHECK(cursor_size(cur) == 1);
-    char* name = cursor_column_name(cur, 0);
+    const char* name = cursor_column_name(cur, 0);
     REQUIRE(name != nullptr);
     CHECK(std::string(name) == "name");
-    otterbrix_free_string(name);
     release_cursor(cur);
 
-    char* text = value_get_string(val);
+    const char* text = value_get_string(val);
     REQUIRE(text != nullptr);
     CHECK(std::string(text) == "kept");
-    otterbrix_free_string(text);
 
     // the value still holds the engine, and with it main_path
     error_message refusal{};
@@ -545,7 +813,7 @@ TEST_CASE("c-api: value kinds of every scalar column type", "[c-api][value]") {
     test_db_t t("value_kinds");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr,
            "CREATE TABLE db.t (b boolean, i bigint, u ubigint, d double, s string, dt date, dec decimal(10,2), "
            "l bigint[], n bigint);");
@@ -574,10 +842,9 @@ TEST_CASE("c-api: value kinds of every scalar column type", "[c-api][value]") {
     });
     with_value(t.ptr, q, 4, [](value_ptr v) {
         CHECK(value_is_string(v));
-        char* text = value_get_string(v);
+        const char* text = value_get_string(v);
         REQUIRE(text != nullptr);
         CHECK(std::string(text) == "txt");
-        otterbrix_free_string(text);
     });
     // DATE is the engine's day count (2024-01-01 is 8766 days after 2000-01-01), not the Unix one
     with_value(t.ptr, q, 5, [](value_ptr v) {
@@ -601,7 +868,7 @@ TEST_CASE("c-api: a 128-bit and a NULL UUID cell", "[c-api][value]") {
     test_db_t t("value_wide");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (h hugeint, u uuid);");
     run_ok(t.ptr, "INSERT INTO db.t (h, u) VALUES (5, NULL);");
 
@@ -622,4 +889,201 @@ TEST_CASE("c-api: SELECT NULL answers a null value", "[c-api][value]") {
         CHECK_FALSE(value_is_double(v));
         CHECK_FALSE(value_is_string(v));
     });
+}
+
+TEST_CASE("c-api: cursor_transaction_status reports where the session stands", "[c-api][cursor]") {
+    test_db_t t("transaction_status");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string select = "SELECT 1;";
+    cursor_ptr idle = execute_sql(t.ptr, sv(select));
+    REQUIRE(cursor_is_success(idle));
+    CHECK(cursor_transaction_status(idle) == TRANSACTION_STATUS_IDLE);
+    release_cursor(idle);
+
+    const std::string failing = "SELECT no_such_column FROM no_such_db.no_such_table;";
+    cursor_ptr autocommit_error = execute_sql(t.ptr, sv(failing));
+    REQUIRE(cursor_is_error(autocommit_error));
+    CHECK(cursor_transaction_status(autocommit_error) == TRANSACTION_STATUS_IDLE);
+    release_cursor(autocommit_error);
+
+    const std::string begin = "BEGIN;";
+    cursor_ptr block = execute_sql(t.ptr, sv(begin));
+    REQUIRE(cursor_is_success(block));
+    CHECK(cursor_transaction_status(block) == TRANSACTION_STATUS_IN_TRANSACTION);
+    release_cursor(block);
+}
+
+TEST_CASE("c-api: cursor_error_position points at the character a parse error is at", "[c-api][cursor]") {
+    test_db_t t("error_position");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string misspelled = "SELEC 1;";
+    cursor_ptr at_start = execute_sql(t.ptr, sv(misspelled));
+    REQUIRE(cursor_is_error(at_start));
+    CHECK(cursor_error_code(at_start) == EC_SQL_PARSE_ERROR);
+    CHECK(std::string(cursor_error_message(at_start)) == "syntax error at or near \"SELEC\"");
+    CHECK(cursor_error_position(at_start) == 1);
+    release_cursor(at_start);
+
+    const std::string unterminated = "SELECT 'жж";
+    cursor_ptr in_literal = execute_sql(t.ptr, sv(unterminated));
+    REQUIRE(cursor_is_error(in_literal));
+    CHECK(cursor_error_position(in_literal) == 8);
+    release_cursor(in_literal);
+
+    const std::string missing = "SELECT * FROM no_such_db.no_such_table;";
+    cursor_ptr unpositioned = execute_sql(t.ptr, sv(missing));
+    REQUIRE(cursor_is_error(unpositioned));
+    CHECK(cursor_error_position(unpositioned) == -1);
+    release_cursor(unpositioned);
+
+    const std::string fine = "SELECT 1;";
+    cursor_ptr success = execute_sql(t.ptr, sv(fine));
+    REQUIRE(cursor_is_success(success));
+    CHECK(cursor_error_position(success) == -1);
+    release_cursor(success);
+}
+
+TEST_CASE("c-api: a ROLLBACK undoes the INSERT its BEGIN opened, one handle being one session", "[c-api][session]") {
+    test_db_t t("one_session_rollback");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "BEGIN;");
+    run_ok(t.ptr, "INSERT INTO s.t (a) VALUES (1);");
+    run_ok(t.ptr, "ROLLBACK;");
+
+    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT a FROM s.t;")));
+    REQUIRE(cursor_is_success(read));
+    CHECK(cursor_size(read) == 0);
+    release_cursor(read);
+}
+
+TEST_CASE("c-api: execute_sql_params runs in the session of its handle", "[c-api][session][params]") {
+    test_db_t t("one_session_params");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "BEGIN;");
+    sql_param_t param{};
+    param.index = 1;
+    param.kind = SQL_PARAM_INT64;
+    param.int64_value = 1;
+    const std::string insert = "INSERT INTO s.t (a) VALUES ($1);";
+    cursor_ptr inserted = execute_sql_params(t.ptr, sv(insert), &param, 1);
+    REQUIRE(cursor_is_success(inserted));
+    CHECK(cursor_transaction_status(inserted) == TRANSACTION_STATUS_IN_TRANSACTION);
+    release_cursor(inserted);
+    run_ok(t.ptr, "ROLLBACK;");
+
+    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT a FROM s.t;")));
+    REQUIRE(cursor_is_success(read));
+    CHECK(cursor_size(read) == 0);
+    release_cursor(read);
+}
+
+TEST_CASE("c-api: an error inside BEGIN fails the handle's block until ROLLBACK", "[c-api][session]") {
+    test_db_t t("one_session_failed_block");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "BEGIN;");
+
+    const std::string failing = "SELECT no_such_column FROM no_such_db.no_such_table;";
+    cursor_ptr refused = execute_sql(t.ptr, sv(failing));
+    REQUIRE(cursor_is_error(refused));
+    CHECK(cursor_transaction_status(refused) == TRANSACTION_STATUS_FAILED);
+    release_cursor(refused);
+
+    const std::string rollback = "ROLLBACK;";
+    cursor_ptr ended = execute_sql(t.ptr, sv(rollback));
+    REQUIRE(cursor_is_success(ended));
+    CHECK(cursor_transaction_status(ended) == TRANSACTION_STATUS_IDLE);
+    release_cursor(ended);
+
+    const std::string select = "SELECT 1;";
+    cursor_ptr after = execute_sql(t.ptr, sv(select));
+    REQUIRE(cursor_is_success(after));
+    CHECK(cursor_transaction_status(after) == TRANSACTION_STATUS_IDLE);
+    release_cursor(after);
+}
+
+// Rust Database and C# OtterbrixWrapper end their session through this too.
+TEST_CASE("c-api: otterbrix_destroy closes the session of its handle", "[c-api][session][lifecycle]") {
+    test_db_t t("destroy_closes_session");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "BEGIN;");
+    run_ok(t.ptr, "INSERT INTO s.t (a) VALUES (1);");
+    otterbrix_destroy(t.ptr);
+    t.ptr = nullptr;
+
+    CHECK(log_mentions(t.log_path, "manager_dispatcher_t::close_session session:") == 1);
+}
+
+TEST_CASE("c-api: ALTER SYSTEM inside a transaction block answers active_sql_transaction", "[c-api][errors]") {
+    test_db_t t("alter_system_in_a_block");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "BEGIN;");
+    const std::string alter = "ALTER SYSTEM SET timezone = '+03:00';";
+    require_error_cursor(execute_sql(t.ptr, sv(alter)),
+                         EC_ACTIVE_SQL_TRANSACTION,
+                         "ALTER SYSTEM cannot run inside a transaction block");
+    run_ok(t.ptr, "ROLLBACK;");
+}
+
+TEST_CASE("c-api: ADD COLUMN of a name the table has answers duplicate_column", "[c-api][errors]") {
+    test_db_t t("duplicate_column");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    const std::string add = "ALTER TABLE s.t ADD COLUMN a BIGINT;";
+    require_error_cursor(execute_sql(t.ptr, sv(add)), EC_DUPLICATE_COLUMN, "column \"a\" already exists");
+}
+
+TEST_CASE("c-api: CREATE SCHEMA of a name the database has answers schema_already_exists", "[c-api][errors]") {
+    test_db_t t("schema_already_exists");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    const std::string again = "CREATE SCHEMA s;";
+    require_error_cursor(execute_sql(t.ptr, sv(again)), EC_SCHEMA_ALREADY_EXISTS, "schema \"s\" already exists");
+}
+
+TEST_CASE("c-api: division by zero and a duplicate key and SAVEPOINT outside a block answer their codes",
+          "[c-api][errors]") {
+    test_db_t t("sqlstate_codes");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "ALTER TABLE s.t ADD CONSTRAINT pk_t PRIMARY KEY (a);");
+    run_ok(t.ptr, "INSERT INTO s.t (a) VALUES (1);");
+    for (const auto& [query, code] :
+         {std::pair<std::string, int32_t>{"SELECT 1 / 0;", EC_DIVISION_BY_ZERO},
+          std::pair<std::string, int32_t>{"INSERT INTO s.t (a) VALUES (1);", EC_UNIQUE_VIOLATION},
+          std::pair<std::string, int32_t>{"SAVEPOINT a;", EC_NO_ACTIVE_SQL_TRANSACTION}}) {
+        cursor_ptr cur = execute_sql(t.ptr, sv(query));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_error(cur));
+        INFO(query << " -> " << cursor_error_message(cur));
+        CHECK(cursor_error_code(cur) == code);
+        release_cursor(cur);
+    }
+}
+
+TEST_CASE("c-api: DROP of a built-in type answers dependent_objects_still_exist", "[c-api][errors]") {
+    test_db_t t("drop_built_in_type");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string drop = "DROP TYPE integer;";
+    require_error_cursor(execute_sql(t.ptr, sv(drop)),
+                         EC_DEPENDENT_OBJECTS_STILL_EXIST,
+                         "cannot drop type integer because it is required by the database system");
 }

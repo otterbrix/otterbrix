@@ -1,5 +1,6 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <components/casts/composite_cast.hpp>
 #include <components/casts/default_casts.hpp>
@@ -205,7 +206,7 @@ TEST_CASE("default casts: DOUBLE -> INTEGER is fallible and assignment, so it ne
         vector::vector_t cast_result{resource, integer_type};
         core::error_t error = entry->fn.invoke(cast_kind::cast, source, &cast_result, params, 1);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, integer_type};
         core::error_t try_error = entry->fn.invoke(cast_kind::try_cast, source, &try_result, params, 1);
@@ -248,7 +249,7 @@ TEST_CASE("default casts: integer narrowing errors on overflow (PostgreSQL rule)
         vector::vector_t cast_result{resource, utinyint_type};
         core::error_t error = to_uint8->fn.invoke(cast_kind::cast, source, &cast_result, params, 3);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, utinyint_type};
         REQUIRE_FALSE(to_uint8->fn.invoke(cast_kind::try_cast, source, &try_result, params, 3).contains_error());
@@ -310,7 +311,7 @@ TEST_CASE("default casts: double -> float narrows at assignment level") {
         vector::vector_t cast_result{resource, float_type};
         core::error_t error = narrow->fn.invoke(cast_kind::cast, source, &cast_result, params, 2);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, float_type};
         REQUIRE_FALSE(narrow->fn.invoke(cast_kind::try_cast, source, &try_result, params, 2).contains_error());
@@ -358,7 +359,7 @@ TEST_CASE("default casts: DECIMAL <-> double round-trips, passes inf/nan, errors
         vector::vector_t cast_result{resource, decimal_type};
         core::error_t error = from_double->fn.invoke(cast_kind::cast, source, &cast_result, context, 4);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, decimal_type};
         REQUIRE_FALSE(from_double->fn.invoke(cast_kind::try_cast, source, &try_result, context, 4).contains_error());
@@ -414,7 +415,7 @@ TEST_CASE("default casts: DECIMAL <-> integer rounds, fails on overflow and spec
         vector::vector_t cast_result{resource, decimal_type};
         core::error_t error = from_bigint->fn.invoke(cast_kind::cast, source, &cast_result, context, 3);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, decimal_type};
         REQUIRE_FALSE(from_bigint->fn.invoke(cast_kind::try_cast, source, &try_result, context, 3).contains_error());
@@ -672,7 +673,7 @@ TEST_CASE("default casts: string conversions are not implicit and non-throwing")
         vector::vector_t cast_result{resource, integer_type};
         core::error_t error = from_string->fn.invoke(cast_kind::cast, source, &cast_result, params, 3);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::invalid_text_representation);
 
         vector::vector_t try_result{resource, integer_type};
         REQUIRE_FALSE(from_string->fn.invoke(cast_kind::try_cast, source, &try_result, params, 3).contains_error());
@@ -704,6 +705,54 @@ TEST_CASE("default casts: string conversions are not implicit and non-throwing")
         REQUIRE_FALSE(parse_huge->fn.invoke(cast_kind::cast, text_source, &number_result, params, 1).contains_error());
         REQUIRE(number_result.get_value<types::int128_t>(0) == big);
     }
+}
+
+TEST_CASE("default casts: string -> DECIMAL(38,2) with 37 integer digits answers numeric_value_out_of_range") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+
+    const complex_logical_type decimal_type = make_decimal(38, 2);
+    const cast_entry* from_string = registry.find(string_type, decimal_type);
+    REQUIRE(from_string != nullptr);
+    graph_execution_context context{};
+
+    vector::vector_t source{resource, string_type};
+    source.set_value(0, std::string_view{"2000000000000000000000000000000000000"});
+
+    vector::vector_t cast_result{resource, decimal_type};
+    const core::error_t error = from_string->fn.invoke(cast_kind::cast, source, &cast_result, context, 1);
+    REQUIRE(error.contains_error());
+    CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
+
+    vector::vector_t try_result{resource, decimal_type};
+    REQUIRE_FALSE(from_string->fn.invoke(cast_kind::try_cast, source, &try_result, context, 1).contains_error());
+    CHECK(try_result.is_null(0));
+}
+
+TEST_CASE("default casts: a '+'-signed integer that does not fit answers numeric_value_out_of_range") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    const auto refusal = [&](const complex_logical_type& target, std::string_view text) {
+        const cast_entry* from_string = registry.find(string_type, target);
+        REQUIRE(from_string != nullptr);
+        vector::vector_t source{resource, string_type};
+        source.set_value(0, text);
+        vector::vector_t result{resource, target};
+        return from_string->fn.invoke(cast_kind::cast, source, &result, context, 1);
+    };
+
+    const complex_logical_type hugeint{logical_type::HUGEINT};
+    const core::error_t huge = refusal(hugeint, "+170141183460469231731687303715884105728");
+    REQUIRE(huge.contains_error());
+    CHECK(huge.type == core::error_code_t::numeric_value_out_of_range);
+
+    const core::error_t narrow = refusal(integer_type, "+99999999999");
+    REQUIRE(narrow.contains_error());
+    CHECK(narrow.type == core::error_code_t::numeric_value_out_of_range);
 }
 
 TEST_CASE("default casts: date/time conversions, string parse/format, and to_string") {
@@ -776,9 +825,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
 
     {
         // decimal is not used
-        graph_execution_context offset_context{.timezone_offset = cd::timezone_offset_t{3600},
-                                               .decimal_width = 0,
-                                               .decimal_scale = 0};
+        graph_execution_context offset_context{.timezone_offset = cd::timezone_offset_t{3600}};
         vector::vector_t local{resource, timestamp_type};
         local.set_value(0, *cd::parse_timestamp("2024-03-15 12:30:00"));
         vector::vector_t utc{resource, timestamptz_type};
@@ -823,9 +870,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
         REQUIRE(back.get_value<std::string_view>(0) == "2 years 3 mons 10 days");
     }
     {
-        graph_execution_context zone_context{.timezone_offset = cd::timezone_offset_t{19800},
-                                             .decimal_width = 0,
-                                             .decimal_scale = 0};
+        graph_execution_context zone_context{.timezone_offset = cd::timezone_offset_t{19800}};
         vector::vector_t times{resource, time_type};
         times.set_value(0, *cd::parse_time("13:45:06"));
         vector::vector_t tz{resource, timetz_type};
@@ -1423,7 +1468,10 @@ TEST_CASE("cast_registry: a composite cast can be registered and resolve() retur
     };
     REQUIRE_FALSE(
         registry.add(pair_type, pair_type, complex_cast_entry{custom, cast_type::assignment}).contains_error());
-    REQUIRE(registry.add(pair_type, pair_type, complex_cast_entry{custom, cast_type::assignment}).contains_error());
+    const core::error_t duplicate =
+        registry.add(pair_type, pair_type, complex_cast_entry{custom, cast_type::assignment});
+    REQUIRE(duplicate.contains_error());
+    CHECK(duplicate.type == core::error_code_t::duplicate_object);
 
     {
         auto resolved = registry.resolve(pair_type, pair_type, cast_type::explicit_only);
@@ -1653,6 +1701,27 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
         const complex_logical_type anonymous = complex_logical_type::create_struct("", row);
         REQUIRE(registry.level_of(anonymous, make_struct("u", logical_type::BIGINT)) ==
                 std::optional<level>{level::assignment});
+    }
+
+    {
+        auto row_of = [&](std::initializer_list<complex_logical_type> fields) {
+            std::pmr::vector<complex_logical_type> vec(fields.begin(), fields.end(), resource);
+            return complex_logical_type::create_struct("", vec);
+        };
+        auto point_fields = [&] {
+            return std::pmr::vector<complex_logical_type>{{field(logical_type::INTEGER, "x"),
+                                                           field(logical_type::INTEGER, "y")},
+                                                          resource};
+        };
+        const complex_logical_type point = complex_logical_type::create_struct("point_t", point_fields());
+        const complex_logical_type row_i32 = row_of({i32, i32});
+        const complex_logical_type row_i64 = row_of({i64, i64});
+        const complex_logical_type row_mixed = row_of({i32, field(logical_type::INTEGER, "y")});
+
+        REQUIRE(registry.level_of(row_i32, point) == std::optional<level>{level::implicit});
+        REQUIRE(registry.level_of(row_i32, row_i64) == std::optional<level>{level::implicit});
+        REQUIRE(registry.level_of(row_mixed, point) == std::optional<level>{level::assignment});
+        REQUIRE_FALSE(registry.level_of(point, row_i32).has_value());
     }
 
     REQUIRE(registry.level_of(i32, i32) == std::optional<level>{level::implicit});
@@ -2689,12 +2758,12 @@ TEST_CASE("default casts: numeric overflow into DECIMAL is a refusal") {
     SECTION("positive overflow") {
         const auto error = bigint_cast(10000);
         REQUIRE(error.contains_error());
-        CHECK(error.type == core::error_code_t::conversion_failure);
+        CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
     }
     SECTION("negative overflow") {
         const auto error = bigint_cast(-10000);
         REQUIRE(error.contains_error());
-        CHECK(error.type == core::error_code_t::conversion_failure);
+        CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
     }
     SECTION("floating overflow refuses; NaN is the DECIMAL NaN special") {
         CHECK(double_cast(1e30).contains_error());
@@ -2725,13 +2794,13 @@ TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instea
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
             const auto error = descale(dec, 1000, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
         {
             vector::vector_t result{&arena, plain(logical_type::UTINYINT), 1};
             const auto error = descale(dec, -5, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
         {
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
@@ -2752,7 +2821,7 @@ TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instea
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
             const auto error = descale(dec, 1234567, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
         {
             vector::vector_t result{&arena, plain(logical_type::INTEGER), 1};
@@ -2764,7 +2833,7 @@ TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instea
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
             const auto error = descale(dec, -1234567, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
     }
 }
@@ -2785,7 +2854,7 @@ TEST_CASE("default casts: casting to an ENUM refuses a label the enum does not h
 
     const auto absent = from_text("angry");
     REQUIRE(absent.first.contains_error());
-    CHECK(absent.first.type == core::error_code_t::conversion_failure);
+    CHECK(absent.first.type == core::error_code_t::invalid_text_representation);
 
     const auto present = from_text("sad");
     REQUIRE_FALSE(present.first.contains_error());
@@ -2830,5 +2899,583 @@ TEST_CASE("default casts: a STRUCT cast keeps NULL fields and refuses a shape ch
         const auto target_type = complex_logical_type::create_struct("", target_fields);
 
         CHECK_FALSE(registry.resolve(source_type, target_type, cast_type::explicit_only).has_value());
+    }
+}
+
+namespace {
+    const cast_entry& numeric_entry(const cast_registry_t& registry, logical_type from, logical_type to) {
+        const cast_entry* entry = registry.find(complex_logical_type{from}, complex_logical_type{to});
+        REQUIRE(entry != nullptr);
+        return *entry;
+    }
+
+    template<typename T>
+    vector::vector_t flat_vector(std::pmr::memory_resource* resource,
+                                 logical_type type,
+                                 const std::vector<T>& values,
+                                 std::initializer_list<uint64_t> null_rows = {}) {
+        vector::vector_t flat{resource, complex_logical_type{type}};
+        for (uint64_t row = 0; row < values.size(); ++row) {
+            flat.set_value(row, static_cast<T>(values[row]));
+        }
+        for (uint64_t row : null_rows) {
+            flat.set_null(row, true);
+        }
+        return flat;
+    }
+
+    void require_out_of_range(const core::error_t& error) {
+        REQUIRE(error.contains_error());
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
+        REQUIRE(std::string_view{error.what} == "out of range");
+    }
+} // namespace
+
+TEST_CASE("numeric cast kernels: flat input without NULLs") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    SECTION("INTEGER -> BIGINT across several validity words") {
+        constexpr uint64_t count = 130;
+        std::vector<int32_t> values(count);
+        for (uint64_t row = 0; row < count; ++row) {
+            values[row] = static_cast<int32_t>(row) * 1000 - 65000;
+        }
+        values[0] = std::numeric_limits<int32_t>::min();
+        values[count - 1] = std::numeric_limits<int32_t>::max();
+        auto source = flat_vector(&arena, logical_type::INTEGER, values);
+        vector::vector_t result{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, count)
+                          .contains_error());
+        for (uint64_t row = 0; row < count; ++row) {
+            REQUIRE_FALSE(result.is_null(row));
+            REQUIRE(result.get_value<int64_t>(row) == values[row]);
+        }
+    }
+
+    SECTION("UTINYINT -> INTEGER keeps values above INT8_MAX") {
+        auto source = flat_vector<uint8_t>(&arena, logical_type::UTINYINT, {255, 128, 0});
+        vector::vector_t result{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::UTINYINT, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 3)
+                          .contains_error());
+        REQUIRE(result.get_value<int32_t>(0) == 255);
+        REQUIRE(result.get_value<int32_t>(1) == 128);
+        REQUIRE(result.get_value<int32_t>(2) == 0);
+    }
+
+    SECTION("TINYINT -> HUGEINT keeps the sign") {
+        auto source = flat_vector<int8_t>(&arena, logical_type::TINYINT, {-128, 127});
+        vector::vector_t result{&arena, hugeint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::TINYINT, logical_type::HUGEINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 2)
+                          .contains_error());
+        REQUIRE(result.get_value<types::int128_t>(0) == types::int128_t{-128});
+        REQUIRE(result.get_value<types::int128_t>(1) == types::int128_t{127});
+    }
+
+    SECTION("UINTEGER -> BIGINT keeps values above INT32_MAX") {
+        auto source = flat_vector<uint32_t>(&arena, logical_type::UINTEGER, {4000000000u, 1u});
+        vector::vector_t result{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::UINTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 2)
+                          .contains_error());
+        REQUIRE(result.get_value<int64_t>(0) == 4000000000);
+        REQUIRE(result.get_value<int64_t>(1) == 1);
+    }
+
+    SECTION("INTEGER -> DOUBLE, FLOAT -> DOUBLE and BIGINT -> FLOAT") {
+        auto ints = flat_vector<int32_t>(&arena, logical_type::INTEGER, {-7, std::numeric_limits<int32_t>::max()});
+        vector::vector_t doubles{&arena, double_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::DOUBLE)
+                          .fn.invoke(cast_kind::cast, ints, &doubles, context, 2)
+                          .contains_error());
+        REQUIRE(doubles.get_value<double>(0) == Catch::Approx(-7.0));
+        REQUIRE(doubles.get_value<double>(1) == Catch::Approx(2147483647.0));
+
+        auto floats = flat_vector<float>(&arena, logical_type::FLOAT, {0.5f, -1.0e30f});
+        vector::vector_t widened{&arena, double_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::FLOAT, logical_type::DOUBLE)
+                          .fn.invoke(cast_kind::cast, floats, &widened, context, 2)
+                          .contains_error());
+        REQUIRE(widened.get_value<double>(0) == Catch::Approx(0.5));
+        REQUIRE(widened.get_value<double>(1) == Catch::Approx(static_cast<double>(-1.0e30f)));
+
+        auto bigints = flat_vector<int64_t>(&arena, logical_type::BIGINT, {16777217});
+        vector::vector_t narrowed{&arena, float_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::BIGINT, logical_type::FLOAT)
+                          .fn.invoke(cast_kind::cast, bigints, &narrowed, context, 1)
+                          .contains_error());
+        REQUIRE_THAT(narrowed.get_value<float>(0), Catch::Matchers::WithinULP(16777216.0f, 0));
+    }
+
+    SECTION("BOOLEAN <-> INTEGER") {
+        auto flags = flat_vector<bool>(&arena, logical_type::BOOLEAN, {true, false});
+        vector::vector_t ints{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::BOOLEAN, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, flags, &ints, context, 2)
+                          .contains_error());
+        REQUIRE(ints.get_value<int32_t>(0) == 1);
+        REQUIRE(ints.get_value<int32_t>(1) == 0);
+
+        auto source = flat_vector<int32_t>(&arena, logical_type::INTEGER, {-3, 0});
+        vector::vector_t bools{&arena, complex_logical_type{logical_type::BOOLEAN}};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BOOLEAN)
+                          .fn.invoke(cast_kind::cast, source, &bools, context, 2)
+                          .contains_error());
+        REQUIRE(bools.get_value<bool>(0) == true);
+        REQUIRE(bools.get_value<bool>(1) == false);
+    }
+}
+
+TEST_CASE("numeric cast kernels: flat input with NULLs") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    SECTION("INTEGER -> BIGINT: NULL rows stay NULL across validity words") {
+        constexpr uint64_t count = 130;
+        std::vector<int32_t> values(count);
+        for (uint64_t row = 0; row < count; ++row) {
+            values[row] = static_cast<int32_t>(row) - 50;
+        }
+        auto source = flat_vector(&arena, logical_type::INTEGER, values, {0, 63, 64, 65, 129});
+        vector::vector_t result{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, count)
+                          .contains_error());
+        for (uint64_t row = 0; row < count; ++row) {
+            const bool expect_null = row == 0 || row == 63 || row == 64 || row == 65 || row == 129;
+            REQUIRE(result.is_null(row) == expect_null);
+            if (!expect_null) {
+                REQUIRE(result.get_value<int64_t>(row) == values[row]);
+            }
+        }
+    }
+
+    SECTION("a reused result: a NULL row turns valid, rows past count are untouched") {
+        constexpr uint64_t count = 100;
+        std::vector<int32_t> values(count, 9);
+        auto source = flat_vector(&arena, logical_type::INTEGER, values);
+        vector::vector_t result{&arena, bigint_type};
+        result.set_null(0, true);
+        result.set_null(count, true);
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, count)
+                          .contains_error());
+        REQUIRE_FALSE(result.is_null(0));
+        REQUIRE(result.get_value<int64_t>(0) == 9);
+        REQUIRE_FALSE(result.is_null(count - 1));
+        REQUIRE(result.is_null(count));
+    }
+
+    SECTION("BOOLEAN -> INTEGER and INTEGER -> DOUBLE keep a NULL row NULL") {
+        auto flags = flat_vector<bool>(&arena, logical_type::BOOLEAN, {true, false, true}, {1});
+        vector::vector_t ints{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::BOOLEAN, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, flags, &ints, context, 3)
+                          .contains_error());
+        REQUIRE(ints.get_value<int32_t>(0) == 1);
+        REQUIRE(ints.is_null(1));
+        REQUIRE(ints.get_value<int32_t>(2) == 1);
+
+        auto source = flat_vector<int32_t>(&arena, logical_type::INTEGER, {4, 5}, {0});
+        vector::vector_t doubles{&arena, double_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::DOUBLE)
+                          .fn.invoke(cast_kind::cast, source, &doubles, context, 2)
+                          .contains_error());
+        REQUIRE(doubles.is_null(0));
+        REQUIRE(doubles.get_value<double>(1) == Catch::Approx(5.0));
+    }
+}
+
+TEST_CASE("numeric cast kernels: range-checked casts on flat input") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    constexpr int64_t int32_min = std::numeric_limits<int32_t>::min();
+    constexpr int64_t int32_max = std::numeric_limits<int32_t>::max();
+    constexpr int64_t int64_max = std::numeric_limits<int64_t>::max();
+
+    SECTION("BIGINT -> INTEGER in range") {
+        auto source = flat_vector<int64_t>(&arena, logical_type::BIGINT, {int32_min, int32_max, 0, -1});
+        vector::vector_t result{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::BIGINT, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 4)
+                          .contains_error());
+        REQUIRE(result.get_value<int32_t>(0) == std::numeric_limits<int32_t>::min());
+        REQUIRE(result.get_value<int32_t>(1) == std::numeric_limits<int32_t>::max());
+        REQUIRE(result.get_value<int32_t>(2) == 0);
+        REQUIRE(result.get_value<int32_t>(3) == -1);
+    }
+
+    SECTION("BIGINT -> INTEGER out of range: CAST errors, TRY_CAST nulls only that row") {
+        const auto& entry = numeric_entry(registry, logical_type::BIGINT, logical_type::INTEGER);
+        auto source =
+            flat_vector<int64_t>(&arena, logical_type::BIGINT, {1, int32_max + 1, -5, int32_min - 1, int64_max}, {4});
+        vector::vector_t cast_result{&arena, integer_type};
+        require_out_of_range(entry.fn.invoke(cast_kind::cast, source, &cast_result, context, 5));
+
+        vector::vector_t try_result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, source, &try_result, context, 5).contains_error());
+        REQUIRE(try_result.get_value<int32_t>(0) == 1);
+        REQUIRE(try_result.is_null(1));
+        REQUIRE(try_result.get_value<int32_t>(2) == -5);
+        REQUIRE(try_result.is_null(3));
+        REQUIRE(try_result.is_null(4));
+    }
+
+    SECTION("BIGINT -> INTEGER: a NULL row's out-of-range payload is not checked") {
+        auto source = flat_vector<int64_t>(&arena, logical_type::BIGINT, {int64_max, 7}, {0});
+        vector::vector_t result{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::BIGINT, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 2)
+                          .contains_error());
+        REQUIRE(result.is_null(0));
+        REQUIRE(result.get_value<int32_t>(1) == 7);
+    }
+
+    SECTION("INTEGER -> UINTEGER rejects a negative") {
+        const auto& entry = numeric_entry(registry, logical_type::INTEGER, logical_type::UINTEGER);
+        auto source = flat_vector<int32_t>(&arena,
+                                           logical_type::INTEGER,
+                                           {-1, 5, std::numeric_limits<int32_t>::max(), -9},
+                                           {3});
+        vector::vector_t cast_result{&arena, complex_logical_type{logical_type::UINTEGER}};
+        require_out_of_range(entry.fn.invoke(cast_kind::cast, source, &cast_result, context, 4));
+
+        vector::vector_t try_result{&arena, complex_logical_type{logical_type::UINTEGER}};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, source, &try_result, context, 4).contains_error());
+        REQUIRE(try_result.is_null(0));
+        REQUIRE(try_result.get_value<uint32_t>(1) == 5u);
+        REQUIRE(try_result.get_value<uint32_t>(2) == 2147483647u);
+        REQUIRE(try_result.is_null(3));
+    }
+
+    SECTION("UBIGINT -> BIGINT and UINTEGER -> INTEGER reject values above the signed max") {
+        auto ubig = flat_vector<uint64_t>(&arena, logical_type::UBIGINT, {std::numeric_limits<uint64_t>::max(), 42});
+        vector::vector_t big{&arena, bigint_type};
+        const auto& to_bigint = numeric_entry(registry, logical_type::UBIGINT, logical_type::BIGINT);
+        require_out_of_range(to_bigint.fn.invoke(cast_kind::cast, ubig, &big, context, 2));
+        vector::vector_t big_try{&arena, bigint_type};
+        REQUIRE_FALSE(to_bigint.fn.invoke(cast_kind::try_cast, ubig, &big_try, context, 2).contains_error());
+        REQUIRE(big_try.is_null(0));
+        REQUIRE(big_try.get_value<int64_t>(1) == 42);
+
+        auto uints = flat_vector<uint32_t>(&arena, logical_type::UINTEGER, {4000000000u, 2000000000u}, {0});
+        vector::vector_t ints{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::UINTEGER, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, uints, &ints, context, 2)
+                          .contains_error());
+        REQUIRE(ints.is_null(0));
+        REQUIRE(ints.get_value<int32_t>(1) == 2000000000);
+    }
+
+    SECTION("DOUBLE -> INTEGER rounds half to even, rejects overflow and specials") {
+        const auto& entry = numeric_entry(registry, logical_type::DOUBLE, logical_type::INTEGER);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        auto source = flat_vector<double>(&arena, logical_type::DOUBLE, {2.5, 1e30, nan, -3.5, inf}, {2});
+        vector::vector_t cast_result{&arena, integer_type};
+        require_out_of_range(entry.fn.invoke(cast_kind::cast, source, &cast_result, context, 5));
+
+        vector::vector_t try_result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, source, &try_result, context, 5).contains_error());
+        REQUIRE(try_result.get_value<int32_t>(0) == 2);
+        REQUIRE(try_result.is_null(1));
+        REQUIRE(try_result.is_null(2));
+        REQUIRE(try_result.get_value<int32_t>(3) == -4);
+        REQUIRE(try_result.is_null(4));
+
+        auto in_range = flat_vector<double>(&arena, logical_type::DOUBLE, {nan, 7.4}, {0});
+        vector::vector_t result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::cast, in_range, &result, context, 2).contains_error());
+        REQUIRE(result.is_null(0));
+        REQUIRE(result.get_value<int32_t>(1) == 7);
+    }
+
+    SECTION("FLOAT -> BIGINT rejects a magnitude past the target") {
+        const auto& entry = numeric_entry(registry, logical_type::FLOAT, logical_type::BIGINT);
+        auto source = flat_vector<float>(&arena, logical_type::FLOAT, {1.5f, -2.5f, 1e20f});
+        vector::vector_t cast_result{&arena, bigint_type};
+        require_out_of_range(entry.fn.invoke(cast_kind::cast, source, &cast_result, context, 3));
+
+        vector::vector_t try_result{&arena, bigint_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, source, &try_result, context, 3).contains_error());
+        REQUIRE(try_result.get_value<int64_t>(0) == 2);
+        REQUIRE(try_result.get_value<int64_t>(1) == -2);
+        REQUIRE(try_result.is_null(2));
+    }
+
+    SECTION("DOUBLE -> FLOAT rejects overflow and underflow, ignores a NULL row's payload") {
+        const auto& entry = numeric_entry(registry, logical_type::DOUBLE, logical_type::FLOAT);
+        auto source = flat_vector<double>(&arena, logical_type::DOUBLE, {0.5, 1e300, 1e-300});
+        vector::vector_t cast_result{&arena, float_type};
+        require_out_of_range(entry.fn.invoke(cast_kind::cast, source, &cast_result, context, 3));
+
+        vector::vector_t try_result{&arena, float_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, source, &try_result, context, 3).contains_error());
+        REQUIRE(try_result.get_value<float>(0) == Catch::Approx(0.5f));
+        REQUIRE(try_result.is_null(1));
+        REQUIRE(try_result.is_null(2));
+
+        auto with_null = flat_vector<double>(&arena, logical_type::DOUBLE, {1e300, -2.0}, {0});
+        vector::vector_t result{&arena, float_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::cast, with_null, &result, context, 2).contains_error());
+        REQUIRE(result.is_null(0));
+        REQUIRE(result.get_value<float>(1) == Catch::Approx(-2.0f));
+    }
+}
+
+TEST_CASE("numeric cast kernels: CONSTANT and DICTIONARY inputs") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    SECTION("a CONSTANT INTEGER -> BIGINT fills every row") {
+        auto source = flat_vector<int32_t>(&arena, logical_type::INTEGER, {7});
+        source.set_vector_type(vector::vector_type::CONSTANT);
+        vector::vector_t result{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 3)
+                          .contains_error());
+        for (uint64_t row = 0; row < 3; ++row) {
+            REQUIRE_FALSE(result.is_null(row));
+            REQUIRE(result.get_value<int64_t>(row) == 7);
+        }
+    }
+
+    SECTION("a CONSTANT NULL stays NULL in every row") {
+        vector::vector_t source{&arena, integer_type};
+        source.set_vector_type(vector::vector_type::CONSTANT);
+        source.set_null(true);
+        vector::vector_t result{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 3)
+                          .contains_error());
+        for (uint64_t row = 0; row < 3; ++row) {
+            REQUIRE(result.is_null(row));
+        }
+    }
+
+    SECTION("a CONSTANT BIGINT -> INTEGER out of range") {
+        const auto& entry = numeric_entry(registry, logical_type::BIGINT, logical_type::INTEGER);
+        auto source = flat_vector<int64_t>(&arena, logical_type::BIGINT, {std::numeric_limits<int64_t>::max()});
+        source.set_vector_type(vector::vector_type::CONSTANT);
+        vector::vector_t cast_result{&arena, integer_type};
+        require_out_of_range(entry.fn.invoke(cast_kind::cast, source, &cast_result, context, 3));
+
+        vector::vector_t try_result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, source, &try_result, context, 3).contains_error());
+        for (uint64_t row = 0; row < 3; ++row) {
+            REQUIRE(try_result.is_null(row));
+        }
+    }
+
+    SECTION("a DICTIONARY INTEGER -> BIGINT reads the rows it selects") {
+        auto base = flat_vector<int32_t>(&arena, logical_type::INTEGER, {10, 20, 30, 40}, {1});
+        vector::indexing_vector_t indexing(&arena, 3);
+        indexing.set_index(0, 1);
+        indexing.set_index(1, 2);
+        indexing.set_index(2, 0);
+        vector::vector_t source{&arena, integer_type, 4};
+        source.slice(base, indexing, 3);
+        REQUIRE(source.get_vector_type() == vector::vector_type::DICTIONARY);
+
+        vector::vector_t result{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 3)
+                          .contains_error());
+        REQUIRE(result.is_null(0));
+        REQUIRE(result.get_value<int64_t>(1) == 30);
+        REQUIRE(result.get_value<int64_t>(2) == 10);
+    }
+
+    SECTION("a DICTIONARY BIGINT -> INTEGER range-checks only the rows it selects") {
+        const auto& entry = numeric_entry(registry, logical_type::BIGINT, logical_type::INTEGER);
+        constexpr int64_t int64_max = std::numeric_limits<int64_t>::max();
+        constexpr int64_t int64_min = std::numeric_limits<int64_t>::min();
+        auto base = flat_vector<int64_t>(&arena, logical_type::BIGINT, {int64_max, 5, int64_min, 6});
+
+        vector::indexing_vector_t in_range(&arena, 2);
+        in_range.set_index(0, 1);
+        in_range.set_index(1, 3);
+        vector::vector_t selected{&arena, bigint_type, 4};
+        selected.slice(base, in_range, 2);
+        vector::vector_t result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::cast, selected, &result, context, 2).contains_error());
+        REQUIRE(result.get_value<int32_t>(0) == 5);
+        REQUIRE(result.get_value<int32_t>(1) == 6);
+
+        vector::indexing_vector_t with_overflow(&arena, 2);
+        with_overflow.set_index(0, 1);
+        with_overflow.set_index(1, 0);
+        vector::vector_t overflowing{&arena, bigint_type, 4};
+        overflowing.slice(base, with_overflow, 2);
+        vector::vector_t cast_result{&arena, integer_type};
+        require_out_of_range(entry.fn.invoke(cast_kind::cast, overflowing, &cast_result, context, 2));
+        vector::vector_t try_result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, overflowing, &try_result, context, 2).contains_error());
+        REQUIRE(try_result.get_value<int32_t>(0) == 5);
+        REQUIRE(try_result.is_null(1));
+    }
+}
+
+TEST_CASE("numeric cast kernels: an allocated all-valid source mask leaves the result mask unallocated") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    constexpr uint64_t count = 70;
+    std::vector<int64_t> values(count + 1, 3);
+    auto bigints = flat_vector(&arena, logical_type::BIGINT, values, {0, count});
+    bigints.set_value(0, int64_t{3});
+    REQUIRE(bigints.validity().is_mask_set());
+    std::vector<double> reals(count + 1, 2.0);
+    auto doubles = flat_vector(&arena, logical_type::DOUBLE, reals, {0, count});
+    doubles.set_value(0, 2.0);
+    REQUIRE(doubles.validity().is_mask_set());
+
+    SECTION("lossless BIGINT -> DOUBLE") {
+        vector::vector_t result{&arena, double_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::BIGINT, logical_type::DOUBLE)
+                          .fn.invoke(cast_kind::cast, bigints, &result, context, count)
+                          .contains_error());
+        REQUIRE(result.validity().all_valid());
+    }
+
+    SECTION("range-checked BIGINT -> INTEGER, CAST and TRY_CAST") {
+        const auto& entry = numeric_entry(registry, logical_type::BIGINT, logical_type::INTEGER);
+        vector::vector_t cast_result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::cast, bigints, &cast_result, context, count).contains_error());
+        REQUIRE(cast_result.validity().all_valid());
+        vector::vector_t try_result{&arena, integer_type};
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, bigints, &try_result, context, count).contains_error());
+        REQUIRE(try_result.validity().all_valid());
+    }
+
+    SECTION("range-checked DOUBLE -> INTEGER and DOUBLE -> FLOAT") {
+        vector::vector_t ints{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::DOUBLE, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, doubles, &ints, context, count)
+                          .contains_error());
+        REQUIRE(ints.validity().all_valid());
+        vector::vector_t floats{&arena, float_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::DOUBLE, logical_type::FLOAT)
+                          .fn.invoke(cast_kind::cast, doubles, &floats, context, count)
+                          .contains_error());
+        REQUIRE(floats.validity().all_valid());
+    }
+}
+
+TEST_CASE("numeric cast kernels: a NULL in a full validity word reaches the result") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    SECTION("count 128, NULL only at row 10") {
+        constexpr uint64_t count = 128;
+        std::vector<int32_t> values(count, 4);
+        auto source = flat_vector(&arena, logical_type::INTEGER, values, {10});
+        vector::vector_t widened{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &widened, context, count)
+                          .contains_error());
+        REQUIRE(widened.is_null(10));
+        REQUIRE_FALSE(widened.is_null(11));
+
+        vector::vector_t narrowed{&arena, complex_logical_type{logical_type::SMALLINT}};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::SMALLINT)
+                          .fn.invoke(cast_kind::cast, source, &narrowed, context, count)
+                          .contains_error());
+        REQUIRE(narrowed.is_null(10));
+        REQUIRE_FALSE(narrowed.is_null(11));
+    }
+
+    SECTION("count 130, NULL only at row 64") {
+        constexpr uint64_t count = 130;
+        std::vector<int32_t> values(count, 4);
+        auto source = flat_vector(&arena, logical_type::INTEGER, values, {64});
+        vector::vector_t widened{&arena, bigint_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::BIGINT)
+                          .fn.invoke(cast_kind::cast, source, &widened, context, count)
+                          .contains_error());
+        REQUIRE(widened.is_null(64));
+        REQUIRE_FALSE(widened.is_null(129));
+
+        vector::vector_t narrowed{&arena, complex_logical_type{logical_type::SMALLINT}};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::INTEGER, logical_type::SMALLINT)
+                          .fn.invoke(cast_kind::try_cast, source, &narrowed, context, count)
+                          .contains_error());
+        REQUIRE(narrowed.is_null(64));
+        REQUIRE_FALSE(narrowed.is_null(129));
+    }
+}
+
+TEST_CASE("numeric cast kernels: range-checked casts into a reused result and special floating values") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    SECTION("BIGINT -> INTEGER into a result with stale NULLs") {
+        const auto& entry = numeric_entry(registry, logical_type::BIGINT, logical_type::INTEGER);
+        auto source = flat_vector<int64_t>(&arena, logical_type::BIGINT, {5, std::numeric_limits<int64_t>::max(), 7});
+
+        vector::vector_t try_result{&arena, integer_type};
+        try_result.set_null(0, true);
+        try_result.set_null(3, true);
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::try_cast, source, &try_result, context, 3).contains_error());
+        REQUIRE_FALSE(try_result.is_null(0));
+        REQUIRE(try_result.get_value<int32_t>(0) == 5);
+        REQUIRE(try_result.is_null(1));
+        REQUIRE(try_result.get_value<int32_t>(2) == 7);
+        REQUIRE(try_result.is_null(3));
+
+        auto in_range = flat_vector<int64_t>(&arena, logical_type::BIGINT, {5, 6});
+        vector::vector_t cast_result{&arena, integer_type};
+        cast_result.set_null(0, true);
+        cast_result.set_null(2, true);
+        REQUIRE_FALSE(entry.fn.invoke(cast_kind::cast, in_range, &cast_result, context, 2).contains_error());
+        REQUIRE_FALSE(cast_result.is_null(0));
+        REQUIRE(cast_result.get_value<int32_t>(0) == 5);
+        REQUIRE(cast_result.get_value<int32_t>(1) == 6);
+        REQUIRE(cast_result.is_null(2));
+    }
+
+    SECTION("DOUBLE -> FLOAT passes NaN and both infinities through") {
+        const double inf = std::numeric_limits<double>::infinity();
+        auto source = flat_vector<double>(&arena,
+                                          logical_type::DOUBLE,
+                                          {std::numeric_limits<double>::quiet_NaN(), inf, -inf});
+        vector::vector_t result{&arena, float_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::DOUBLE, logical_type::FLOAT)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 3)
+                          .contains_error());
+        REQUIRE(std::isnan(result.get_value<float>(0)));
+        REQUIRE(std::isinf(result.get_value<float>(1)));
+        REQUIRE_FALSE(std::signbit(result.get_value<float>(1)));
+        REQUIRE(std::isinf(result.get_value<float>(2)));
+        REQUIRE(std::signbit(result.get_value<float>(2)));
+    }
+
+    SECTION("DOUBLE -> INTEGER turns -0.0 and -0.4 into 0") {
+        auto source = flat_vector<double>(&arena, logical_type::DOUBLE, {-0.0, -0.4});
+        vector::vector_t result{&arena, integer_type};
+        REQUIRE_FALSE(numeric_entry(registry, logical_type::DOUBLE, logical_type::INTEGER)
+                          .fn.invoke(cast_kind::cast, source, &result, context, 2)
+                          .contains_error());
+        REQUIRE_FALSE(result.is_null(0));
+        REQUIRE(result.get_value<int32_t>(0) == 0);
+        REQUIRE(result.get_value<int32_t>(1) == 0);
     }
 }

@@ -42,6 +42,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_database.cpp
     transformer/impl/transform_table.cpp
     transformer/impl/transform_select.cpp
+    transformer/impl/pull_up_sublinks.cpp
     transformer/impl/transform_table.cpp
     transformer/impl/transform_types.cpp
     transformer/impl/transfrom_common.cpp
@@ -53,7 +54,9 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_alter_table.cpp
     transformer/impl/transform_transaction.cpp
     transformer/impl/transform_checkpoint.cpp
+    transformer/impl/transform_cursor.cpp
     transformer/impl/transform_set_setting.cpp
+    transformer/impl/transform_prepare.cpp
     transformer/impl/transform_vacuum.cpp
     transformer/impl/transform_sequence.cpp
     transformer/impl/transform_view.cpp

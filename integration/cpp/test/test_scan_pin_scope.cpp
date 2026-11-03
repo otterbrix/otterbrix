@@ -52,7 +52,7 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_pe
 
     constexpr int kRows = 200000;
 
-    REQUIRE(exec("CREATE DATABASE s;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA s;")->is_success());
     REQUIRE(exec("CREATE TABLE s.t (id bigint, a bigint, b bigint, c bigint);")->is_success());
     fill(d, kRows);
 
@@ -95,7 +95,7 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_
 
     constexpr int kRows = 50000;
 
-    REQUIRE(exec("CREATE DATABASE s;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA s;")->is_success());
     REQUIRE(exec("CREATE TABLE s.t (id bigint, a bigint, b bigint, c bigint);")->is_success());
     fill(d, kRows);
 

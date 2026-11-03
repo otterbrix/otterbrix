@@ -57,13 +57,13 @@ namespace components::operators {
             co_return core::error_t::no_error();
         }
         if (!ctx->runner) {
-            co_return core::error_t{core::error_code_t::physical_plan_error,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"lateral join: no sub-plan runner", res}};
         }
         // The output layout is fully determined at plan time (see the class comment).
         // validate_schema stamps every node's output_types(), so both must be present.
         if (outer_schema_.empty() || inner_schema_.empty()) {
-            co_return core::error_t{core::error_code_t::create_physical_plan_error,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"lateral join: unresolved side schema", res}};
         }
 
@@ -91,7 +91,7 @@ namespace components::operators {
             }
             if (found == outer_count) {
                 co_return core::error_t{
-                    core::error_code_t::create_physical_plan_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"lateral join: correlated column '" + full + "' not found in outer schema", res}};
             }
             bindings.emplace_back(param_id, found);
@@ -184,7 +184,7 @@ namespace components::operators {
                 for (const auto& [param_id, col] : bindings) {
                     if (outer_chunk.data[col].type() != ctx->parameters.type(param_id)) {
                         co_return core::error_t{
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::internal_error,
                             std::pmr::string{"lateral join: the outer column's type differs from its correlation "
                                              "parameter's",
                                              res}};

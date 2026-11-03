@@ -3,7 +3,7 @@ mod common;
 #[test]
 fn null_from_missing_column() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Bob', 25);")
@@ -27,7 +27,7 @@ fn null_from_missing_column() {
 #[test]
 fn where_is_null() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Bob', 25);")
@@ -44,7 +44,7 @@ fn where_is_null() {
 #[test]
 fn where_is_not_null() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Bob', 25);")

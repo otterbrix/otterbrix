@@ -8,22 +8,6 @@ namespace components::logical_plan {
     public:
         explicit node_group_t(std::pmr::memory_resource* resource);
 
-        // Optimizer annotation: this aggregate sub-plan targets a SINGLE owning
-        // agent and every aggregate is fragment-mergeable, so the reduce can be
-        // pushed to that agent instead of the coordinator. Stamped by the
-        // pushdown_aggregate rule; consumed by the physical-plan lowering
-        // (create_plan_aggregate). ANNOTATION only — it does NOT change logical
-        // semantics. Like node_aggregate_t::projected_cols_ (and UNLIKE
-        // node_join_t::algo_), it is deliberately EXCLUDED from hash_impl()
-        // (which stays 0). That exclusion is safe ONLY while the flag is a
-        // STATIC, per-process rollout gate: a pushed and a non-pushed plan for
-        // the same query then never coexist in one process. A DYNAMIC
-        // (runtime-toggled) flag would let both variants hash-collide in the
-        // plan cache — if this ever becomes runtime-dynamic, fold pushdown_
-        // into hash_impl() the way node_join_t does with algo_.
-        void set_pushdown(bool pushdown) noexcept;
-        [[nodiscard]] bool pushdown() const noexcept;
-
         const std::pmr::vector<components::types::complex_logical_type>& input_types() const noexcept {
             return input_types_;
         }
@@ -39,9 +23,6 @@ namespace components::logical_plan {
         size_t visible_select_count{0};
 
     private:
-        // See set_pushdown()/pushdown() above. Default false = coordinator-side
-        // reduce. Intentionally NOT folded into hash_impl().
-        bool pushdown_{false};
         std::pmr::vector<components::types::complex_logical_type> input_types_;
 
         hash_t hash_impl() const override;

@@ -8,8 +8,11 @@
 
 namespace otterbrix {
 
+    engine_arena_t::~engine_arena_t() { trace(log, "delete engine arena"); }
+
+    // The arena comes first, so the engine is destroyed before the memory it allocated.
     struct base_otterbrix_t::host_t final {
-        core::pmr::otterbrix_resource resource;
+        engine_arena_ptr arena{new engine_arena_t()};
         log_t log;
         // The pools outlive the engine: it stops them while shutting down, and they are freed after it.
         actor_zeta::scheduler_ptr scheduler_general{new actor_zeta::shared_work(3, 1000)};
@@ -18,7 +21,7 @@ namespace otterbrix {
         std::optional<services::engine::engine_t> engine;
         std::unique_ptr<wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper{
             nullptr,
-            actor_zeta::pmr::deleter_t(&resource)};
+            actor_zeta::pmr::deleter_t(&arena->resource)};
     };
 
     void base_otterbrix_t::host_deleter_t::operator()(host_t* host) const noexcept { delete host; }
@@ -32,9 +35,10 @@ namespace otterbrix {
         }
         host->log = std::move(log.value());
         host->log.set_level(config.log.level);
+        host->arena->log = host->log.clone();
         trace(host->log, "base_otterbrix_t::open");
 
-        auto engine = services::engine::open_engine(&host->resource,
+        auto engine = services::engine::open_engine(&host->arena->resource,
                                                     services::engine::schedulers_t{host->scheduler_general.get(),
                                                                                    host->scheduler_exec.get(),
                                                                                    host->scheduler_disk.get()},
@@ -45,8 +49,9 @@ namespace otterbrix {
             return core::error_on(std::pmr::new_delete_resource(), engine.error());
         }
         host->engine.emplace(std::move(engine.value()));
-        host->wrapper =
-            actor_zeta::spawn<wrapper_dispatcher_t>(&host->resource, host->engine->dispatcher_address(), host->log);
+        host->wrapper = actor_zeta::spawn<wrapper_dispatcher_t>(&host->arena->resource,
+                                                                host->engine->dispatcher_address(),
+                                                                host->log);
         trace(host->log, "base_otterbrix_t::open complete");
         return host;
     }
@@ -61,6 +66,8 @@ namespace otterbrix {
     log_t& base_otterbrix_t::get_log() { return host_->log; }
 
     wrapper_dispatcher_t* base_otterbrix_t::dispatcher() { return host_->wrapper.get(); }
+
+    const engine_arena_ptr& base_otterbrix_t::arena() const noexcept { return host_->arena; }
 
     const services::engine::engine_t& base_otterbrix_t::engine() const { return *host_->engine; }
 

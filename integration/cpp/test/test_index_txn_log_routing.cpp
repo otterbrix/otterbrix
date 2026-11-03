@@ -164,7 +164,7 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::the_meter_reads_zero_on
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE r;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA r;")->is_success());
     REQUIRE(exec("CREATE TABLE r.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX t_k ON r.t USING hash (k);")->is_success());
     REQUIRE(exec("INSERT INTO r.t (id, k) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
@@ -211,7 +211,7 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_doe
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE r;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA r;")->is_success());
         REQUIRE(exec("CREATE TABLE r.t (id bigint, k bigint, m bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON r.t USING hash (k);")->is_success());
         REQUIRE(exec("CREATE INDEX t_m ON r.t (m);")->is_success());

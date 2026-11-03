@@ -1,6 +1,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
+#include <map>
 
 #include <components/casts/default_casts.hpp>
 #include <components/compute/function.hpp>
@@ -9,12 +11,12 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/index_facts.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -24,9 +26,6 @@
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_union.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/physical_plan/operators/scan/index_scan.hpp>
-#include <components/physical_plan_generator/impl/create_plan_match.hpp>
-#include <components/physical_plan_generator/impl/index_selection_helpers.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/optimizer/rules/drop_redundant_distinct.hpp>
 #include <components/planner/optimizer/rules/eager_aggregation.hpp>
@@ -36,10 +35,7 @@
 #include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/vector_builders.hpp>
-#include <services/collection/context_storage.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
-
-#include "pushdown_plan_builders.hpp"
 
 namespace {
     const components::casts::cast_registry_t* test_cast_registry() {
@@ -54,6 +50,12 @@ namespace {
     const components::graph_execution_context& test_execution_context() {
         static const components::graph_execution_context execution_context{};
         return execution_context;
+    }
+
+    // A statement over tables without an index.
+    const components::logical_plan::index_facts_t& no_indexes() {
+        static const components::logical_plan::index_facts_t indexes{std::pmr::new_delete_resource()};
+        return indexes;
     }
 
     services::dispatcher::validation::validation_context_t
@@ -72,13 +74,25 @@ using namespace components::logical_plan;
 using namespace components::expressions;
 using key = components::expressions::key_t;
 
-using planner_test::make_agg_group;
+namespace {
+    // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
+    size_t on_column(const components::logical_plan::node_join_t* join, bool right) {
+        REQUIRE_FALSE(join->expressions().empty());
+        const auto* on =
+            static_cast<const components::expressions::compare_expression_t*>(join->expressions().front().get());
+        const auto& operand = right ? on->right() : on->left();
+        REQUIRE(components::expressions::is_key(operand));
+        return components::expressions::as_key(operand).path()[0];
+    }
+    size_t on_left_col(const components::logical_plan::node_join_t* join) { return on_column(join, false); }
+    size_t on_right_col(const components::logical_plan::node_join_t* join) { return on_column(join, true); }
+} // namespace
 
 constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
 static node_ptr make_match_with_expr(std::pmr::memory_resource* r, const expression_ptr& expr) {
-    return make_node_match(r, qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}}, expr);
+    return make_node_match(r, qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}}, expr);
 }
 
 TEST_CASE("optimizer::scalar_fold_add") {
@@ -100,7 +114,7 @@ TEST_CASE("optimizer::scalar_fold_add") {
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
-    auto result = components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    auto result = components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -131,7 +145,7 @@ TEST_CASE("optimizer::scalar_fold_subtract") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -161,7 +175,7 @@ TEST_CASE("optimizer::scalar_fold_multiply") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -191,7 +205,7 @@ TEST_CASE("optimizer::scalar_fold_divide") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -221,7 +235,7 @@ TEST_CASE("optimizer::scalar_fold_mod") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -243,7 +257,7 @@ TEST_CASE("optimizer::compare_fold_eq_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -262,7 +276,7 @@ TEST_CASE("optimizer::execution_slot_is_not_folded") {
     SECTION("a comparison") {
         auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
         auto node = make_match_with_expr(&resource, comp);
-        components::planner::optimize(&resource, node, params.get(), test_execution_context());
+        components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
         REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
     }
 
@@ -276,7 +290,7 @@ TEST_CASE("optimizer::execution_slot_is_not_folded") {
                                             key(&resource, "field", side_t::left),
                                             expression_ptr(scalar));
         auto node = make_match_with_expr(&resource, comp);
-        components::planner::optimize(&resource, node, params.get(), test_execution_context());
+        components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
         REQUIRE(static_cast<scalar_expression_t*>(scalar.get())->params().size() == 2);
     }
 }
@@ -291,7 +305,7 @@ TEST_CASE("optimizer::compare_fold_eq_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -307,7 +321,7 @@ TEST_CASE("optimizer::compare_fold_gt_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::gt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -323,7 +337,7 @@ TEST_CASE("optimizer::compare_fold_lt_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::lt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -339,7 +353,7 @@ TEST_CASE("optimizer::compare_fold_ne_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::ne, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -355,7 +369,7 @@ TEST_CASE("optimizer::compare_fold_ne_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::ne, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -371,7 +385,7 @@ TEST_CASE("optimizer::compare_fold_gte_true_equal") {
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -387,7 +401,7 @@ TEST_CASE("optimizer::compare_fold_gte_true_greater") {
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -403,7 +417,7 @@ TEST_CASE("optimizer::compare_fold_gte_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -419,7 +433,7 @@ TEST_CASE("optimizer::compare_fold_lte_true_equal") {
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -435,7 +449,7 @@ TEST_CASE("optimizer::compare_fold_lte_true_less") {
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -451,7 +465,7 @@ TEST_CASE("optimizer::compare_fold_lte_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -467,7 +481,7 @@ TEST_CASE("optimizer::compare_fold_lt_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::lt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -481,7 +495,7 @@ TEST_CASE("optimizer::no_fold_key_param") {
 
     auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left), id0);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::eq);
@@ -506,7 +520,7 @@ TEST_CASE("optimizer::no_fold_null_param") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
@@ -528,7 +542,7 @@ TEST_CASE("optimizer::no_fold_group_node") {
     expressions.emplace_back(std::move(scalar));
     auto group_node = make_node_group(&resource, expressions);
 
-    components::planner::optimize(&resource, group_node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, group_node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(group_node->expressions()[0].get());
     REQUIRE(s->params().size() == 2);
@@ -552,7 +566,7 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -585,7 +599,7 @@ TEST_CASE("optimizer::div_by_zero_skip") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     // The kernel refuses a zero divisor, so the runtime keeps the error.
@@ -628,7 +642,7 @@ TEST_CASE("optimizer::cast_of_a_constant_folds_into_a_new_id") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(std::holds_alternative<core::parameter_id_t>(c->right()));
@@ -655,7 +669,7 @@ TEST_CASE("optimizer::cast_of_an_execution_slot_is_not_folded") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
     REQUIRE(params->parameters().size() == 1);
@@ -680,7 +694,7 @@ TEST_CASE("optimizer::cast_the_kernel_refuses_is_left_for_the_runtime") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
     REQUIRE(params->parameters().size() == 1);
@@ -702,7 +716,7 @@ TEST_CASE("optimizer::cast_of_a_null_constant_is_not_folded") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
     REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
@@ -724,7 +738,7 @@ namespace {
                                            key(resource, "field", side_t::left),
                                            expression_ptr(scalar));
         auto node = make_match_with_expr(resource, comp_out);
-        components::planner::optimize(resource, node, params, test_execution_context());
+        components::planner::optimize(resource, node, params, test_execution_context(), no_indexes());
     }
 } // namespace
 
@@ -799,7 +813,7 @@ TEST_CASE("optimizer::try_cast_that_answers_null_is_not_folded") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
     REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
@@ -820,7 +834,7 @@ TEST_CASE("optimizer::unary_minus_of_a_constant_folds_into_a_new_id") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(std::holds_alternative<core::parameter_id_t>(c->right()));
@@ -848,7 +862,7 @@ TEST_CASE("optimizer::union_and_fold") {
     union_and->append_child(child2);
 
     auto node = make_match_with_expr(&resource, union_and);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c1 = static_cast<compare_expression_t*>(child1.get());
     REQUIRE(c1->type() == compare_type::all_true);
@@ -877,7 +891,7 @@ TEST_CASE("optimizer::union_or_fold") {
     union_or->append_child(child2);
 
     auto node = make_match_with_expr(&resource, union_or);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c1 = static_cast<compare_expression_t*>(child1.get());
     REQUIRE(c1->type() == compare_type::all_false);
@@ -911,7 +925,7 @@ TEST_CASE("optimizer::deep_nested_scalar") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(outer));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(outer.get());
     REQUIRE(s->params().size() == 1);
@@ -957,7 +971,7 @@ TEST_CASE("optimizer::triple_nested_scalar") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(add_outer));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(add_outer.get());
     REQUIRE(s->params().size() == 1);
@@ -991,7 +1005,7 @@ TEST_CASE("optimizer::scalar_fold_double") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -1023,7 +1037,7 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
@@ -1040,7 +1054,7 @@ TEST_CASE("optimizer::compare_fold_double") {
 
     auto comp = make_compare_expression(&resource, compare_type::gt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -1060,12 +1074,12 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
 
     auto aggregate =
         make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     aggregate->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         comp));
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add, key(&resource, "result"));
@@ -1075,7 +1089,7 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
     group_exprs.emplace_back(std::move(scalar));
     aggregate->append_child(make_node_group(&resource, group_exprs));
 
-    components::planner::optimize(&resource, aggregate, params.get(), test_execution_context());
+    components::planner::optimize(&resource, aggregate, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -1098,21 +1112,21 @@ TEST_CASE("optimizer::multiple_match_nodes") {
 
     auto aggregate =
         make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
 
     auto comp1 = make_compare_expression(&resource, compare_type::gt, id0, id1);
     aggregate->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         comp1));
 
     auto comp2 = make_compare_expression(&resource, compare_type::lt, id2, id3);
     aggregate->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         comp2));
 
-    components::planner::optimize(&resource, aggregate, params.get(), test_execution_context());
+    components::planner::optimize(&resource, aggregate, params.get(), test_execution_context(), no_indexes());
 
     auto* c1 = static_cast<compare_expression_t*>(comp1.get());
     REQUIRE(c1->type() == compare_type::all_true);
@@ -1121,27 +1135,9 @@ TEST_CASE("optimizer::multiple_match_nodes") {
     REQUIRE(c2->type() == compare_type::all_true);
 }
 
-TEST_CASE("optimizer::mirror_compare_lt_gt") {
-    using namespace services::planner::impl;
-    REQUIRE(mirror_compare(compare_type::lt) == compare_type::gt);
-    REQUIRE(mirror_compare(compare_type::gt) == compare_type::lt);
-}
-
-TEST_CASE("optimizer::mirror_compare_lte_gte") {
-    using namespace services::planner::impl;
-    REQUIRE(mirror_compare(compare_type::lte) == compare_type::gte);
-    REQUIRE(mirror_compare(compare_type::gte) == compare_type::lte);
-}
-
-TEST_CASE("optimizer::mirror_compare_symmetric") {
-    using namespace services::planner::impl;
-    REQUIRE(mirror_compare(compare_type::eq) == compare_type::eq);
-    REQUIRE(mirror_compare(compare_type::ne) == compare_type::ne);
-}
-
 TEST_CASE("optimizer::has_index_on_positive") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
+    components::logical_plan::index_facts_t ctx(&resource);
     constexpr auto table_oid = components::catalog::oid_t{701};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -1153,7 +1149,7 @@ TEST_CASE("optimizer::has_index_on_positive") {
 
 TEST_CASE("optimizer::has_index_on_negative") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
+    components::logical_plan::index_facts_t ctx(&resource);
     constexpr auto table_oid = components::catalog::oid_t{702};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -1165,7 +1161,7 @@ TEST_CASE("optimizer::has_index_on_negative") {
 
 TEST_CASE("optimizer::has_index_on_multi_field_skip") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
+    components::logical_plan::index_facts_t ctx(&resource);
     constexpr auto table_oid = components::catalog::oid_t{703};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -1178,7 +1174,7 @@ TEST_CASE("optimizer::has_index_on_multi_field_skip") {
 
 TEST_CASE("optimizer::has_index_on_empty") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
+    components::logical_plan::index_facts_t ctx(&resource);
     constexpr auto table_oid = components::catalog::oid_t{704};
 
     REQUIRE(ctx.has_index_on(table_oid, key(&resource, "any")) == false);
@@ -1205,323 +1201,6 @@ TEST_CASE("optimizer::param_copy_survives") {
 
     storage_parameters moved = std::move(copy2);
     REQUIRE(moved.at(id0).get_value<int64_t>(0) == 5);
-}
-
-static services::context_storage_t make_context_with_oid(std::pmr::memory_resource* resource,
-                                                         components::catalog::oid_t oid,
-                                                         const components::logical_plan::storage_parameters* params) {
-    services::context_storage_t ctx(resource, log_t{}, components::catalog::session_catalog_t{});
-    ctx.known_oids.insert(oid);
-    ctx.parameters = params;
-    return ctx;
-}
-
-static services::context_storage_t make_context_with_oid(std::pmr::memory_resource* resource,
-                                                         components::catalog::oid_t oid,
-                                                         const components::logical_plan::parameter_node_t* params) {
-    return make_context_with_oid(resource, oid, params ? &params->parameters() : nullptr);
-}
-
-static void add_single_field_index(services::context_storage_t& ctx,
-                                   std::pmr::memory_resource* resource,
-                                   components::catalog::oid_t table_oid,
-                                   const char* field,
-                                   components::logical_plan::index_type type) {
-    auto& info = ctx.index_info_slot(table_oid);
-    components::logical_plan::keys_base_storage_t keys(resource);
-    keys.push_back(key(resource, field));
-    info.keys.push_back(keys);
-
-    components::index::index_description_t desc{
-        components::logical_plan::keys_base_storage_t(resource),
-        type,
-    };
-    desc.keys.push_back(key(resource, field));
-    info.descriptions.push_back(std::move(desc));
-}
-
-TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(42)),
-                                     components::vector::parameter_kind::literal);
-    constexpr auto table_oid = components::catalog::oid_t{777};
-
-    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
-
-    auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
-                                make_compare_expression(&resource, compare_type::eq, key(&resource, "age"), pid));
-    node->set_table_oid(table_oid);
-
-    auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
-    REQUIRE_FALSE(op_planned.has_error());
-    auto op = op_planned.value();
-    REQUIRE(op->type() == components::operators::operator_type::index_scan);
-    auto* scan = static_cast<components::operators::index_scan*>(op.get());
-    REQUIRE(scan->compare_type() == compare_type::eq);
-    REQUIRE(scan->preferred_index_type() == components::logical_plan::index_type::hashed);
-}
-
-TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
-                                     components::vector::parameter_kind::literal);
-    constexpr auto table_oid = components::catalog::oid_t{778};
-
-    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
-
-    auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
-                                make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
-    node->set_table_oid(table_oid);
-
-    auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
-    REQUIRE_FALSE(op_planned.has_error());
-    auto op = op_planned.value();
-    REQUIRE(op->type() == components::operators::operator_type::index_scan);
-    auto* scan = static_cast<components::operators::index_scan*>(op.get());
-    REQUIRE(scan->compare_type() == compare_type::gte);
-    REQUIRE(scan->preferred_index_type() == components::logical_plan::index_type::single);
-}
-
-TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
-                                     components::vector::parameter_kind::literal);
-    constexpr auto table_oid = components::catalog::oid_t{779};
-
-    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
-
-    auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
-                                make_compare_expression(&resource, compare_type::gt, key(&resource, "age"), pid));
-    node->set_table_oid(table_oid);
-
-    auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
-    REQUIRE_FALSE(op_planned.has_error());
-    auto op = op_planned.value();
-    REQUIRE(op->type() == components::operators::operator_type::full_scan);
-}
-
-TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
-                                     components::vector::parameter_kind::literal);
-    constexpr auto table_oid = components::catalog::oid_t{780};
-
-    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
-
-    auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
-                                make_compare_expression(&resource, compare_type::lt, pid, key(&resource, "age")));
-    node->set_table_oid(table_oid);
-
-    auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
-    REQUIRE_FALSE(op_planned.has_error());
-    auto op = op_planned.value();
-    REQUIRE(op->type() == components::operators::operator_type::index_scan);
-    auto* scan = static_cast<components::operators::index_scan*>(op.get());
-    REQUIRE(scan->compare_type() == compare_type::gt);
-}
-
-TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
-                                     components::vector::parameter_kind::literal);
-    constexpr auto table_oid = components::catalog::oid_t{781};
-
-    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
-
-    auto union_expr = make_compare_union_expression(&resource, compare_type::union_and);
-    union_expr->append_child(make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
-
-    auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
-                                union_expr);
-    node->set_table_oid(table_oid);
-
-    auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
-    REQUIRE_FALSE(op_planned.has_error());
-    auto op = op_planned.value();
-    REQUIRE(op->type() == components::operators::operator_type::full_scan);
-}
-
-namespace {
-    constexpr auto pushable_oid = components::catalog::oid_t{4242};
-
-    static node_aggregate_ptr make_agg(std::pmr::memory_resource* r, const node_group_ptr& group) {
-        return planner_test::make_agg(r, group, pushable_oid);
-    }
-
-    static bool run_and_get_pushdown(std::pmr::memory_resource* r, const node_ptr& plan, bool enable) {
-        auto params = make_parameter_node(r);
-        auto root = components::planner::optimize(r, plan, params.get(), test_execution_context(), enable);
-        for (const auto& child : root->children()) {
-            if (child && child->type() == node_type::group_t) {
-                return static_cast<node_group_t*>(child.get())->pushdown();
-            }
-        }
-        return false;
-    }
-} // namespace
-
-TEST_CASE("optimizer::pushdown_aggregate::scalar_mergeable_is_stamped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::grouped_mergeable_is_stamped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/true, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*can_push=*/false) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::count_distinct_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/true);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = planner_test::make_agg(&resource, group, pushable_oid, expression_ptr(having));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(make_node_join(&resource, join_type::inner));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    auto nested =
-        make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
-    agg->append_child(std::move(nested));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::union_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(make_node_union(&resource,
-                                      make_node_cte_scan(&resource, std::pmr::string("l")),
-                                      make_node_cte_scan(&resource, std::pmr::string("r")),
-                                      /*all=*/false));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(make_node_cte_scan(&resource, std::pmr::string("cte")));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-namespace {
-    services::planner::plan_result_t no_host_operator(const services::context_storage_t& context,
-                                                      const components::compute::function_registry_t&,
-                                                      const node_extension_t&) {
-        return services::planner::plan_refusal(context.resource, "never lowered in these tests");
-    }
-} // namespace
-
-TEST_CASE("optimizer::pushdown_aggregate::extension_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(
-        node_ptr{new node_extension_t(&resource,
-                                      collection_name,
-                                      std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                      &no_host_operator)});
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    std::vector<expression_ptr> exprs;
-    auto agg_expr = make_aggregate_expression(&resource, "stddev", key(&resource, "s"));
-    agg_expr->append_param(key(&resource, "v"));
-    exprs.push_back(expression_ptr(agg_expr));
-    auto group = make_node_group(&resource, exprs);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
-    auto resource = core::pmr::otterbrix_resource();
-    {
-        std::vector<expression_ptr> exprs;
-        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
-        sum->append_param(key(&resource, "v"));
-        sum->set_mergeable(true);
-        exprs.push_back(expression_ptr(sum));
-        auto group = make_node_group(&resource, exprs);
-        auto agg = make_agg(&resource, group);
-        REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
-    }
-    {
-        std::vector<expression_ptr> exprs;
-        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
-        sum->append_param(key(&resource, "v"));
-        sum->set_mergeable(true);
-        sum->set_distinct(true);
-        exprs.push_back(expression_ptr(sum));
-        auto group = make_node_group(&resource, exprs);
-        auto agg = make_agg(&resource, group);
-        REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-    }
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::a_udf_reference_is_stamped_like_a_builtin") {
-    auto resource = core::pmr::otterbrix_resource();
-    std::vector<expression_ptr> exprs;
-    auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
-    sum->set_mergeable(true);
-    auto udf = make_function_expression(&resource, function_qualified_name_t{core::function_name_t{"my_udf"}});
-    udf->set_pin(components::compute::function_pin_t{components::compute::DEFAULT_FUNCTIONS.size()});
-    sum->append_param(expression_ptr(udf));
-    exprs.push_back(expression_ptr(sum));
-    auto group = make_node_group(&resource, exprs);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
 }
 
 // Unqualified comma-join columns get merged with ambiguous side=left stamps that detect_equi_columns can't
@@ -1559,11 +1238,11 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     where->append_child(lt);
 
     auto outer = make_node_aggregate(&resource,
-                                     qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                                     qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
     outer->append_child(join);
     outer->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         where));
 
     auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_ap"));
@@ -1589,8 +1268,8 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto* jn = static_cast<node_join_t*>(agg->children()[0].get());
     REQUIRE(jn->type() == join_type::inner);
     REQUIRE(jn->algo() == node_join_t::join_algo::hash);
-    REQUIRE(jn->left_col() == 0);
-    REQUIRE(jn->right_col() == 0);
+    REQUIRE(on_left_col(jn) == 0);
+    REQUIRE(on_right_col(jn) == 0);
 
     REQUIRE(jn->expressions().size() == 1);
     auto* on = static_cast<compare_expression_t*>(jn->expressions()[0].get());
@@ -1627,7 +1306,7 @@ TEST_CASE("optimizer::not_fold_all_false_child") {
     auto comp = make_compare_union_expression(&resource, compare_type::union_not);
     comp->append_child(make_compare_expression(&resource, compare_type::eq, id0, id1));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -1645,7 +1324,7 @@ TEST_CASE("optimizer::not_fold_all_true_child") {
     auto comp = make_compare_union_expression(&resource, compare_type::union_not);
     comp->append_child(make_compare_expression(&resource, compare_type::eq, id0, id1));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -1657,7 +1336,7 @@ namespace {
     constexpr auto prune_db = "database";
     constexpr auto prune_rel = "collection";
 
-    core::dbname_t pdb() { return core::dbname_t{std::string{prune_db}}; }
+    core::schema_t pdb() { return core::schema_t{std::string{prune_db}}; }
     core::relname_t prel() { return core::relname_t{std::string{prune_rel}}; }
 
     key pruned_key(std::pmr::memory_resource* r, const char* name, size_t idx, side_t side = side_t::undefined) {
@@ -1713,7 +1392,7 @@ TEST_CASE("optimizer::column_pruning") {
         auto agg = make_scan_agg(&resource, md);
         agg->append_child(sel);
 
-        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context(), no_indexes());
         REQUIRE(agg->projected_cols() == (std::vector<size_t>{0, 2}));
         REQUIRE(own_column(sel->expressions()[0]) == 0);
         REQUIRE(own_column(sel->expressions()[1]) == 1);
@@ -1728,7 +1407,7 @@ TEST_CASE("optimizer::column_pruning") {
         agg->append_child(sel);
         agg->append_child(make_node_match(&resource, qualified_name_t{pdb(), prel()}, where));
 
-        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context(), no_indexes());
         REQUIRE(agg->projected_cols() == (std::vector<size_t>{0, 2}));
         REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 1);
     }
@@ -1741,7 +1420,7 @@ TEST_CASE("optimizer::column_pruning") {
         auto agg = make_scan_agg(&resource, md);
         agg->append_child(sel);
 
-        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context(), no_indexes());
         REQUIRE(agg->projected_cols().empty());
     }
 
@@ -1751,7 +1430,7 @@ TEST_CASE("optimizer::column_pruning") {
         auto agg = make_scan_agg(&resource, md);
         agg->append_child(make_node_match(&resource, qualified_name_t{pdb(), prel()}, where));
 
-        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context(), no_indexes());
         REQUIRE(agg->projected_cols().empty());
         REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 2);
     }
@@ -1776,7 +1455,7 @@ TEST_CASE("optimizer::column_pruning") {
         agg->append_child(group);
         agg->append_child(sel);
 
-        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context(), no_indexes());
         REQUIRE(agg->projected_cols() == (std::vector<size_t>{1, 3}));
         REQUIRE(own_column(group->expressions()[0]) == 0);
         REQUIRE(as_key(static_cast<aggregate_expression_t*>(sum.get())->params().front()).path().front() == 1);
@@ -1817,7 +1496,8 @@ TEST_CASE("optimizer::column_pruning") {
         components::planner::optimize(&resource,
                                       boost::static_pointer_cast<components::logical_plan::node_t>(parent),
                                       params.get(),
-                                      test_execution_context());
+                                      test_execution_context(),
+                                      no_indexes());
 
         REQUIRE(agg_t1->projected_cols() == (std::vector<size_t>{0, 1}));
         REQUIRE(agg_t2->projected_cols() == (std::vector<size_t>{0, 1}));
@@ -1845,10 +1525,10 @@ TEST_CASE("optimizer::column_pruning") {
         components::catalog::fk_info_t fk;
         fk.parent_col_indices = {1};
         del->set_referencing_fks({fk});
-        auto cascade = boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::dbname_t{}, core::relname_t{}, fk));
+        auto cascade = boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::schema_t{}, core::relname_t{}, fk));
         cascade->append_child(del);
 
-        components::planner::optimize(&resource, cascade, params.get(), test_execution_context());
+        components::planner::optimize(&resource, cascade, params.get(), test_execution_context(), no_indexes());
         REQUIRE(del->projected_cols() == (std::vector<size_t>{1, 3, 4}));
         REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 2);
         REQUIRE(del->referencing_fks().front().parent_col_indices == std::vector<size_t>{0});
@@ -1881,11 +1561,11 @@ namespace {
         auto scan_r = make_promote_scan(r, right_cols);
         auto uni = make_node_union(r, scan_l, scan_r, all);
         auto outer =
-            make_node_aggregate(r, qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+            make_node_aggregate(r, qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
         outer->append_child(uni);
         outer->append_child(
             make_node_match(r,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                             where));
         auto validated =
             services::dispatcher::validate_schema(test_validation_context(r), outer.get(), params->parameters());
@@ -2299,7 +1979,7 @@ namespace {
     node_aggregate_ptr
     drd_agg(std::pmr::memory_resource* r, const node_group_ptr& group, const node_select_ptr& select) {
         auto agg =
-            make_node_aggregate(r, qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+            make_node_aggregate(r, qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
         agg->set_distinct(true);
         if (group) {
             agg->append_child(group);
@@ -2386,7 +2066,7 @@ namespace { namespace eag {
                             const char* rel,
                             components::catalog::oid_t oid,
                             std::initializer_list<const char*> cols) {
-        auto a = make_node_aggregate(r, qualified_name_t{core::dbname_t{"db"}, core::relname_t{rel}});
+        auto a = make_node_aggregate(r, qualified_name_t{core::schema_t{"db"}, core::relname_t{rel}});
         a->set_table_oid(oid);
         std::pmr::vector<components::types::complex_logical_type> types(r);
         for (const char* c : cols) {
@@ -2417,7 +2097,7 @@ namespace { namespace eag {
                                                         param_storage{col(r, "k", 1, side_t::left)},
                                                         param_storage{col(r, "k", 0, side_t::right)}));
         if (hash) {
-            join->set_equi_columns(1, 0);
+            join->set_algo(node_join_t::join_algo::hash);
         }
         auto gexpr = make_scalar_expression(r, scalar_type::group_field, col(r, "g", key_path));
         auto aexpr = make_aggregate_expression(r, fn, key(r, "m"), col(r, "x", agg_arg_path));
@@ -2468,8 +2148,8 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
           components::types::logical_type::BIGINT);
 
     auto* join = static_cast<node_join_t*>(outer->children()[0].get());
-    CHECK(join->left_col() == 1);
-    CHECK(join->right_col() == 0);
+    CHECK(on_left_col(join) == 1);
+    CHECK(on_right_col(join) == 0);
 
     node_group_t* final_group = nullptr;
     for (const auto& c : outer->children()) {
@@ -2483,6 +2163,22 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
     REQUIRE(is_key(final_agg->params()[0]));
     CHECK(as_key(final_agg->params()[0]).path().size() == 1);
     CHECK(as_key(final_agg->params()[0]).path()[0] == 2);
+}
+
+TEST_CASE("optimizer::eager_aggregation::partial_group_carries_the_partial_output_types") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto outer = eag::make_join_agg(&resource, "min");
+    components::planner::optimizer::eager_aggregation(&resource, outer);
+    auto* partial = eag::pushed_partial(outer);
+    REQUIRE(partial != nullptr);
+    const auto& pushed = static_cast<node_join_t*>(outer->children()[0].get())->children()[0];
+    REQUIRE(pushed->has_output_types());
+    REQUIRE(partial->has_output_types());
+    REQUIRE(partial->output_types().size() == pushed->output_types().size());
+    for (size_t i = 0; i < pushed->output_types().size(); ++i) {
+        CHECK(partial->output_types()[i] == pushed->output_types()[i]);
+        CHECK(partial->output_types()[i].alias() == pushed->output_types()[i].alias());
+    }
 }
 
 TEST_CASE("optimizer::eager_aggregation::max_is_pushed") {
@@ -2530,7 +2226,7 @@ TEST_CASE("optimizer::constant_folding::unfoldable_comparison_kind_is_left_unfol
     auto comp = make_compare_expression(&resource, compare_type::regex, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
 
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     REQUIRE(comp->type() == compare_type::regex);
     REQUIRE(std::holds_alternative<core::parameter_id_t>(comp->left()));
@@ -2555,88 +2251,11 @@ TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_decli
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
-    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
     REQUIRE(s->type() == scalar_type::add);
-}
-
-namespace {
-    std::vector<int>& rule_trace() {
-        static std::vector<int> trace;
-        return trace;
-    }
-
-    template<int Tag>
-    node_ptr trace_rule(std::pmr::memory_resource*, node_ptr node) {
-        rule_trace().push_back(Tag);
-        return node;
-    }
-
-    bool group_stamped(const node_ptr& node) {
-        for (const auto& child : node->children()) {
-            if (child->type() == node_type::group_t) {
-                return static_cast<const node_group_t*>(child.get())->pushdown();
-            }
-        }
-        return false;
-    }
-
-    // Records, per stage, whether pushdown_aggregate had stamped the group by then.
-    std::vector<std::pair<int, bool>>& stamp_trace() {
-        static std::vector<std::pair<int, bool>> trace;
-        return trace;
-    }
-
-    template<int Tag>
-    node_ptr stamp_rule(std::pmr::memory_resource*, node_ptr node) {
-        stamp_trace().emplace_back(Tag, group_stamped(node));
-        return node;
-    }
-} // namespace
-
-TEST_CASE("optimizer::host_rules::stage_order_then_registration_order") {
-    using components::planner::optimizer_stage;
-    auto resource = core::pmr::otterbrix_resource();
-    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
-    const components::planner::optimizer_rule_t rules[] = {
-        {optimizer_stage::last, &trace_rule<5>},
-        {optimizer_stage::after_simplify, &trace_rule<1>},
-        {optimizer_stage::after_limit, &trace_rule<3>},
-        {optimizer_stage::after_filters_and_joins, &trace_rule<2>},
-        {optimizer_stage::after_simplify, &trace_rule<11>},
-        {optimizer_stage::after_aggregate_pushdown, &trace_rule<4>},
-    };
-    rule_trace().clear();
-    auto params = make_parameter_node(&resource);
-    components::planner::optimize(&resource,
-                                  agg,
-                                  params.get(),
-                                  test_execution_context(),
-                                  /*can_push_to_agent=*/false,
-                                  rules);
-    REQUIRE(rule_trace() == std::vector<int>{1, 11, 2, 3, 4, 5});
-}
-
-TEST_CASE("optimizer::host_rules::aggregate_pushdown_stage_sees_the_stamp") {
-    using components::planner::optimizer_stage;
-    auto resource = core::pmr::otterbrix_resource();
-    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
-    const components::planner::optimizer_rule_t rules[] = {
-        {optimizer_stage::after_limit, &stamp_rule<3>},
-        {optimizer_stage::after_aggregate_pushdown, &stamp_rule<4>},
-        {optimizer_stage::last, &stamp_rule<5>},
-    };
-    stamp_trace().clear();
-    auto params = make_parameter_node(&resource);
-    components::planner::optimize(&resource,
-                                  agg,
-                                  params.get(),
-                                  test_execution_context(),
-                                  /*can_push_to_agent=*/true,
-                                  rules);
-    REQUIRE(stamp_trace() == std::vector<std::pair<int, bool>>{{3, false}, {4, true}, {5, true}});
 }
 
 namespace {
@@ -2660,7 +2279,7 @@ namespace {
                                             key(resource, "field", side_t::left),
                                             expression_ptr(scalar));
         auto node = make_match_with_expr(resource, comp);
-        components::planner::optimize(resource, node, params.get(), test_execution_context());
+        components::planner::optimize(resource, node, params.get(), test_execution_context(), no_indexes());
         return boost::intrusive_ptr<scalar_expression_t>(static_cast<scalar_expression_t*>(scalar.get()));
     }
 } // namespace
@@ -2789,11 +2408,13 @@ TEST_CASE("optimizer::compare_fold_string") {
     components::planner::optimize(&resource,
                                   make_match_with_expr(&resource, lt),
                                   params.get(),
-                                  test_execution_context());
+                                  test_execution_context(),
+                                  no_indexes());
     components::planner::optimize(&resource,
                                   make_match_with_expr(&resource, eq),
                                   params.get(),
-                                  test_execution_context());
+                                  test_execution_context(),
+                                  no_indexes());
 
     REQUIRE(static_cast<compare_expression_t*>(lt.get())->type() == compare_type::all_true);
     REQUIRE(static_cast<compare_expression_t*>(eq.get())->type() == compare_type::all_false);
@@ -2809,7 +2430,504 @@ TEST_CASE("optimizer::compare_of_mismatched_physical_types_is_not_folded") {
     components::planner::optimize(&resource,
                                   make_match_with_expr(&resource, comp),
                                   params.get(),
-                                  test_execution_context());
+                                  test_execution_context(),
+                                  no_indexes());
 
     REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
+}
+
+// A join key under a cast hashes like a bare one; the rest of the optimizer sees through the cast too.
+namespace { namespace cast_key {
+    components::types::complex_logical_type int_type() {
+        return components::types::complex_logical_type(components::types::logical_type::INTEGER);
+    }
+
+    expression_ptr widened(std::pmr::memory_resource* r, const key& k) {
+        return expression_ptr(make_cast_expression(r,
+                                                   param_storage{k},
+                                                   bigint_type(),
+                                                   test_cast(int_type(), bigint_type()),
+                                                   components::casts::cast_kind::cast));
+    }
+
+    // CAST(k AS BIGINT) over the left input's column 1
+    param_storage widened_k(std::pmr::memory_resource* r) {
+        return param_storage{widened(r, pruned_key(r, "k", 1, side_t::left))};
+    }
+
+    const key& key_under_cast(const param_storage& operand) {
+        REQUIRE(is_expr(operand));
+        REQUIRE(as_expr(operand)->group() == expression_group::cast);
+        const auto& child = static_cast<const cast_expression_t*>(as_expr(operand).get())->child();
+        REQUIRE(is_key(child));
+        return as_key(child);
+    }
+
+    // [a BIGINT, k INTEGER] x [b BIGINT, k2 BIGINT]
+    node_ptr join_over(std::pmr::memory_resource* r, join_type type, const expression_ptr& on) {
+        auto join = make_node_join(r, type);
+        auto left = join_scan(r, {"a", "k"});
+        std::pmr::vector<components::types::complex_logical_type> types(left->output_types().begin(),
+                                                                        left->output_types().end(),
+                                                                        r);
+        types[1] = components::types::complex_logical_type(components::types::logical_type::INTEGER, "k");
+        left->set_output_types(std::move(types));
+        join->append_child(left);
+        join->append_child(join_scan(r, {"b", "k2"}));
+        join->append_expression(on);
+        return join;
+    }
+}} // namespace ::cast_key
+
+TEST_CASE("optimizer::hash_join::cast_key_operand_is_hashed") {
+    auto resource = core::pmr::otterbrix_resource();
+    for (auto type : {join_type::inner, join_type::left, join_type::right, join_type::full}) {
+        auto join = cast_key::join_over(
+            &resource,
+            type,
+            make_compare_expression(&resource,
+                                    compare_type::eq,
+                                    cast_key::widened_k(&resource),
+                                    pruned_key(&resource, "k2", 1, side_t::right)));
+        auto out = components::planner::optimizer::rewrite_hash_joins(&resource, join);
+        REQUIRE(out == join);
+        CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
+    }
+}
+
+TEST_CASE("optimizer::hash_join::on_is_normalised_left_operand_first") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto join = cast_key::join_over(
+        &resource,
+        join_type::inner,
+        make_compare_expression(&resource,
+                                compare_type::eq,
+                                pruned_key(&resource, "k2", 1, side_t::right),
+                                cast_key::widened_k(&resource)));
+    components::planner::optimizer::rewrite_hash_joins(&resource, join);
+    REQUIRE(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
+    auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
+    CHECK(cast_key::key_under_cast(on->left()).side() == side_t::left);
+    REQUIRE(is_key(on->right()));
+    CHECK(as_key(on->right()).side() == side_t::right);
+}
+
+TEST_CASE("optimizer::hash_join::keys_from_one_side_stay_nested") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto join = cast_key::join_over(
+        &resource,
+        join_type::inner,
+        make_compare_expression(&resource,
+                                compare_type::eq,
+                                cast_key::widened_k(&resource),
+                                pruned_key(&resource, "a", 0, side_t::left)));
+    components::planner::optimizer::rewrite_hash_joins(&resource, join);
+    CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::nested);
+}
+
+TEST_CASE("optimizer::promote_cross_join::comma_join_on_narrow_key_becomes_inner_hash") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto lt_param = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                          components::vector::parameter_kind::literal);
+
+    auto make_scan = [&](std::initializer_list<std::pair<const char*, components::types::logical_type>> cols) {
+        std::pmr::vector<components::types::complex_logical_type> types(&resource);
+        for (const auto& [name, type] : cols) {
+            types.emplace_back(type, name);
+        }
+        auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, &resource);
+        return make_node_raw_data(&resource, std::move(chunk));
+    };
+    auto scan_a = make_scan({{"ak", components::types::logical_type::INTEGER},
+                             {"ap", components::types::logical_type::BIGINT}});
+    auto scan_b = make_scan({{"bk", components::types::logical_type::BIGINT}});
+
+    auto join = make_node_join(&resource, join_type::cross);
+    join->append_child(scan_a);
+    join->append_child(scan_b);
+    join->append_expression(make_compare_expression(&resource, compare_type::all_true));
+
+    auto eq = make_compare_expression(&resource, compare_type::eq, key(&resource, "ak"), key(&resource, "bk"));
+    auto lt = make_compare_expression(&resource, compare_type::lt, key(&resource, "ap"), lt_param);
+    auto where = make_compare_union_expression(&resource, compare_type::union_and);
+    where->append_child(eq);
+    where->append_child(lt);
+
+    auto outer = make_node_aggregate(&resource,
+                                     qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
+    outer->append_child(join);
+    outer->append_child(
+        make_node_match(&resource,
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
+                        where));
+    auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_ap"));
+    sum_expr->append_param(key(&resource, "ap"));
+    std::vector<expression_ptr> group_exprs;
+    group_exprs.emplace_back(expression_ptr(sum_expr));
+    outer->append_child(make_node_group(&resource, group_exprs));
+
+    auto validated =
+        services::dispatcher::validate_schema(test_validation_context(&resource), outer.get(), params->parameters());
+    REQUIRE_FALSE(validated.has_error());
+
+    node_ptr out = components::planner::optimizer::promote_cross_joins(&resource, outer);
+    out = components::planner::optimizer::rewrite_hash_joins(&resource, out);
+
+    REQUIRE(out == outer);
+    auto* agg = static_cast<node_aggregate_t*>(out.get());
+    REQUIRE(agg->children().size() == 3);
+    REQUIRE(agg->children()[0]->type() == node_type::join_t);
+    auto* jn = static_cast<node_join_t*>(agg->children()[0].get());
+    REQUIRE(jn->type() == join_type::inner);
+    REQUIRE(jn->algo() == node_join_t::join_algo::hash);
+
+    REQUIRE(jn->expressions().size() == 1);
+    auto* on = static_cast<compare_expression_t*>(jn->expressions()[0].get());
+    REQUIRE(on->type() == compare_type::eq);
+    const auto& lk = cast_key::key_under_cast(on->left());
+    CHECK(lk.side() == side_t::left);
+    REQUIRE(lk.path().size() == 1);
+    CHECK(lk.path()[0] == 0);
+    REQUIRE(is_key(on->right()));
+    const auto& rk = as_key(on->right());
+    CHECK(rk.side() == side_t::right);
+    REQUIRE(rk.path().size() == 1);
+    CHECK(rk.path()[0] == 0);
+
+    REQUIRE(agg->children()[1]->type() == node_type::match_t);
+    auto* residual = static_cast<compare_expression_t*>(agg->children()[1]->expressions()[0].get());
+    CHECK(residual->type() == compare_type::lt);
+}
+
+namespace { namespace one_sided {
+    node_ptr scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
+        std::pmr::vector<components::types::complex_logical_type> types(r);
+        for (const char* name : cols) {
+            types.emplace_back(components::types::logical_type::BIGINT, name);
+        }
+        auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
+        return make_node_raw_data(r, std::move(chunk));
+    }
+
+    expression_ptr abs_of(std::pmr::memory_resource* r, param_storage arg) {
+        std::pmr::vector<param_storage> args(r);
+        args.push_back(std::move(arg));
+        return expression_ptr(
+            make_function_expression(r, function_qualified_name_t{core::function_name_t{"abs"}}, std::move(args)));
+    }
+
+    // SELECT SUM(ap) FROM a(ak, ap), b(bk) WHERE `where`, validated and then promoted; returns the FROM node.
+    node_ptr promote(std::pmr::memory_resource* r, const expression_ptr& where) {
+        auto params = make_parameter_node(r);
+        auto join = make_node_join(r, join_type::cross);
+        join->append_child(scan(r, {"ak", "ap"}));
+        join->append_child(scan(r, {"bk"}));
+        join->append_expression(make_compare_expression(r, compare_type::all_true));
+        const qualified_name_t name{core::schema_t{database_name}, core::relname_t{collection_name}};
+        auto outer = make_node_aggregate(r, name);
+        outer->append_child(join);
+        outer->append_child(make_node_match(r, name, where));
+        auto sum_expr = make_aggregate_expression(r, "sum", key(r, "sum_ap"));
+        sum_expr->append_param(key(r, "ap"));
+        std::vector<expression_ptr> group_exprs;
+        group_exprs.emplace_back(expression_ptr(sum_expr));
+        outer->append_child(make_node_group(r, group_exprs));
+        auto validated =
+            services::dispatcher::validate_schema(test_validation_context(r), outer.get(), params->parameters());
+        REQUIRE_FALSE(validated.has_error());
+        node_ptr out = components::planner::optimizer::promote_cross_joins(r, outer);
+        REQUIRE(out == outer);
+        return outer->children()[0];
+    }
+}} // namespace ::one_sided
+
+// Any operand that reads one side only is a join key, as in PostgreSQL; its columns are re-stamped side-local.
+TEST_CASE("optimizer::promote_cross_join::function_of_one_side_is_a_join_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto from = one_sided::promote(
+        &resource,
+        make_compare_expression(&resource,
+                                compare_type::eq,
+                                param_storage{key(&resource, "bk")},
+                                param_storage{one_sided::abs_of(&resource, key(&resource, "ak"))}));
+    REQUIRE(from->type() == node_type::join_t);
+    auto* join = static_cast<node_join_t*>(from.get());
+    CHECK(join->type() == join_type::inner);
+    REQUIRE(join->expressions().size() == 1);
+    auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
+    REQUIRE(is_key(on->left()));
+    CHECK(as_key(on->left()).side() == side_t::right);
+    REQUIRE(as_key(on->left()).path().size() == 1);
+    CHECK(as_key(on->left()).path()[0] == 0);
+    REQUIRE(is_expr(on->right()));
+    REQUIRE(as_expr(on->right())->group() == expression_group::function);
+    const auto& args = static_cast<function_expression_t*>(as_expr(on->right()).get())->args();
+    REQUIRE(args.size() == 1);
+    REQUIRE(is_key(args[0]));
+    CHECK(as_key(args[0]).side() == side_t::left);
+    REQUIRE(as_key(args[0]).path().size() == 1);
+    CHECK(as_key(args[0]).path()[0] == 0);
+}
+
+// An operand reading both sides cannot be evaluated on either input alone.
+TEST_CASE("optimizer::promote_cross_join::operand_over_both_sides_is_not_a_join_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto sum = make_scalar_expression(&resource, scalar_type::add);
+    sum->append_param(key(&resource, "ak"));
+    sum->append_param(key(&resource, "bk"));
+    auto from = one_sided::promote(&resource,
+                                   make_compare_expression(&resource,
+                                                           compare_type::eq,
+                                                           param_storage{expression_ptr(sum)},
+                                                           param_storage{key(&resource, "ap")}));
+    REQUIRE(from->type() == node_type::join_t);
+    CHECK(static_cast<node_join_t*>(from.get())->type() == join_type::cross);
+}
+
+namespace { namespace cast_key {
+    // ON cast(k) = k2 over [a, k] x [b, k2]; the WHERE is in merged coordinates.
+    node_ptr filtered_join(std::pmr::memory_resource* r, node_ptr& join, const expression_ptr& where) {
+        join = join_over(r,
+                         join_type::inner,
+                         make_compare_expression(r,
+                                                 compare_type::eq,
+                                                 widened_k(r),
+                                                 pruned_key(r, "k2", 1, side_t::right)));
+        auto outer = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
+        outer->append_child(join);
+        outer->append_child(make_node_match(r, qualified_name_t{pdb(), prel()}, where));
+        return outer;
+    }
+
+    compare_expression_t* pushed_filter(const node_ptr& join, size_t side) {
+        const auto& child = join->children()[side];
+        REQUIRE(child->type() == node_type::aggregate_t);
+        REQUIRE(child->children().size() == 2);
+        REQUIRE(child->children()[1]->type() == node_type::match_t);
+        return static_cast<compare_expression_t*>(child->children()[1]->expressions()[0].get());
+    }
+}} // namespace ::cast_key
+
+TEST_CASE("optimizer::pushdown_filter::transitive_equi_propagation_onto_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    node_ptr join;
+    auto outer = cast_key::filtered_join(
+        &resource,
+        join,
+        make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k2", 3), p5));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+    REQUIRE(out == join);
+
+    auto* left = cast_key::pushed_filter(join, 0);
+    CHECK(left->type() == compare_type::eq);
+    const auto& k = cast_key::key_under_cast(left->left());
+    REQUIRE(k.path().size() == 1);
+    CHECK(k.path()[0] == 1);
+    REQUIRE(is_parameter(left->right()));
+    CHECK(as_parameter(left->right()) == p5);
+
+    auto* right = cast_key::pushed_filter(join, 1);
+    REQUIRE(is_key(right->left()));
+    CHECK(as_key(right->left()).as_string() == "k2");
+    CHECK(as_key(right->left()).path()[0] == 1);
+}
+
+TEST_CASE("optimizer::pushdown_filter::transitive_equi_propagation_from_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    node_ptr join;
+    auto outer = cast_key::filtered_join(
+        &resource,
+        join,
+        make_compare_expression(&resource,
+                                compare_type::gt,
+                                param_storage{cast_key::widened(&resource, pruned_key(&resource, "k", 1))},
+                                p5));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+    REQUIRE(out == join);
+
+    auto* left = cast_key::pushed_filter(join, 0);
+    CHECK(left->type() == compare_type::gt);
+    CHECK(cast_key::key_under_cast(left->left()).path()[0] == 1);
+
+    auto* right = cast_key::pushed_filter(join, 1);
+    CHECK(right->type() == compare_type::gt);
+    REQUIRE(is_key(right->left()));
+    CHECK(as_key(right->left()).as_string() == "k2");
+    REQUIRE(as_key(right->left()).path().size() == 1);
+    CHECK(as_key(right->left()).path()[0] == 1);
+    REQUIRE(is_parameter(right->right()));
+    CHECK(as_parameter(right->right()) == p5);
+}
+
+// k = 5 on the narrow side holds exactly when CAST(k AS BIGINT) = CAST(5 AS BIGINT), so k2 gets that filter.
+TEST_CASE("optimizer::pushdown_filter::bare_key_propagates_through_widening_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int32_t(5)),
+                                    components::vector::parameter_kind::literal);
+    for (auto op : {compare_type::eq, compare_type::lt}) {
+        node_ptr join;
+        auto outer = cast_key::filtered_join(
+            &resource,
+            join,
+            make_compare_expression(&resource, op, pruned_key(&resource, "k", 1), p5));
+
+        node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+        REQUIRE(out == join);
+        auto* left = cast_key::pushed_filter(join, 0);
+        CHECK(left->type() == op);
+        REQUIRE(is_key(left->left()));
+
+        auto* right = cast_key::pushed_filter(join, 1);
+        CHECK(right->type() == op);
+        REQUIRE(is_key(right->left()));
+        CHECK(as_key(right->left()).as_string() == "k2");
+        REQUIRE(as_key(right->left()).path().size() == 1);
+        CHECK(as_key(right->left()).path()[0] == 1);
+        REQUIRE(is_expr(right->right()));
+        REQUIRE(as_expr(right->right())->group() == expression_group::cast);
+        const auto* widened = static_cast<const cast_expression_t*>(as_expr(right->right()).get());
+        CHECK(widened->result_type().type() == components::types::logical_type::BIGINT);
+        REQUIRE(is_parameter(widened->child()));
+        CHECK(as_parameter(widened->child()) == p5);
+    }
+}
+
+// A narrowing cast is not injective, so a filter on the column under it says nothing about the other side.
+TEST_CASE("optimizer::pushdown_filter::bare_key_does_not_propagate_through_narrowing_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    auto join = make_node_join(&resource, join_type::inner);
+    join->append_child(join_scan(&resource, {"a", "k"}));
+    join->append_child(join_scan(&resource, {"b", "k2"}));
+    join->append_expression(make_compare_expression(
+        &resource,
+        compare_type::eq,
+        param_storage{expression_ptr(make_cast_expression(&resource,
+                                                          param_storage{pruned_key(&resource, "k", 1, side_t::left)},
+                                                          cast_key::int_type(),
+                                                          test_cast(bigint_type(), cast_key::int_type()),
+                                                          components::casts::cast_kind::cast))},
+        pruned_key(&resource, "k2", 1, side_t::right)));
+    auto outer = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource,
+                                        qualified_name_t{pdb(), prel()},
+                                        make_compare_expression(&resource,
+                                                                compare_type::eq,
+                                                                pruned_key(&resource, "k", 1),
+                                                                p5)));
+    const node_ptr right = join->children()[1];
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+    REQUIRE(out == join);
+    CHECK(cast_key::pushed_filter(join, 0)->type() == compare_type::eq);
+    CHECK(join->children()[1] == right);
+}
+
+// MIN pushed onto the side whose join key is cast(k): the partial groups by k, and the cast follows it.
+TEST_CASE("optimizer::eager_aggregation::cast_join_key_is_pushed") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto* r = &resource;
+    auto a = make_node_aggregate(r, qualified_name_t{core::schema_t{"db"}, core::relname_t{"a"}});
+    a->set_table_oid(components::catalog::oid_t{100});
+    {
+        std::pmr::vector<components::types::complex_logical_type> types(r);
+        types.emplace_back(components::types::logical_type::BIGINT, "g");
+        types.emplace_back(components::types::logical_type::BIGINT, "x");
+        types.emplace_back(components::types::logical_type::INTEGER, "k");
+        a->set_output_types(std::move(types));
+    }
+    auto b = eag::leaf(r, "b", components::catalog::oid_t{200}, {"k"});
+    auto join = make_node_join(r, join_type::inner);
+    join->append_child(a);
+    join->append_child(b);
+    const param_storage cast_k{cast_key::widened(r, eag::col(r, "k", 2, side_t::left))};
+    join->append_expression(
+        make_compare_expression(r, compare_type::eq, cast_k, param_storage{eag::col(r, "k", 0, side_t::right)}));
+    components::planner::optimizer::rewrite_hash_joins(r, join);
+    REQUIRE(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
+
+    auto aexpr = make_aggregate_expression(r, "min", key(r, "m"), eag::col(r, "x", 1));
+    aexpr->set_mergeable(true);
+    aexpr->set_result_type(components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    std::vector<expression_ptr> gxs;
+    gxs.emplace_back(make_scalar_expression(r, scalar_type::group_field, eag::col(r, "g", 0)));
+    gxs.emplace_back(expression_ptr(aexpr));
+    auto outer = make_node_aggregate(r, qualified_name_t{});
+    outer->append_child(join);
+    outer->append_child(make_node_group(r, gxs));
+
+    components::planner::optimizer::eager_aggregation(r, outer);
+
+    auto* partial = eag::pushed_partial(outer);
+    REQUIRE(partial != nullptr);
+    REQUIRE(partial->expressions().size() == 5);
+    auto* second = static_cast<scalar_expression_t*>(partial->expressions()[1].get());
+    CHECK(second->type() == scalar_type::group_field);
+    REQUIRE(second->key().path().size() == 1);
+    CHECK(second->key().path()[0] == 2);
+
+    auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
+    const auto& k = cast_key::key_under_cast(on->left());
+    REQUIRE(k.path().size() == 1);
+    CHECK(k.path()[0] == 1);
+    CHECK(partial->output_types()[1].type() == components::types::logical_type::INTEGER);
+}
+
+// A match takes its mode as UTINYINT (match_mode_of); constant folding leaves any other mode to the graph builder,
+// which refuses it, instead of reading a string's bytes as mode bits.
+TEST_CASE("optimizer::quantified_match_with_a_non_utinyint_mode_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto probe = params->add_parameter(components::vector::make_scalar(&resource, std::string_view{"abc"}),
+                                       components::vector::parameter_kind::literal);
+    std::vector<components::vector::vector_t> elements;
+    elements.push_back(components::vector::make_scalar(&resource, std::string_view{"abc"}));
+    const components::types::complex_logical_type text{components::types::logical_type::STRING_LITERAL};
+    auto set = params->add_parameter(components::vector::make_list(&resource, text, elements),
+                                     components::vector::parameter_kind::literal);
+    auto mode = params->add_parameter(components::vector::make_scalar(&resource, std::string_view{"l"}),
+                                      components::vector::parameter_kind::literal);
+
+    auto comp = make_compare_expression(&resource, compare_type::any, probe, set);
+    comp->set_inner_op(compare_type::regex);
+    comp->set_regex_flags(mode);
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
+
+    REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::any);
+}
+
+TEST_CASE("optimizer::quantified_match_with_a_utinyint_mode_is_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto probe = params->add_parameter(components::vector::make_scalar(&resource, std::string_view{"abc"}),
+                                       components::vector::parameter_kind::literal);
+    std::vector<components::vector::vector_t> elements;
+    elements.push_back(components::vector::make_scalar(&resource, std::string_view{"a_c"}));
+    const components::types::complex_logical_type text{components::types::logical_type::STRING_LITERAL};
+    auto set = params->add_parameter(components::vector::make_list(&resource, text, elements),
+                                     components::vector::parameter_kind::literal);
+    auto mode = params->add_parameter(components::vector::make_scalar(&resource, uint8_t{1}),
+                                      components::vector::parameter_kind::literal);
+
+    auto comp = make_compare_expression(&resource, compare_type::any, probe, set);
+    comp->set_inner_op(compare_type::regex);
+    comp->set_regex_flags(mode);
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
+
+    REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::all_true);
 }

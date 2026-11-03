@@ -8,7 +8,7 @@ async fn insert_select_and_param() -> Result<(), sqlx::Error> {
     let mut conn =
         OtterbrixConnection::connect_with(&OtterbrixConnectOptions::new(dir.path())).await?;
 
-    sqlx::query::<Otterbrix>("CREATE DATABASE db;")
+    sqlx::query::<Otterbrix>("CREATE SCHEMA db;")
         .execute(&mut conn)
         .await?;
     sqlx::query::<Otterbrix>("CREATE TABLE db.items (name string, qty bigint);")

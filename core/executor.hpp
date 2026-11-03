@@ -69,11 +69,17 @@ namespace actor_zeta {
             static constexpr bool value = (detail::is_same_ptr_v<SearchPtr, MethodPtrs> || ...);
         };
 
+        // A contract whose messages go only to an address of its own type (a table's storage): its header
+        // specializes this, and the send below takes no bare actor address for it.
+        template<typename Interface>
+        inline constexpr bool needs_typed_address = false;
+
         // The message id is the method's position in dispatch_traits, fixed at compile time, not a runtime compare.
         template<auto MethodPtr,
                  typename... Args,
                  typename Interface = typename type_traits::callable_trait<decltype(MethodPtr)>::class_type>
-        requires detail::is_interface<Interface> [[nodiscard]] inline auto send(actor::address_t target, Args&&... args)
+            requires(detail::is_interface<Interface> && !needs_typed_address<Interface>)
+        [[nodiscard]] inline auto send(actor::address_t target, Args&&... args)
             -> detail::send_result_t<Interface,
                                      typename type_traits::callable_trait<decltype(MethodPtr)>::result_type> {
             using result_type = typename type_traits::callable_trait<decltype(MethodPtr)>::result_type;
@@ -85,6 +91,10 @@ namespace actor_zeta {
             constexpr uint64_t action_id =
                 action_id_impl<Interface, MethodPtr, typename Interface::dispatch_traits::methods>::value;
 
+            if (!target) {
+                std::fputs("actor_zeta::otterbrix::send: refusing to send to an empty target address\n", stderr);
+                std::abort();
+            }
             return detail::dispatch_method_impl_address<Interface, MethodPtr, action_id>(std::move(target),
                                                                                          std::forward<Args>(args)...);
         }

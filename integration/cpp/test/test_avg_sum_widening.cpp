@@ -134,7 +134,7 @@ namespace {
 
     template<typename D>
     void seed(D* d) {
-        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE SCHEMA m;"));
         REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, b BIGINT, i INT, s SMALLINT, y TINYINT, r REAL, f DOUBLE);"));
         REQUIRE(ok(d,
                    "INSERT INTO m.t (g, b, i, s, y, r, f) VALUES "
@@ -162,7 +162,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::avg_of_128_bit_integers") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/wide_integers"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.w (h HUGEINT, u UHUGEINT);"));
     REQUIRE(ok(d, "INSERT INTO m.w (h, u) VALUES (1, 1);"));
     REQUIRE(ok(d, "INSERT INTO m.w (h, u) VALUES (2, 170141183460469231731687303715884105728);"));
@@ -190,7 +190,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::small_int_total") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/small_int"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.s (v SMALLINT, w INT);"));
     // 1500 rows: the fold crosses chunk boundaries.
     auto seeded =
@@ -208,7 +208,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::bigint_sum_overflow_is_an_error")
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/overflow"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, b BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (g, b) VALUES (1, 9223372036854775807), (1, 1), (2, 5);"));
 
@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::bigint_sum_overflow_is_an_error")
         INFO(sql);
         REQUIRE(c);
         REQUIRE_FALSE(c->is_success());
-        CHECK(c->get_error().type == core::error_code_t::arithmetics_failure);
+        CHECK(c->get_error().type == core::error_code_t::numeric_value_out_of_range);
         CHECK(std::string{c->get_error().what}.find("overflow") != std::string::npos);
     }
     // avg accumulates wider than the input, so the same rows average without overflowing.
@@ -230,7 +230,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::decimal") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/decimal"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, x DECIMAL(10,2));"));
     REQUIRE(ok(d, "INSERT INTO m.t (g, x) VALUES (1, 1.00), (1, 2.00), (1, 2.00), (2, -1.25), (2, -2.50);"));
 
@@ -275,8 +275,8 @@ TEST_CASE("integration::cpp::avg_sum_widening::empty_input_is_typed_null") {
     CHECK(column(d, "SELECT g, avg(b) FROM m.t WHERE b > 100 GROUP BY g;").empty());
 }
 
-// The owning disk agent reduces the table and the coordinator only finalizes; HAVING keeps the same query
-// on the coordinator. Both must agree on types and values.
+// The disk takes the GROUP BY and reduces the table; HAVING keeps the same query in otterbrix. Both must agree on
+// types and values.
 TEST_CASE("integration::cpp::avg_sum_widening::agent_reduce_matches_coordinator") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/agent_reduce"));
     test_spaces space(config);
@@ -287,8 +287,8 @@ TEST_CASE("integration::cpp::avg_sum_widening::agent_reduce_matches_coordinator"
     const std::string local = "SELECT g, avg(i) AS a, sum(s) AS t FROM m.t GROUP BY g HAVING count(*) > 0 ORDER BY g;";
     const auto pushed_plan = explain(d, pushed);
     INFO(pushed_plan);
-    REQUIRE(pushed_plan.find("Pushed Aggregate Scan") != std::string::npos);
-    REQUIRE(explain(d, local).find("Pushed Aggregate Scan") == std::string::npos);
+    REQUIRE(pushed_plan.find("Pushed Aggregate") != std::string::npos);
+    REQUIRE(explain(d, local).find("Pushed Aggregate") == std::string::npos);
 
     const std::vector<std::string> averages{"DOUBLE:1.5", "DOUBLE:4.33333"};
     const std::vector<std::string> sums{"BIGINT:3", "BIGINT:13"};
@@ -297,9 +297,10 @@ TEST_CASE("integration::cpp::avg_sum_widening::agent_reduce_matches_coordinator"
     CHECK(column(d, local, 1) == averages);
     CHECK(column(d, local, 2) == sums);
 
-    // Scalar form over no rows: the finalize step synthesizes the one row, typed from the plan.
+    // Scalar form over no rows: the disk that takes it answers its one row, typed from the plan.
     const std::string scalar_empty = "SELECT avg(i) AS a, sum(s) AS t FROM m.t WHERE g > 10;";
-    REQUIRE(explain(d, scalar_empty).find("Finalize Aggregate") != std::string::npos);
+    REQUIRE(explain(d, scalar_empty).find("Pushed Aggregate") != std::string::npos);
+    CHECK(column(d, scalar_empty, 0).size() == 1);
     CHECK(cell(d, scalar_empty, 0) == "DOUBLE:NULL");
     CHECK(cell(d, scalar_empty, 1) == "BIGINT:NULL");
 }

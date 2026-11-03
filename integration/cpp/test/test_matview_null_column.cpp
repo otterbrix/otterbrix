@@ -43,7 +43,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_NULL_only_column_is_text_and
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        run_ok(d, "CREATE DATABASE d;");
+        run_ok(d, "CREATE SCHEMA d;");
         run_ok(d, "CREATE TABLE d.src (a bigint);");
         run_ok(d, "INSERT INTO d.src (a) VALUES (1), (2);");
         run_ok(d, "CREATE MATERIALIZED VIEW d.mv AS SELECT a, NULL AS n FROM d.src WITH NO DATA;");
@@ -80,7 +80,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_NULL_only_column_is_text_and
 TEST_CASE("integration::cpp::matview_null_column::a_view_over_SELECT_NULL_records_text_and_still_expands") {
     test_spaces space(config_for("view"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE VIEW d.v AS SELECT NULL AS x;");
     auto read = run_ok(d, "SELECT * FROM d.v;");
     REQUIRE(read->size() == 1);
@@ -94,7 +94,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NUL
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        run_ok(d, "CREATE DATABASE d;");
+        run_ok(d, "CREATE SCHEMA d;");
         run_ok(d, "CREATE TABLE d.src (a bigint);");
         run_ok(d, "INSERT INTO d.src (a) VALUES (1), (2);");
         run_ok(d, "CREATE MATERIALIZED VIEW d.mv AS SELECT a, array[NULL] AS x FROM d.src WITH NO DATA;");
@@ -131,7 +131,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NUL
 TEST_CASE("integration::cpp::matview_null_column::a_view_over_an_array_of_NULL_answers_text_array") {
     test_spaces space(config_for("view_array_of_null"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE VIEW d.v AS SELECT array[NULL] AS x;");
     auto read = run_ok(d, "SELECT * FROM d.v;");
     REQUIRE(read->size() == 1);
@@ -149,7 +149,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_view_over_an_array_of_NULL_a
 TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_empty_array_is_refused") {
     test_spaces space(config_for("empty_array"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE TABLE d.src (a bigint);");
     run_ok(d, "INSERT INTO d.src (a) VALUES (1), (2);");
     const auto why = run_refused(d, "CREATE MATERIALIZED VIEW d.mv AS SELECT a, array[] AS x FROM d.src WITH NO DATA;");
@@ -161,7 +161,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_empty_array_
 TEST_CASE("integration::cpp::matview_null_column::a_blob_column_is_refused_by_CREATE_TABLE") {
     test_spaces space(config_for("blob_table"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     const auto why = run_refused(d, "CREATE TABLE d.t (id bigint, b blob);");
     INFO("refusal: " << why);
     CHECK(why.find("'b'") != std::string::npos);

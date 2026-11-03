@@ -25,7 +25,7 @@ TEST_CASE("integration::cpp::ddl_commit_marker::carries_the_drained_commit_id") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE markers;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA markers;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE markers.t (id bigint, v bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO markers.t (id, v) VALUES (1, 10), (2, 20);")->is_success());
 

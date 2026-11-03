@@ -46,7 +46,7 @@ namespace {
     };
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE bdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA bdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE bdb.t (id bigint);")->is_success());
         for (std::size_t done = 0; done < kRows; done += 512) {
             const auto batch = static_cast<unsigned>(std::min<std::size_t>(512, kRows - done));
@@ -68,7 +68,7 @@ TEST_CASE("integration::cpp::builtin_unregister::an_unregister_of_a_builtin_is_r
     auto refused = d->unregister_udf(otterbrix::session_id_t(), "abs", {components::types::logical_type::BIGINT});
     INFO("unregister of abs: " << refused.what.c_str());
     REQUIRE(refused.contains_error());
-    CHECK(refused.type == core::error_code_t::invalid_parameter);
+    CHECK(refused.type == core::error_code_t::dependent_objects_still_exist);
 
     for (std::size_t i = 0; i < 2 * config.execution.executor_pool_size; ++i) {
         auto cur = exec(d, "SELECT abs(id) FROM bdb.t WHERE id < 3;");
@@ -137,7 +137,7 @@ namespace {
             "remainder",
             arity::binary(),
             function_doc{resource, "short_doc", "full_doc", {"a", "b"}, false},
-            size_t{1});
+            size_t{1}, components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT),
                                 parameter_type::exact(components::types::logical_type::BIGINT)},

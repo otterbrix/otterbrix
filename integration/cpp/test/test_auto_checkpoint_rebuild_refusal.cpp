@@ -320,7 +320,7 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE adb;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA adb;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE adb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec(d, "CREATE INDEX t_k ON adb.t USING hash (k);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE adb.pad (id bigint, payload text);")->is_success());

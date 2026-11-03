@@ -114,7 +114,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_column_rebinds_the
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+    run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
     run_sql(dispatcher, "CREATE TABLE TestDatabase.t (a bigint, payload bigint);");
     run_sql(dispatcher, "INSERT INTO TestDatabase.t (a, payload) VALUES (1, 10), (2, 20), (3, 30);");
 
@@ -166,7 +166,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_sql(dispatcher, "CREATE TABLE TestDatabase.wide (a bigint, payload bigint[40]);");
         insert_rows(dispatcher, 0, FIRST_ROWS);
         run_sql(dispatcher, "CHECKPOINT;");
@@ -276,7 +276,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_sql(dispatcher, "CREATE TABLE TestDatabase.wide (a bigint, payload bigint[40]);");
         insert_rows(dispatcher, 0, FIRST_ROWS);
         run_sql(dispatcher, "CHECKPOINT;");
@@ -382,7 +382,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_add_column_are
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_sql(dispatcher, "CREATE TABLE TestDatabase.wide (a bigint, payload bigint[40]);");
         insert_rows(dispatcher, 0, FIRST_ROWS);
         run_sql(dispatcher, "CHECKPOINT;");

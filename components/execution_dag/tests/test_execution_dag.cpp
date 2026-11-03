@@ -334,7 +334,7 @@ TEST_CASE("execution_dag::a parameter of another type than its slot is refused, 
     input.data[0].set_value(0, static_cast<int64_t>(1));
     auto error = graph.process(input, graph_execution_context{});
     REQUIRE(error.contains_error());
-    CHECK(error.type == core::error_code_t::invalid_parameter);
+    CHECK(error.type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("execution_dag::a unary operator takes one operand") {

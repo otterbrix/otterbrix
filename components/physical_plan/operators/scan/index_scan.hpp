@@ -77,7 +77,7 @@ namespace components::operators {
 
         // Returns an error only when the search could not be answered; distinct from an answered "no rows".
         actor_zeta::unique_future<core::error_t> open_index_window(pipeline::context_t* ctx);
-        // col OP NULL selects nothing (full_scan's rule): no hold and no search are needed for it.
+        // col OP NULL selects nothing (the disk's rule for a taken WHERE): no hold and no search are needed for it.
         [[nodiscard]] bool key_selects_nothing_(const pipeline::context_t* ctx) const;
 
         // ONE storage_fetch for the whole window [pos_, end_); each chunk is stamped with its absolute row_ids.

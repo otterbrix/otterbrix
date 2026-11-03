@@ -63,7 +63,7 @@ namespace Duckstax.Otterbrix
         public ulong GetUint() { return ValueGetUint(value); }
         public double GetDouble() { return ValueGetDouble(value); }
         public string GetString() {
-            return OtterbrixWrapper.TakeString(ValueGetString(value)) ?? "";
+            return OtterbrixWrapper.BorrowString(value, () => ValueGetString(value));
         }
 
         private readonly ValueHandle value;

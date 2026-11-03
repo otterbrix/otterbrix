@@ -75,7 +75,7 @@ TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_
         test_spaces space(config);
         auto* d = space.dispatcher();
 
-        REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA db;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE db.t (id BIGINT, v BIGINT);")->is_success());
         auto load_batches = [&](int from, int upto) {
             for (int batch = from; batch < upto; ++batch) {

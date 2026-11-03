@@ -51,7 +51,7 @@ TEST_CASE("integration::cpp::test_alter_missing_column::drop_missing_column_is_r
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE amdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA amdb;")->is_success());
     REQUIRE(exec("CREATE TABLE amdb.t (a bigint, b text);")->is_success());
     REQUIRE(exec("INSERT INTO amdb.t (a, b) VALUES (1, 'x');")->is_success());
 
@@ -88,7 +88,7 @@ TEST_CASE("integration::cpp::test_alter_missing_column::drop_missing_column_if_e
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE amdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA amdb;")->is_success());
     REQUIRE(exec("CREATE TABLE amdb.t (a bigint, b text);")->is_success());
     REQUIRE(exec("INSERT INTO amdb.t (a, b) VALUES (1, 'x');")->is_success());
 
@@ -125,7 +125,7 @@ TEST_CASE("integration::cpp::test_alter_missing_column::rename_missing_column_is
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE amdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA amdb;")->is_success());
     REQUIRE(exec("CREATE TABLE amdb.t (a bigint, b text);")->is_success());
     REQUIRE(exec("INSERT INTO amdb.t (a, b) VALUES (1, 'x');")->is_success());
 
@@ -163,7 +163,7 @@ TEST_CASE("integration::cpp::test_alter_missing_column::document_table_drop_exis
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE amdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA amdb;")->is_success());
     INFO("an empty CREATE TABLE makes a relkind='g' table");
     REQUIRE(exec("CREATE TABLE amdb.docs ();")->is_success());
     REQUIRE(exec("INSERT INTO amdb.docs (a, b) VALUES (1, 'x');")->is_success());
@@ -194,7 +194,7 @@ TEST_CASE("integration::cpp::test_alter_missing_column::document_table_drop_miss
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE amdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA amdb;")->is_success());
     REQUIRE(exec("CREATE TABLE amdb.docs ();")->is_success());
     REQUIRE(exec("INSERT INTO amdb.docs (a, b) VALUES (1, 'x');")->is_success());
 
@@ -228,7 +228,7 @@ TEST_CASE("integration::cpp::test_alter_missing_column::document_table_rename_is
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE amdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA amdb;")->is_success());
     REQUIRE(exec("CREATE TABLE amdb.docs ();")->is_success());
     REQUIRE(exec("INSERT INTO amdb.docs (a, b) VALUES (1, 'x');")->is_success());
 

@@ -38,7 +38,7 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX k_idx ON b.t (k);")->is_success());
 
@@ -109,7 +109,7 @@ TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX k_idx ON b.t (k);")->is_success());
         REQUIRE(exec("INSERT INTO b.t (id, k) VALUES (1, 10), (2, 20), (3, 30);")->is_success());

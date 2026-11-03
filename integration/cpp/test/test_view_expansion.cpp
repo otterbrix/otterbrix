@@ -17,7 +17,7 @@ namespace {
 
     // Threshold 10 lives in the body on purpose: only there can it catch a parameter-id collision with an outer WHERE.
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE vx;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA vx;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE vx.t (col_a STRING, col_b BIGINT);")->is_success());
         REQUIRE(
             exec(d, "INSERT INTO vx.t (col_a, col_b) VALUES ('a', 5), ('b', 15), ('c', 20), ('d', 8);")->is_success());

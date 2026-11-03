@@ -1,43 +1,23 @@
 #pragma once
 
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
 #include "nodes/parsenodes.h"
 
-#include <stdexcept>
-
-class parser_exception_t : public std::exception {
-public:
-    parser_exception_t(int main_code, int support_code, std::string message, std::string detail, int pos);
-    parser_exception_t(std::string message, std::string detail);
-
-    const char* what() const noexcept override;
-
-    int main_error_code = -1;
-    int support_error_code = -1;
-    std::string message;
-    std::string detail;
-    int query_pos = -1;
-};
-
-// error handling
-int ereport(int code, std::string message);
-int ereport(int code, std::string message, int pos);
-int ereport(int main_code, int support_code, std::string message);
-int ereport(int main_code, int support_code, std::string message, int pos);
-int ereport(int main_code, int support_code, std::string message, std::string detail);
-int ereport(int main_code, int support_code, std::string message, std::string detail, int pos);
-
-void elog(int code, const char* message, ...);
+// error handling: ereport is parser_report (scanner.h), reached through the macros in gram.y and scan.l
 int errcode(int sqlerrcode);
+
+// a state SQL text cannot reach: the message goes to stderr, then abort
+[[noreturn]] void parser_abort(const char* msg);
 
 // TODO: use std::format (C++ 20)
 template<typename... Args>
 std::string errmsg(const char* fmt, Args... args) {
     int size_s = std::snprintf(nullptr, 0, fmt, args...) + 1; // Extra space for '\0'
     if (size_s <= 0) {
-        throw std::runtime_error("Error during formatting.");
+        parser_abort("an error message format failed");
     }
     auto size = static_cast<size_t>(size_s);
     std::string result;

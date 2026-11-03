@@ -1,5 +1,4 @@
 #include "relation_factory.hpp"
-#include <atomic>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -12,7 +11,6 @@
 #include <scan/python_replacement_scan.hpp>
 #include <stdexcept>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 using namespace components;
@@ -171,46 +169,10 @@ namespace otterbrix {
         }
     } // namespace
 
-    relation_factory_t::relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space)
-        : space(space) {}
+    relation_factory_t::relation_factory_t(engine_arena_ptr arena)
+        : arena_(std::move(arena)) {}
 
-    relation_factory_t::relation_factory_t(const relation_factory_t& other)
-        : space(other.space) {}
-
-    relation_factory_t::~relation_factory_t() {
-        // Scratch tables (tmp.t<pid>_<n>) persist with the database and nothing else removes
-        // them, so this destructor is the only cleanup, run once no relation reading them can
-        // still be alive (kept alive via py_relation_t::env). A drop refusal is logged, not
-        // thrown (destructors can't raise); the surviving pid-qualified name lets the retry loop
-        // in make_aggregate_node step over it later. `space` survives close() on purpose --
-        // unlike py_connection_t::space and expression_factory_t::space, which close() nulls --
-        // so the engine is still here to drop these tables; set_null_space() must not be wired
-        // into close(), or this collection silently stops.
-        //
-        // Not covered: a killed/crashed process skips this destructor, leaving its scratch
-        // tables in `tmp` forever -- deciding which pids are dead is unsafe here (a recycled pid
-        // may be live), so that sweep belongs at bootstrap, not here.
-        if (!space) {
-            return;
-        }
-        for (const auto& name : scratch_tables_) {
-            auto session = otterbrix::session_id_t();
-            auto cursor = space->dispatcher()->execute_sql(session, "DROP TABLE tmp." + name + ";");
-            if (!cursor) {
-                error(space->get_log(), "relation: dropping the scratch table tmp.{} returned no cursor", name);
-                continue;
-            }
-            if (cursor->is_error()) {
-                const auto& err = cursor->get_error();
-                error(space->get_log(),
-                      "relation: dropping the scratch table tmp.{} failed: {}",
-                      name,
-                      std::string(err.what.begin(), err.what.end()));
-            }
-        }
-    }
-
-    void relation_factory_t::set_null_space() { space = nullptr; }
+    relation_factory_t::~relation_factory_t() = default;
 
     node_ptr relation_factory_t::make_aggregate_node(const node_ptr& from,
                                                      node_group_ptr group,
@@ -218,46 +180,8 @@ namespace otterbrix {
                                                      node_sort_ptr sort,
                                                      node_select_ptr select,
                                                      node_limit_ptr limit) {
-        // The scratch table this aggregate materialises into. The name must be unused in the
-        // database, not just this process: the counter restarts at zero per process, but
-        // tmp.* tables persist with the database, so a second process against the same
-        // directory collides. Measured: running
-        // integration/python/tests/fast/dataframe/test_dataframe_limit.py twice against the
-        // same `default` directory turned "4 passed" into "4 failed" (collection already
-        // exists). Fixed by two mechanisms: the pid in the name keeps processes apart, and a
-        // taken name (recycled pid, or reopened leftovers) advances to the next one instead
-        // of failing the statement -- any other refusal stays loud.
-        static std::atomic<std::uint64_t> indx{0};
-        const auto pid = static_cast<std::uint64_t>(::getpid());
-        // Bounded so a saturated `tmp` can't spin forever; the pid prefix makes even one
-        // collision unlikely.
-        constexpr int max_name_attempts = 64;
-        std::string name;
-        for (int attempt = 0;; attempt++) {
-            name = "t" + std::to_string(pid) + "_" + std::to_string(indx.fetch_add(1, std::memory_order_relaxed));
-            // A fresh session per attempt: the previous one carries a refused statement.
-            auto session = otterbrix::session_id_t();
-            // Must check this cursor, or a failed create surfaces later as a
-            // confusing error on the aggregate itself.
-            auto create = space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
-            if (!create) {
-                throw std::runtime_error("relation: creating the scratch table tmp." + name + " returned no cursor");
-            }
-            if (!create->is_error()) {
-                // Recorded only after success: a refused name is not owned by this factory.
-                scratch_tables_.push_back(name);
-                break;
-            }
-            const auto err = create->get_error();
-            if (err.type == core::error_code_t::table_already_exists && attempt + 1 < max_name_attempts) {
-                continue;
-            }
-            throw std::runtime_error("relation: creating the scratch table tmp." + name +
-                                     " failed: " + std::string(err.what.begin(), err.what.end()));
-        }
-
-        auto* resource = space->dispatcher()->resource();
-        auto aggregator = make_node_aggregate(resource, qualified_name_t{core::dbname_t{"tmp"}, core::relname_t{name}});
+        auto* resource = &arena_->resource;
+        auto aggregator = make_node_aggregate(resource, qualified_name_t{});
         aggregator->append_child(from);
         if (group) {
             aggregator->append_child(group);
@@ -279,7 +203,7 @@ namespace otterbrix {
 
     built_relation_t relation_factory_t::filter_relation(const built_relation_t& relation,
                                                          const expression_wrapper_t& condition) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         node_match_ptr match_node;
         if (condition.is_expression()) {
             if (condition.expression()->group() == expressions::expression_group::compare) {
@@ -291,7 +215,7 @@ namespace otterbrix {
             throw std::runtime_error("The method supports only condition expression");
         }
         auto node = make_aggregate_node(relation.node, nullptr, match_node, nullptr, nullptr);
-        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
+        return {node, passthrough_schema(&arena_->resource, relation.columns)};
     }
 
     built_relation_t relation_factory_t::sort_relation(const built_relation_t& relation,
@@ -299,7 +223,7 @@ namespace otterbrix {
         if (exprs.empty()) {
             throw std::runtime_error("Please provide at least one expression to sort on");
         }
-        std::pmr::vector<expressions::expression_ptr> sort_exprs(space->dispatcher()->resource());
+        std::pmr::vector<expressions::expression_ptr> sort_exprs(&arena_->resource);
         sort_exprs.reserve(exprs.size());
         for (const auto& expr : exprs) {
             if (expr.is_expression()) {
@@ -314,15 +238,15 @@ namespace otterbrix {
                 throw std::runtime_error("Implementation Error. Undefined expression type for sort relation");
             }
         }
-        auto sort = make_node_sort(space->dispatcher()->resource(), std::move(sort_exprs));
+        auto sort = make_node_sort(&arena_->resource, std::move(sort_exprs));
 
         auto node = make_aggregate_node(relation.node, nullptr, nullptr, sort, nullptr);
-        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
+        return {node, passthrough_schema(&arena_->resource, relation.columns)};
     }
 
     built_relation_t relation_factory_t::group_relation(const built_relation_t& relation,
                                                         const std::vector<expression_wrapper_t>& exprs) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         // A grouped column enters the node twice, exactly as the SQL transformer
         std::vector<expressions::expression_ptr> keys;
         std::vector<expressions::expression_ptr> outputs;
@@ -354,16 +278,16 @@ namespace otterbrix {
         std::vector<expressions::expression_ptr> fields = std::move(keys);
         fields.reserve(fields.size() + outputs.size());
         fields.insert(fields.end(), outputs.begin(), outputs.end());
-        auto group = make_node_group(space->dispatcher()->resource(), std::move(fields));
+        auto group = make_node_group(&arena_->resource, std::move(fields));
 
-        auto schema = group_schema(space->dispatcher()->resource(), group, relation.columns);
+        auto schema = group_schema(&arena_->resource, group, relation.columns);
         auto node = make_aggregate_node(relation.node, group, nullptr, nullptr, nullptr);
         return {node, std::move(schema)};
     }
 
     built_relation_t relation_factory_t::select_relation(const built_relation_t& relation,
                                                          const std::vector<expression_wrapper_t>& exprs) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         auto select = make_node_select(resource);
         for (const auto& expr : exprs) {
             expressions::expression_ptr scalar;
@@ -394,7 +318,7 @@ namespace otterbrix {
                                                        const built_relation_t& other,
                                                        const std::vector<expression_wrapper_t>& exprs,
                                                        components::logical_plan::join_type type) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         std::pmr::vector<expressions::expression_ptr> conditions(resource);
         for (const auto& expr : exprs) {
             if (expr.is_expression()) {
@@ -431,14 +355,14 @@ namespace otterbrix {
     }
 
     built_relation_t relation_factory_t::limit_relation(const built_relation_t& relation, int64_t count) {
-        auto limit_node = make_node_limit(space->dispatcher()->resource(), limit_t(count));
+        auto limit_node = make_node_limit(&arena_->resource, limit_t(count));
         auto node = make_aggregate_node(relation.node, nullptr, nullptr, nullptr, nullptr, limit_node);
-        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
+        return {node, passthrough_schema(&arena_->resource, relation.columns)};
     }
 
     // should be protected because don\'t send external data
     built_relation_t relation_factory_t::create_df_relation(std::unique_ptr<components::tableref::table_ref_t> ref) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         auto tableData = scan_t::fetch_object_data(resource, std::move(ref));
 
         // Data leaf: the column schema is the data table's own columns.

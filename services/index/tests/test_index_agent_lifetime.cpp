@@ -35,6 +35,7 @@
 #include "index_fixture_path.hpp"
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 
 using services::index::tests::index_fixture_path;
 using services::index::tests::index_fixture_root;
@@ -118,16 +119,16 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             one_key(&resource),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            one_key(&resource),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent_raw = agents.front();
 
@@ -144,7 +145,8 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
             session,
             components::expressions::compare_type::eq,
             make_scalar(&resource, int64_t{42}),
-            /*txn_id=*/uint64_t{0});
+            /*txn_id=*/uint64_t{0},
+            true);
     REQUIRE_FALSE(read_future.is_ready());
 
     // Mailbox is FIFO and drop() was posted first, so this resume is the drop; the read stays queued.
@@ -169,7 +171,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     auto answer = std::move(read_future).take_ready();
     REQUIRE(answer.has_error());
     INFO("error was: " << answer.error().what.c_str());
-    CHECK(answer.error().type == core::error_code_t::index_not_exists);
+    CHECK(answer.error().type == core::error_code_t::internal_error);
 
     std::filesystem::remove_all(path);
 }

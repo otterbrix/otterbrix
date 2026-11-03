@@ -11,7 +11,7 @@ namespace configuration {
         std::filesystem::path path;
         log_t::level level{log_t::level::trace};
 
-        explicit config_log(const std::filesystem::path& path = std::filesystem::current_path())
+        explicit config_log(const std::filesystem::path& path)
             : path(path / "log") {}
     };
 
@@ -23,7 +23,7 @@ namespace configuration {
         // bytes since the last checkpoint exceed this value. Default 16 MB (4 segments).
         std::uintmax_t auto_checkpoint_threshold_bytes{16 * 1024 * 1024};
 
-        explicit config_wal(const std::filesystem::path& path = std::filesystem::current_path())
+        explicit config_wal(const std::filesystem::path& path)
             : path(path / "wal") {}
     };
 
@@ -40,7 +40,7 @@ namespace configuration {
         // the shipped layout since 96d5ffaa. Renaming would not move existing databases, only
         // strand them (a reopen finds an empty directory and bootstraps fresh). Pinned by
         // config_disk_path_layout in services/disk/tests/test_config_layout.cpp.
-        explicit config_disk(const std::filesystem::path& path = std::filesystem::current_path())
+        explicit config_disk(const std::filesystem::path& path)
             : path(path / "wal") {}
     };
 
@@ -75,9 +75,8 @@ namespace configuration {
         config_execution execution;
         std::filesystem::path main_path; // mainly used for checking, because log, wal and disk could be missing
 
-        config(const std::filesystem::path& path = std::filesystem::current_path());
+        config(const std::filesystem::path& path);
 
-        static config default_config() { return config(); }
         static config create_config(const std::filesystem::path& path) { return config(path); }
     };
 

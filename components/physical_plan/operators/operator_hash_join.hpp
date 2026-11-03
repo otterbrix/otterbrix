@@ -1,5 +1,7 @@
 #pragma once
 
+#include <components/execution_dag/execution_dag.hpp>
+#include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/join_utils.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -8,7 +10,9 @@
 #include <components/vector/vector.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace components::operators {
 
@@ -31,9 +35,9 @@ namespace components::operators {
     } // namespace hash_join_detail
 
     // Equi-join fast path: substituted for operator_join_t only when the ON
-    // condition is a single eq(left.key, right.key); the matching columns
-    // (`left_col`/`right_col`, into the respective input chunks) are detected at
-    // plan time and passed in.
+    // condition is a single eq of two operands that each read one side; the
+    // operands arrive as the probe and build key expressions, each evaluated over
+    // its own side's chunks.
     //
     // Builds a hash table over the right (build) side once and probes it with the
     // left (probe) side, turning the nested-loop O(L·R) join into O(L + R). Output
@@ -53,8 +57,8 @@ namespace components::operators {
         using type = logical_plan::join_type;
 
         // `swapped` records that the build-side-selection heuristic moved the
-        // LOGICAL-left table into the physical build (right_) slot (so left_col /
-        // right_col are the probe/build key columns after that swap). It is passed
+        // LOGICAL-left table into the physical build (right_) slot (so the probe /
+        // build keys are the operands of the sides after that swap). It is passed
         // through to compute_join_layout so the output is re-assembled in logical
         // [left, right] order. Defaulted so the (still unswapped) call sites and the
         // nested-loop lowering compile unchanged; the build-side heuristic sets it.
@@ -62,17 +66,19 @@ namespace components::operators {
         operator_hash_join_t(std::pmr::memory_resource* resource,
                              log_t log,
                              type join_type,
-                             size_t left_col,
-                             size_t right_col,
-                             bool swapped = false);
+                             std::pmr::vector<expressions::expression_ptr> probe_keys,
+                             std::pmr::vector<expressions::expression_ptr> build_keys,
+                             bool swapped = false,
+                             bool single_match = false);
 
         // The join is a SINK on its build side (it must fully retain the right
         // input before any match can be decided) and STREAMING on its probe side
         // (one left batch in -> matched/padded rows out). A single role models both:
-        // execute_pipeline pushes each probe batch through push() and, after the
+        // pump_pipeline_ pushes each probe batch through push() and, after the
         // probe is drained, drains unmatched build rows (right/full) via finalize().
         // The build (right_->output()) is materialized by a separate sub-plan before
-        // the first push; the index is built lazily on the first push (index_built_).
+        // the first push. Right and full joins index it on the first push; inner and
+        // left joins only on the first non-empty probe batch (index_built_).
 
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
@@ -84,7 +90,13 @@ namespace components::operators {
         // working set) rebuilds the hash table from the NEW build side instead of reusing
         // the stale one. reset_for_reuse() clears state_/output_ but not this build state.
         void reset_pipeline_state() noexcept override {
+            layout_ready_ = false;
             index_built_ = false;
+            build_rows_ = 0;
+            probe_graph_.reset();
+            build_graph_.reset();
+            build_keys_.clear();
+            probe_keys_.clear();
             right_index_.clear();
             res_types_.clear();
             build_matched_.clear();
@@ -95,21 +107,30 @@ namespace components::operators {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override;
+
         type join_type_;
+        // A scalar sub-query's LEFT join: a second match of one probe row is SQL's error.
+        bool single_match_;
         // Plan-time orientation: true iff the physical build (right_) side is the
         // LOGICAL-left table. Fixed at construction — NOT cleared in
         // reset_pipeline_state() (a re-driven recursive-CTE term keeps the same plan).
         bool swapped_;
-        // Equi-key column indices into the left (probe) / right (build) input
-        // chunks. Stored as one-element lists so the build/probe machinery iterates
-        // a key column list uniformly for single- and (future) multi-column keys.
-        std::pmr::vector<uint64_t> probe_key_cols_{resource_};
-        std::pmr::vector<uint64_t> build_key_cols_{resource_};
+        std::pmr::vector<expressions::expression_ptr> probe_key_exprs_;
+        std::pmr::vector<expressions::expression_ptr> build_key_exprs_;
+        std::unique_ptr<execution_dag::execution_dag_t> probe_graph_;
+        std::unique_ptr<execution_dag::execution_dag_t> build_graph_;
+        // One key chunk per build chunk, taken out of the build graph; the probe's is referenced, never copied.
+        std::pmr::vector<vector::data_chunk_t> build_keys_{resource_};
+        std::pmr::vector<vector::data_chunk_t> probe_keys_{resource_};
+        std::vector<uint64_t> key_columns_;
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 
         // --- Build/probe state (shared by push) ---
+        bool layout_ready_{false};
         bool index_built_{false};
+        uint64_t build_rows_{0};
         hash_join_detail::right_index_t right_index_{resource_};
         std::pmr::vector<types::complex_logical_type> res_types_{resource_};
         // RIGHT/FULL only: a flat "matched" marker (one byte per build row) over all
@@ -122,16 +143,20 @@ namespace components::operators {
 
         join_detail::join_builder builder_{resource_, res_types_, indices_left_, indices_right_};
         vector::vector_t hashes_{resource_, types::logical_type::UBIGINT, vector::DEFAULT_VECTOR_CAPACITY};
-        std::vector<uint64_t> probe_hash_cols_;
-        std::vector<uint64_t> build_hash_cols_;
 
+        [[nodiscard]] core::error_t key_graph_(pipeline::context_t* ctx,
+                                               const std::pmr::vector<expressions::expression_ptr>& keys,
+                                               const vector::data_chunk_t& sample,
+                                               uint64_t capacity,
+                                               std::unique_ptr<execution_dag::execution_dag_t>* graph);
         // Build the hash+verify index over the materialized build (right) chunks.
         // NULL build keys are skipped — they never join under SQL equi-join
         // semantics. Also (re)sizes build_matched_ for right/full.
-        void build_index_();
+        [[nodiscard]] core::error_t build_index_(pipeline::context_t* ctx);
         // Probe one left batch against the index and emit per join_type_ via the
         // shared join_builder. Marks matched build rows for right/full.
-        void probe_batch_(const vector::data_chunk_t& probe, chunks_vector_t& out);
+        [[nodiscard]] core::error_t
+        probe_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& probe, chunks_vector_t& out);
         // Emit unmatched build rows (right/full) NULL-padded on the left side.
         void emit_unmatched_build_(chunks_vector_t& out);
     };

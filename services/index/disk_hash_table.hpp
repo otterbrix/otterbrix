@@ -227,7 +227,7 @@ namespace services::index {
                           std::pmr::memory_resource* memory_resource,
                           defer_open_tag);
 
-        // Builds an index_create_fail error_t on this table's resource, which is why it's a
+        // Builds an io_error error_t on this table's resource, which is why it's a
         // member rather than a free function.
         [[nodiscard]] core::error_t io_failure(const std::string& message) const;
         [[nodiscard]] core::error_t page_read_failure(uint64_t page_id) const;

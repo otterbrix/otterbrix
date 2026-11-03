@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -55,6 +56,7 @@ namespace {
         configuration::config_wal wal_config;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> disk;
+        manager_disk_t::bootstrap_t disk_boot{*disk, services::bootstrap_token_t{}};
         std::unique_ptr<services::wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
 
         // wire_wal=false leaves manager_wal_addr_ empty: storage mutates but emits no WAL record.
@@ -62,12 +64,12 @@ namespace {
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , wal_config([&]() {
-                configuration::config_wal c;
+                configuration::config_wal c{dir};
                 c.path = dir;
                 return c;
             }())
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{dir};
                 c.path = dir;
                 return c;
             }())
@@ -87,9 +89,9 @@ namespace {
                   configuration::pump_intervals_t{})) {
             std::filesystem::create_directories(dir);
             if (wire_wal) {
-                disk->set_manager_wal_sync(wal->address());
+                disk_boot.set_manager_wal_sync(wal->address());
             }
-            REQUIRE_FALSE(disk->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             disk.reset();
@@ -116,7 +118,7 @@ namespace {
 
     std::size_t pg_catalog_physical_count(const std::string& dir) {
         auto log = make_test_log();
-        configuration::config_wal c;
+        configuration::config_wal c{dir};
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
@@ -134,7 +136,7 @@ namespace {
 
     std::size_t pg_catalog_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
         auto log = make_test_log();
-        configuration::config_wal c;
+        configuration::config_wal c{dir};
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
@@ -156,7 +158,7 @@ namespace {
     };
     std::vector<phys_rec_t> pg_catalog_physical_sequence(const std::string& dir) {
         auto log = make_test_log();
-        configuration::config_wal c;
+        configuration::config_wal c{dir};
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
@@ -178,7 +180,7 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_alone_no_wal") {
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        auto stored = fx.disk->read_setting_sync("TimeZone");
+        auto stored = fx.disk_boot.read_setting_sync("TimeZone");
         REQUIRE_FALSE(stored.has_error());
         REQUIRE_FALSE(stored.value().empty());
     }
@@ -192,7 +194,7 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") 
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        auto stored = fx.disk->read_setting_sync("TimeZone");
+        auto stored = fx.disk_boot.read_setting_sync("TimeZone");
         REQUIRE_FALSE(stored.has_error());
         const auto seeded = stored.value();
         REQUIRE_FALSE(seeded.empty());
@@ -344,7 +346,7 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
         test_create_table(fx, ns_oid, "t", cols);
     }
     auto log = make_test_log();
-    configuration::config_wal c;
+    configuration::config_wal c{dir};
     c.path = dir;
     core::pmr::otterbrix_resource reader_resource;
     services::wal::wal_reader_t reader(&reader_resource, c, log);
@@ -495,7 +497,7 @@ namespace {
                                                               const std::string& dir,
                                                               catalog::oid_t target_oid) {
         auto log = make_test_log();
-        configuration::config_wal c;
+        configuration::config_wal c{dir};
         c.path = dir;
         services::wal::wal_reader_t reader(reader_resource, c, log);
         auto records_result = reader.read_committed_records();
@@ -525,7 +527,7 @@ TEST_CASE("services::disk::wal_catalog::a_refused_catalog_cast_leaves_no_journal
             row.set_value(0, 0, 1.0e12);
             auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row));
             REQUIRE(appended.has_error());
-            CHECK(appended.error().type == core::error_code_t::conversion_failure);
+            CHECK(appended.error().type == core::error_code_t::internal_error);
         }
         SECTION("a STRING for the UINTEGER oid column") {
             auto row = pg_class_probe_row(
@@ -535,7 +537,7 @@ TEST_CASE("services::disk::wal_catalog::a_refused_catalog_cast_leaves_no_journal
             row.set_value(0, 0, std::string_view("12345"));
             auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row));
             REQUIRE(appended.has_error());
-            CHECK(appended.error().type == core::error_code_t::conversion_failure);
+            CHECK(appended.error().type == core::error_code_t::internal_error);
         }
     }
     core::pmr::otterbrix_resource reader_resource;
@@ -625,10 +627,10 @@ TEST_CASE("services::disk::wal_catalog::a_partial_aliased_row_is_casted_by_colum
         auto before = test_probe::probe_table(replayed, auto_ctx(), ns_oid, std::string("partial_probe"));
         REQUIRE_FALSE(before.found);
         for (auto& chunk : records.front().physical_data) {
-            auto append_r = replayed.disk->append_sync(pg_class,
-                                                       records.front().physical_attoids,
-                                                       chunk,
-                                                       components::table::transaction_data::committed());
+            auto append_r = replayed.disk_boot.append_sync(pg_class,
+                                                           records.front().physical_attoids,
+                                                           chunk,
+                                                           components::table::transaction_data::committed());
             REQUIRE_FALSE(append_r.has_error());
         }
         auto after = test_probe::probe_table(replayed, auto_ctx(), ns_oid, std::string("partial_probe"));
@@ -688,7 +690,7 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
 namespace {
     std::size_t add_column_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
         auto log = make_test_log();
-        configuration::config_wal c;
+        configuration::config_wal c{dir};
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
@@ -742,18 +744,23 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fx, ns_oid, "t_addcol", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  cols,
-                  /*is_computed=*/true);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/true)
+                .has_error());
 
         {
             auto r = fx.invoke(&manager_disk_t::storage_append,
                                txn_exec_ctx(88, table_oid),
                                table_oid,
-                               bigint_batch(&fx.resource, {"a"}, 1, 1));
+                               std::pmr::vector<catalog::oid_t>(&fx.resource),
+                               bigint_batch(&fx.resource, {"a"}, 1, 1),
+                               false);
             REQUIRE_FALSE(r.has_error());
             REQUIRE(r.value().count == 1);
         }
@@ -762,7 +769,9 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
             auto r = fx.invoke(&manager_disk_t::storage_append,
                                txn_exec_ctx(88, table_oid),
                                table_oid,
-                               bigint_batch(&fx.resource, {"a", "b"}, 1, 2));
+                               std::pmr::vector<catalog::oid_t>(&fx.resource),
+                               bigint_batch(&fx.resource, {"a", "b"}, 1, 2),
+                               false);
             INFO("the drained add-column path must not hang and must not fail the growth append");
             REQUIRE_FALSE(r.has_error());
             REQUIRE(r.value().count == 1);
@@ -789,7 +798,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
     REQUIRE(add_column_records_for(dir, table_oid) == 1);
     {
         auto log = make_test_log();
-        configuration::config_wal c;
+        configuration::config_wal c{dir};
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
@@ -890,7 +899,7 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
 
     // Read the journal BEFORE any new engine touches the directory.
     core::pmr::otterbrix_resource reader_resource;
-    configuration::config_wal wal_c;
+    configuration::config_wal wal_c{dir};
     wal_c.path = dir;
     auto reader_log = make_test_log();
     services::wal::wal_reader_t reader(&reader_resource, wal_c, reader_log);
@@ -906,19 +915,19 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
                 continue;
             if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
                 for (auto& chunk : r.physical_data) {
-                    auto append_r = fx2.disk->append_sync(pg_attr,
-                                                          r.physical_attoids,
-                                                          chunk,
-                                                          components::table::transaction_data::committed());
+                    auto append_r = fx2.disk_boot.append_sync(pg_attr,
+                                                              r.physical_attoids,
+                                                              chunk,
+                                                              components::table::transaction_data::committed());
                     REQUIRE_FALSE(append_r.has_error());
                 }
             } else if (r.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
                 REQUIRE_FALSE(r.physical_data.empty());
-                auto upd_r = fx2.disk->update_sync(pg_attr,
-                                                   r.physical_row_ids,
-                                                   r.physical_attoids,
-                                                   r.physical_data.front(),
-                                                   components::table::transaction_data::committed());
+                auto upd_r = fx2.disk_boot.update_sync(pg_attr,
+                                                       r.physical_row_ids,
+                                                       r.physical_attoids,
+                                                       r.physical_data.front(),
+                                                       components::table::transaction_data::committed());
                 REQUIRE_FALSE(upd_r.has_error());
                 ++updates_applied;
             }

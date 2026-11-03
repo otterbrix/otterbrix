@@ -10,7 +10,6 @@ add_subdirectory(cpp)
 # (tests and benchmarks keep linking the components).
 set(otterbrix_engine_targets
         otterbrix_pmr
-        otterbrix_assert
         otterbrix_b_plus_tree
         otterbrix_date
         otterbrix_file

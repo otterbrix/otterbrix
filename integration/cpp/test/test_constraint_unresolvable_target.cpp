@@ -31,7 +31,7 @@ namespace {
     }
 
     void seed_pair(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.parent (id bigint, val text);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.child (id bigint, pid bigint);")->is_success());
         REQUIRE(exec(d, "ALTER TABLE cur.parent ADD CONSTRAINT parent_pk PRIMARY KEY (id);")->is_success());
@@ -110,7 +110,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_missing_c
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, v bigint);")->is_success());
 
     auto ddl = exec(d, "ALTER TABLE cur.t ADD CONSTRAINT uq_ghost UNIQUE (nosuchcol);");
@@ -135,7 +135,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_partially_re
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, v bigint);")->is_success());
 
     auto ddl = exec(d, "ALTER TABLE cur.t ADD CONSTRAINT uq_partial UNIQUE (id, nosuchcol);");
@@ -156,7 +156,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_dynamic_s
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.docs();")->is_success());
     REQUIRE(exec(d, "INSERT INTO cur.docs (id, v) VALUES (1, 10);")->is_success());
 
@@ -182,7 +182,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::resolvable_key_cons
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, code bigint, v bigint);")->is_success());
     REQUIRE(exec(d, "ALTER TABLE cur.t ADD CONSTRAINT t_pk PRIMARY KEY (id);")->is_success());
     REQUIRE(exec(d, "ALTER TABLE cur.t ADD CONSTRAINT t_uq UNIQUE (code);")->is_success());

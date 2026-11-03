@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/vector/cell_equal.hpp>
@@ -14,7 +15,7 @@ namespace {
 
     components::vector::vector_t
     inserted_literal(transformer& transformer, std::pmr::monotonic_buffer_resource& arena, const char* sql) {
-        auto stmt = linitial(raw_parser(&arena, sql));
+        auto stmt = linitial(parse_ok(&arena, sql));
         auto transformed = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE_FALSE(transformed.has_error());
         auto node = transformed.value().sub_queries.back();

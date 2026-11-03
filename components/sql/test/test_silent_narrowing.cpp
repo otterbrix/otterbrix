@@ -11,6 +11,7 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -23,14 +24,14 @@ using components::vector::make_scalar;
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
         REQUIRE(std::string_view{result.get_error().what} == RESULT);                                                  \
     }
 
 #define TEST_TRANSFORMER_OK(QUERY)                                                                                     \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
     }
@@ -38,7 +39,7 @@ using components::vector::make_scalar;
 // The type is compared beside the cell, so a double 2.0 does not pass for an int32 2.
 #define TEST_WHERE_PARAM(QUERY, VALUE)                                                                                 \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(select)).finalize();                         \
         REQUIRE(!wrap.has_error());                                                                                    \
         auto result = wrap.value();                                                                                    \
@@ -228,8 +229,8 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
 
     SECTION("INSERT VALUES carries the exact decimal") {
         auto select = linitial(
-            raw_parser(&arena_resource,
-                       "INSERT INTO db.tbl (d) VALUES (CAST('123456789.12345678901234567890' AS NUMERIC(38,20)));"));
+            parse_ok(&arena_resource,
+                     "INSERT INTO db.tbl (d) VALUES (CAST('123456789.12345678901234567890' AS NUMERIC(38,20)));"));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(select)).finalize();
         REQUIRE(!wrap.has_error());
         auto result = wrap.value();
@@ -260,7 +261,7 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     using components::types::logical_type;
 
     auto only_default = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!wrap.has_error());
         auto plan = wrap.value();
@@ -303,7 +304,7 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     }
 
     SECTION("a default that does not fit the declared width is refused, not truncated") {
-        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE db.tbl (d numeric(2,1) DEFAULT 100.0);"));
+        auto stmt = linitial(parse_ok(&arena_resource, "CREATE TABLE db.tbl (d numeric(2,1) DEFAULT 100.0);"));
         auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
         REQUIRE(std::string_view{result.get_error().what} ==
                 R"_(numeric field overflow: 100.0 does not fit NUMERIC(2, 1))_");
@@ -379,7 +380,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
         huge.append(149, '0');
         huge += "e-1000";
         const std::string query = "SELECT * FROM db.tbl WHERE d = CAST('" + huge + "' AS NUMERIC(38,6));";
-        auto stmt = linitial(raw_parser(&arena_resource, query.c_str()));
+        auto stmt = linitial(parse_ok(&arena_resource, query.c_str()));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!wrap.has_error());
         auto params = wrap.value().parameters;
@@ -395,7 +396,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
         tiny.append(149, '0');
         tiny += "1e1000";
         const std::string query = "SELECT * FROM db.tbl WHERE d = CAST('" + tiny + "' AS NUMERIC(38,0));";
-        auto stmt = linitial(raw_parser(&arena_resource, query.c_str()));
+        auto stmt = linitial(parse_ok(&arena_resource, query.c_str()));
         auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
         REQUIRE(std::string{result.get_error().what.c_str()} ==
                 "numeric field overflow: " + tiny + " does not fit NUMERIC(38, 0)");
@@ -413,7 +414,7 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exponent") {
     using components::types::logical_type;
 
     auto only_default = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!wrap.has_error());
         auto plan = wrap.value();
@@ -466,7 +467,7 @@ TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {
 
     // A subscript wider than int32 leaves the scanner as a T_Float; reading `ival` without the tag renders a pointer's bit pattern into the column path.
     SECTION("INSERT INTO db.tbl (arr[3000000000]) VALUES (5);") {
-        auto select = linitial(raw_parser(&arena_resource, "INSERT INTO db.tbl (arr[3000000000]) VALUES (5);"));
+        auto select = linitial(parse_ok(&arena_resource, "INSERT INTO db.tbl (arr[3000000000]) VALUES (5);"));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(select)).finalize();
         REQUIRE(!wrap.has_error());
         auto result = wrap.value();

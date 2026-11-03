@@ -22,7 +22,7 @@ fn main() {
 
 pub fn run(data_dir: &Path) -> Result<(), Error> {
     let db = Database::open(Config::new(data_dir))?;
-    db.execute("CREATE DATABASE shop;")?;
+    db.execute("CREATE SCHEMA shop;")?;
     db.execute("CREATE TABLE shop.orders();")?;
 
     db.execute(

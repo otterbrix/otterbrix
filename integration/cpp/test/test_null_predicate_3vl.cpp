@@ -48,7 +48,7 @@ namespace {
     // Seed t(id, x, s) with a NULL row (id=2) among numeric + text values.
     template<typename D>
     void seed(D* d) {
-        REQUIRE(okq(d, "CREATE DATABASE m;"));
+        REQUIRE(okq(d, "CREATE SCHEMA m;"));
         REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT, s TEXT);"));
         REQUIRE(okq(d, "INSERT INTO m.t (id, x, s) VALUES (1, 5, 'apple');"));
         REQUIRE(okq(d, "INSERT INTO m.t (id, x, s) VALUES (2, NULL, NULL);"));
@@ -177,7 +177,7 @@ TEST_CASE("integration::cpp::pred3vl::check_not") {
     auto config = test_helpers::make_test_config(integration_fixture_path("p3vl/check"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
 
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     REQUIRE(okq(d, "ALTER TABLE m.t ADD CONSTRAINT cc CHECK (NOT (x = 5));"));

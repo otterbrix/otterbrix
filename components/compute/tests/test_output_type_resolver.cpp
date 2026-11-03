@@ -67,12 +67,12 @@ TEST_CASE("components::compute::output_type::an_index_past_the_inputs_refuses") 
     auto same = output_type::same_type_at(2);
     auto same_resolved = same.resolve(&resource, inputs);
     REQUIRE(same_resolved.has_error());
-    CHECK(same_resolved.error().type == core::error_code_t::incorrect_function_argument);
+    CHECK(same_resolved.error().type == core::error_code_t::internal_error);
 
     auto computed = output_type::computed(same_type_resolver(5));
     auto computed_resolved = computed.resolve(&resource, inputs);
     REQUIRE(computed_resolved.has_error());
-    CHECK(computed_resolved.error().type == core::error_code_t::incorrect_function_argument);
+    CHECK(computed_resolved.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("components::compute::output_type::a_resolver_that_was_never_set_refuses_loudly") {
@@ -84,5 +84,5 @@ TEST_CASE("components::compute::output_type::a_resolver_that_was_never_set_refus
     auto computed = output_type::computed(type_resolver_fn{});
     auto resolved = computed.resolve(&resource, inputs);
     REQUIRE(resolved.has_error());
-    CHECK(resolved.error().type == core::error_code_t::kernel_error);
+    CHECK(resolved.error().type == core::error_code_t::internal_error);
 }

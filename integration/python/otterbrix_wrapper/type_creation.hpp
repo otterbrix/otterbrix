@@ -18,7 +18,7 @@
 namespace otterbrix { namespace type_creation {
 
     // Maps a SQL/OtterBrix type string (e.g. "VARCHAR", "BIGINT") to its logical_type.
-    // Returns a conversion_failure error if the string has no known mapping.
+    // Returns an undefined_object error if the string has no known mapping.
     core::result_wrapper_t<components::types::logical_type> string_to_logical_type(const std::string& type_str,
                                                                                    std::pmr::memory_resource* resource);
 

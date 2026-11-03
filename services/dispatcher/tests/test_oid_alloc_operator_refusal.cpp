@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "registry_statements.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -19,6 +21,7 @@
 #include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/types.hpp>
@@ -30,6 +33,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
@@ -120,7 +124,12 @@ namespace {
     components::compute::function_ptr make_probe_func(std::pmr::memory_resource* resource, const std::string& name) {
         using namespace components::compute;
         function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
-        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::unary(), doc, size_t{1});
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      doc,
+                                                                      size_t{1},
+                                                                      components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});
@@ -165,10 +174,14 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
                                                                       manager_disk_->address(),
                                                                       components::pipeline::no_mailbox(),
                                                                       configuration::config_execution{},
-                                                                      components::planner::primitives_t{})) {
-        manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        manager_disk_->set_manager_wal_sync(manager_wal_->address());
-        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
+                                                                      components::planner::primitives_t{},
+                                                                      services::dispatcher::dispatcher_seed_t{})) {
+        const services::bootstrap_token_t token{};
+        manager_wal_replicate_t::bootstrap_t wal_boot{*manager_wal_, token};
+        manager_disk_t::bootstrap_t disk_boot{*manager_disk_, token};
+        wal_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
+        disk_boot.set_manager_wal_sync(manager_wal_->address());
+        REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
     }
 
     ~oid_round_fixture() {
@@ -219,7 +232,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
 
     void execute_sql(const std::string& query) {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
-        auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        auto parse_result = linitial(parse_ok(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_, query.c_str());
         auto _wrap =
             local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
@@ -282,10 +295,10 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
     }
 
     catalog::oid_t namespace_oid(const std::string& name) {
-        auto r = disk_invoke(&manager_disk_t::resolve_namespace, read_ctx(), name);
-        REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().found);
-        return r.value().oid;
+        auto adapter = probe_fx();
+        auto r = test_probe::probe_namespace(adapter, read_ctx(), name);
+        REQUIRE(r.found);
+        return r.oid;
     }
 
     test_probe::probe_table_result_t table(const std::string& ns, const std::string& tname) {
@@ -337,9 +350,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
     // CONTROL: registration must succeed with a real identity, so the failure below is attributable to the injection.
     const std::string ok_name = "oidround_probe_ok";
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), ok_name)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), ok_name));
         REQUIRE_FALSE(err.contains_error());
     }
     REQUIRE(fault.rounds_seen == 1);
@@ -353,9 +364,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
     // FAULT — the round delivers nothing at all.
     const std::string broken_name = "oidround_probe_broken";
     fault.arm = true;
-    auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                      session_id_t{},
-                                      components::compute::function_ptr{make_probe_func(mr.get(), broken_name)});
+    auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), broken_name));
     fault.arm = false;
 
     // The catalog is checked first: unchecked, this leaves a pg_proc row stamped oid=0.
@@ -390,11 +399,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
     oid_alloc_fault_scope_t fault;
 
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                          session_id_t{},
-                                          kCastSource,
-                                          kCastTargetOk,
-                                          make_cast_entry());
+        auto err = registry_statements::register_cast(test, kCastSource, kCastTargetOk, make_cast_entry());
         REQUIRE_FALSE(err.contains_error());
     }
     REQUIRE(fault.rounds_seen == 1);
@@ -406,11 +411,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
     }
 
     fault.arm = true;
-    auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                      session_id_t{},
-                                      kCastSource,
-                                      kCastTargetBroken,
-                                      make_cast_entry());
+    auto err = registry_statements::register_cast(test, kCastSource, kCastTargetBroken, make_cast_entry());
     fault.arm = false;
 
     // The catalog first: unchecked, this pg_cast row is stamped 0, which find_cast_oid reads as "no such cast".
@@ -444,11 +445,11 @@ TEST_CASE(
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("alter_add_column"));
 
-    // CREATE DATABASE answers an empty cursor, not success, so it's checked for the absence of an error.
-    REQUIRE_FALSE(test.run_sql("CREATE DATABASE oidround;")->is_error());
+    // CREATE SCHEMA answers an empty cursor, not success, so it's checked for the absence of an error.
+    REQUIRE_FALSE(test.run_sql("CREATE SCHEMA oidround;")->is_error());
     REQUIRE(test.run_sql("CREATE TABLE oidround.items(id int, val int);")->is_success());
 
-    // Installed after setup — ALTER TABLE consumes no planner OIDs, so every round from here is the one under test.
+    // Installed after setup — each ALTER TABLE ADD COLUMN is one round (the planner's), the one under test.
     oid_alloc_fault_scope_t fault;
 
     REQUIRE(test.run_sql("ALTER TABLE oidround.items ADD COLUMN extra_ok bigint;")->is_success());
@@ -483,7 +484,7 @@ TEST_CASE(
          "column stamped with an identity nothing allocated");
     REQUIRE(refused->is_error());
     REQUIRE(refused->get_error().type == core::error_code_t::io_error);
-    REQUIRE(mentions(refused->get_error(), "alter_column_add"));
+    REQUIRE(mentions(refused->get_error(), "OID allocation round"));
 
     REQUIRE(fault.rounds_seen == 2);
     REQUIRE(fault.rounds_failed == 1);

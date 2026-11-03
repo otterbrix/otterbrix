@@ -29,6 +29,15 @@ TEST_CASE("services::dispatcher::manager_dispatcher_t::a dispatcher cannot be bu
     CHECK_FALSE(
         std::
             is_constructible_v<manager_dispatcher_t, resource_t, scheduler_t, log_t&, address_t, address_t, address_t>);
+    CHECK_FALSE(std::is_constructible_v<manager_dispatcher_t,
+                                        resource_t,
+                                        scheduler_t,
+                                        log_t&,
+                                        address_t,
+                                        address_t,
+                                        address_t,
+                                        execution_t,
+                                        primitives_t>);
     CHECK(std::is_constructible_v<manager_dispatcher_t,
                                   resource_t,
                                   scheduler_t,
@@ -37,7 +46,8 @@ TEST_CASE("services::dispatcher::manager_dispatcher_t::a dispatcher cannot be bu
                                   address_t,
                                   address_t,
                                   execution_t,
-                                  primitives_t>);
+                                  primitives_t,
+                                  services::dispatcher::dispatcher_seed_t>);
 }
 
 // The executor already demands its four addresses at construction; pin that an address-less

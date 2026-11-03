@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <components/types/types.hpp>
+#include <core/pmr/budget_resource.hpp>
 #include <functional>
 #include <memory>
 #include <memory_resource>
@@ -228,14 +229,14 @@ namespace core::b_plus_tree {
         friend class iterator;
         friend class r_iterator;
 
-        block_t(std::pmr::memory_resource* resource, index_t (*func)(const item_data&));
+        block_t(core::pmr::budget_resource_t* resource, index_t (*func)(const item_data&));
         ~block_t();
         block_t(const block_t&) = delete;
         block_t(block_t&&) = default;
         block_t& operator=(const block_t&) = delete;
         block_t& operator=(block_t&&) = default;
 
-        void initialize(uint32_t size = DEFAULT_BLOCK_SIZE);
+        [[nodiscard]] bool initialize(uint32_t size = DEFAULT_BLOCK_SIZE);
 
         size_t available_memory() const;
         // does not include header
@@ -269,16 +270,16 @@ namespace core::b_plus_tree {
         uint32_t block_size() const;
         // should be called when internal_buffer is used for reading to restore metadata
         void restore_block();
-        void resize(uint32_t new_size);
         void reset();
 
         // after splits this block will contain the first half
         // best case: second block >= first block
+        // {nullptr, nullptr} when the budget refuses; the block keeps every item it held
         [[nodiscard]] std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>> split_append(const index_t& index,
                                                                                                  item_data item);
-        // creates new block and puts last "count" elements there
+        // creates new block and puts last "count" elements there; nullptr (nothing moved) when the budget refuses
         [[nodiscard]] std::unique_ptr<block_t> split(uint32_t count);
-        // creates new block and puts last "count" indices there
+        // creates new block and puts last "count" indices there; nullptr (nothing moved) when the budget refuses
         [[nodiscard]] std::unique_ptr<block_t> split_uniques(uint32_t count);
         // merge other block to this one
         void merge(std::unique_ptr<block_t>&& block);
@@ -301,7 +302,7 @@ namespace core::b_plus_tree {
         item_data metadata_to_item_data_(const metadata* meta) const;
         uint32_t calculate_checksum_() const;
 
-        std::pmr::memory_resource* resource_ = nullptr;
+        core::pmr::budget_resource_t* resource_ = nullptr;
         index_t (*key_func_)(const item_data&);
         // The pointer to the internal buffer that will be read or written, including the buffer header
         data_ptr_t internal_buffer_ = nullptr;
@@ -322,40 +323,14 @@ namespace core::b_plus_tree {
         header_t* header_;
     };
 
-    [[nodiscard]] inline std::unique_ptr<block_t> create_initialize(std::pmr::memory_resource* resource,
+    [[nodiscard]] inline std::unique_ptr<block_t> create_initialize(core::pmr::budget_resource_t* resource,
                                                                     block_t::index_t (*func)(const block_t::item_data&),
                                                                     uint32_t size = DEFAULT_BLOCK_SIZE) {
         std::unique_ptr<block_t> block = std::make_unique<block_t>(resource, func);
-        block->initialize(size);
-        return block;
-    }
-
-    // The only two places in this library that touch a throwing allocator: memory_resource::
-    // allocate has no non-throwing form, so a refusal can only throw, and this turns it into a
-    // value -- nothing above this line catches anything. Not inlined at call sites on purpose:
-    // a `try { ... } catch (...) { evict; retry; }` around a live path would put the retry
-    // inside the catch, where a second refusal has nothing left to catch it.
-    [[nodiscard]] inline std::unique_ptr<block_t>
-    create_initialize_nothrow(std::pmr::memory_resource* resource,
-                              block_t::index_t (*func)(const block_t::item_data&),
-                              uint32_t size = DEFAULT_BLOCK_SIZE) noexcept {
-        try {
-            return create_initialize(resource, func, size);
-        } catch (...) {
+        if (!block->initialize(size)) {
             return nullptr;
         }
-    }
-
-    // A refused split comes back as {nullptr, nullptr}; the block is left as split_append() left
-    // it. split_append() allocates BEFORE it moves anything out of the block, so a refusal at the
-    // first allocation leaves the block untouched.
-    [[nodiscard]] inline std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>>
-    split_append_nothrow(block_t& block, const block_t::index_t& index, block_t::item_data item) noexcept {
-        try {
-            return block.split_append(index, item);
-        } catch (...) {
-            return {nullptr, nullptr};
-        }
+        return block;
     }
 
 } // namespace core::b_plus_tree

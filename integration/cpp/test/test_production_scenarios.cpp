@@ -100,7 +100,7 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -167,7 +167,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -275,7 +275,7 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -384,7 +384,7 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -463,7 +463,7 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -543,7 +543,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -629,7 +629,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -702,7 +702,7 @@ TEST_CASE("integration::cpp::production::complex_where") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -775,7 +775,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -877,7 +877,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -964,7 +964,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1072,7 +1072,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             // Many wide bigint columns (SSB lineorder shape) make a 1024-row row-group a large working set.
@@ -1188,7 +1188,7 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
         auto* dispatcher = space.dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();

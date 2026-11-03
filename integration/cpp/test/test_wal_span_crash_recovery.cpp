@@ -48,7 +48,7 @@ TEST_CASE("integration::cpp::wal_span_crash_recovery::committed_inserts_after_a_
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         auto txn = otterbrix::session_id_t();
         REQUIRE(d->execute_sql(txn, "BEGIN;")->is_success());

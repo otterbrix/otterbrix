@@ -180,6 +180,7 @@ namespace services::index {
         [[nodiscard]] core::error_t seal_writes(std::string_view reason);
         [[nodiscard]] core::error_t refuse_if_sealed() const;
         [[nodiscard]] core::error_t io_failure(std::string_view message) const;
+        [[nodiscard]] core::error_t damaged(std::string_view message) const;
         [[nodiscard]] core::error_t open_hash_index();
 
         [[nodiscard]] bool should_flush() const noexcept { return ops_since_flush_ >= flush_threshold_; }

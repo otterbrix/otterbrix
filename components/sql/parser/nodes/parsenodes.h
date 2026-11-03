@@ -2631,7 +2631,7 @@ typedef struct SecLabelStmt {
 * CURRENT OF. It can be passed to SPI_prepare_cursor.
 */
 #define CURSOR_OPT_UPDATABLE 0x0200         /* updateable with CURRENT OF, if possible */
-#define CURSOR_OPT_PARALLEL_RETRIEVE 0x0400 /* Cursor for parallel retrieving */
+#define CURSOR_OPT_ASENSITIVE 0x0800        /* ASENSITIVE */
 
 typedef struct DeclareCursorStmt {
     NodeTag type;
@@ -3253,6 +3253,10 @@ typedef struct PrepareStmt {
     char* name;     /* Name of plan, arbitrary */
     List* argtypes; /* Types of parameters (List of TypeName) */
     Node* query;    /* The query itself (as a raw parsetree) */
+    /* Byte offset of `query`'s first token in the source text (0 = not recorded); the engine keeps the body as written. */
+    int query_location;
+    /* Byte offset just past `query`'s last token; -1 means the body runs to the statement's end. */
+    int query_end_location;
 } PrepareStmt;
 
 /* ----------------------

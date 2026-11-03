@@ -56,7 +56,7 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+        dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
     }
 
     INFO("FROM generate_series(1, 5) — inclusive series of 5 rows");
@@ -106,7 +106,7 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+        dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
         dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".t (id BIGINT, n BIGINT);");
         dispatcher->execute_sql(session, "INSERT INTO " + database_name + ".t (id, n) VALUES (1, 2), (2, 3);");
     }

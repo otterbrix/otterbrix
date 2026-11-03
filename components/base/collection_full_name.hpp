@@ -22,15 +22,10 @@ namespace qualified_name_detail {
     }
 } // namespace qualified_name_detail
 
-// Qualified SQL table identity. Retained at the SQL parser / error reporting
-// / membership-cache boundary; storage routing uses pg_class.oid.
-//
-// The 4-part shape (uuid.db.schema.table) mirrors PostgreSQL-style fully-
-// qualified identifiers — `unique_identifier` is the optional uuid prefix
-// used by the SQL parser when the user writes `<uuid>.<db>.<schema>.<rel>`,
-// and is consumed by `table_id` for catalog dependency-set keying.
+// A relation as written: [connection.][database.][schema.]relation. An empty slot is filled from the session's place
+// where the name is resolved.
 struct qualified_name_t {
-    core::uid_t unique_identifier;
+    core::connection_name_t connection;
     core::dbname_t database;
     core::schema_t schema;
     core::relname_t collection;
@@ -39,8 +34,8 @@ struct qualified_name_t {
     explicit qualified_name_t(core::relname_t collection)
         : collection(std::move(collection)) {}
 
-    qualified_name_t(core::dbname_t database, core::relname_t collection)
-        : database(std::move(database))
+    qualified_name_t(core::schema_t schema, core::relname_t collection)
+        : schema(std::move(schema))
         , collection(std::move(collection)) {}
 
     qualified_name_t(core::dbname_t database, core::schema_t schema, core::relname_t collection)
@@ -48,26 +43,27 @@ struct qualified_name_t {
         , schema(std::move(schema))
         , collection(std::move(collection)) {}
 
-    qualified_name_t(core::uid_t unique_identifier,
+    qualified_name_t(core::connection_name_t connection,
                      core::dbname_t database,
                      core::schema_t schema,
                      core::relname_t collection)
-        : unique_identifier(std::move(unique_identifier))
+        : connection(std::move(connection))
         , database(std::move(database))
         , schema(std::move(schema))
         , collection(std::move(collection)) {}
 
     std::string to_string() const {
-        return qualified_name_detail::dotted({&unique_identifier.t, &database.t, &schema.t, &collection.t});
+        return qualified_name_detail::dotted({&connection.t, &database.t, &schema.t, &collection.t});
     }
 
     bool empty() const noexcept {
-        return unique_identifier.t.empty() && database.t.empty() && schema.t.empty() && collection.t.empty();
+        return connection.t.empty() && database.t.empty() && schema.t.empty() && collection.t.empty();
     }
 
     bool operator==(const qualified_name_t&) const = default;
 };
 
+// A function as written: [database.][schema.]function, resolved as a relation name is.
 struct function_qualified_name_t {
     core::dbname_t database;
     core::schema_t schema;
@@ -76,6 +72,10 @@ struct function_qualified_name_t {
 
     explicit function_qualified_name_t(core::function_name_t function)
         : function(std::move(function)) {}
+
+    function_qualified_name_t(core::schema_t schema, core::function_name_t function)
+        : schema(std::move(schema))
+        , function(std::move(function)) {}
 
     function_qualified_name_t(core::dbname_t database, core::schema_t schema, core::function_name_t function)
         : database(std::move(database))

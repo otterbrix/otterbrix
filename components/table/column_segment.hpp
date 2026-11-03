@@ -78,6 +78,7 @@ namespace components::table {
         void skip(column_scan_state& state);
 
         uint64_t segment_size() const;
+        uint64_t persisted_size(uint64_t rows) const;
 
         // Big-string overflow persistence: a STRING value >= DEFAULT_STRING_BLOCK_LIMIT lives in
         // a separate overflow block, and the dictionary marker naming it is TRANSIENT. These two
@@ -116,7 +117,6 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state);
         [[nodiscard]] core::result_wrapper_t<uint64_t>
         append(column_append_state& state, vector::unified_vector_format& data, uint64_t offset, uint64_t count);
-        [[nodiscard]] core::result_wrapper_t<uint64_t> finalize_append(column_append_state& state);
         // Moves the count only; nothing past the count is ever read (string_append, validity_append,
         // validity_scan), so no pin and no refusal.
         void revert_append(uint64_t start_row);

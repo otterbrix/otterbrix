@@ -10,10 +10,20 @@
 
 namespace components::operators {
 
-    // What a completed [connection.]database.schema is: INVALID_OID from the first missing level.
+    // What a completed [connection.]database.schema is: INVALID_OID from the first missing level. `connection` and
+    // `database` are the found database's own names, filled once it is found.
     struct found_schema_t {
         catalog::oid_t database_oid{catalog::INVALID_OID};
         catalog::oid_t namespace_oid{catalog::INVALID_OID};
+        std::string connection;
+        std::string database;
+    };
+
+    // A database and its own connection and name; INVALID_OID when there is none.
+    struct found_database_t {
+        catalog::oid_t oid{catalog::INVALID_OID};
+        std::string connection;
+        std::string name;
     };
 
     // A database is its pg_database row, keyed by (datconnection, datname): a connection's database is otterbrix's
@@ -31,7 +41,16 @@ namespace components::operators {
              vector::data_chunk_t keys,
              std::uint64_t column = 0);
 
-    // The oid of the database `name` of `connection` (empty: a local database); INVALID_OID when there is none.
+    // The database `name` of `connection`. With no connection, `name` is a connection that has one database, or else
+    // a local database: a connection and a local database of that name, or a connection with more than one database,
+    // is ambiguous_alias.
+    actor_zeta::unique_future<core::result_wrapper_t<found_database_t>>
+    lookup_database(std::pmr::memory_resource* resource,
+                    pipeline::context_t* ctx,
+                    std::string connection,
+                    std::string name);
+
+    // lookup_database's oid.
     actor_zeta::unique_future<core::result_wrapper_t<catalog::oid_t>>
     lookup_database_oid(std::pmr::memory_resource* resource,
                         pipeline::context_t* ctx,

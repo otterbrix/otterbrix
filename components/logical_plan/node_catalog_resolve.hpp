@@ -105,7 +105,8 @@ namespace components::logical_plan {
 
         // [connection.][database.][schema.]relname as written. An empty database is the database (and connection)
         // of the session's place; an empty schema of a relation or type is main.pg_catalog and then the place's
-        // schema, of a namespace the place's schema. Three parts name a local database, four a connection's.
+        // schema, of a namespace the place's schema. Three parts name the one database of the connection they start
+        // with, or else a local database; four parts a connection's database.
         std::string connection;
         std::string database;
         std::string schema;
@@ -127,6 +128,8 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid{components::catalog::INVALID_OID};
+        // A found namespace entry's place in its database's own names.
+        std::optional<components::catalog::place_t> found_place;
         // Empty optional means the operator did not find the target (or has not run).
         std::optional<resolved_table_metadata_t> table_md;
         std::optional<resolved_type_metadata_t> type_md;

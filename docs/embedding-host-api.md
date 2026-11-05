@@ -70,21 +70,27 @@ so the array need not outlive the call. The backend actors belong to the host an
 
 ## Names and the current place
 
-- **Levels.** `t`, `s.t`, `d.s.t` (always a local database), `c.d.s.t` (the database `d` of the connection `c`). A
-  name of five parts is a parse error. A function is named like a table, `f`, `s.f` or `d.s.f`; a function name of
+- **Levels.** `t`, `s.t`, `x.s.t`, `c.d.s.t` (the database `d` of the connection `c`). In `x.s.t`, `x` is a
+  connection when a database is marked with it, and the name is that connection's one database (`c.s.t`); otherwise
+  `x` is a local database. A name that is both a connection and a local database, or a connection with more than one
+  database, is `ambiguous_alias`; four parts tell a connection's databases apart. A name of five parts is a parse
+  error. A function is named like a table, `f`, `s.f` or `d.s.f`; a function name of
   four parts is `improper qualified name (too many dotted names)`.
 - **A bare name** is looked up in `main.pg_catalog` first, then in the schema of the session's place. `pg_catalog.x`
   and `d.pg_catalog.x` are `main.pg_catalog`'s, from any place, a connection's included; a database of a connection
   has no `pg_catalog`. A CREATE without a schema creates in the place's schema; `CREATE … pg_catalog.x` is refused
   as a write into the system catalog.
-- **The place** is the session's `search_path`, one value: `SET search_path = 's' | 'd.s' | 'c.d.s'`. SET checks its
-  shape (a list, an empty part or more than three parts is `invalid_parameter`), folds it to lower case, completes it
-  with the current place, checks that it exists (`schema_not_exists`, `database_not_exists`) and keeps it by name. It
+- **The place** is the session's `search_path`, one value: `SET search_path = 's' | 'd.s' | 'c.s' | 'c.d.s'`, `d.s`
+  and `c.s` read as the first two parts of `x.s.t`. SET checks its shape (a list, an empty part or more than three
+  parts is `invalid_parameter`), folds it to lower case, completes it with the current place, checks that it exists
+  (`schema_not_exists`, `database_not_exists`) and keeps it by name, in its database's own names: `'c.s'` is kept as
+  `c.d.s`. It
   rolls back with the transaction like any setting. `ALTER SYSTEM SET search_path` stores the text as written,
   unchecked: a fresh session reads it from `main` (`'s'` is `main.s`); without it the place is `main.public`. When the
   place is gone, bare names do not exist and `current_schema()` is NULL.
 - `current_database()` / `current_schema()` (also `CURRENT_CATALOG` / `CURRENT_SCHEMA`) answer the place's database
-  and schema names; for a connection's place, the database's name (`shop`).
+  and schema names; for a connection's place, the database's name (`shop`). `current_connection()` names the place's
+  connection: '' for a local place, NULL when there is no place.
 - **A connection is no object of otterbrix**: it is only the mark on its databases. A missing database of a
   connection answers `database_not_exists`, `database "c.d" does not exist`, everywhere: DDL, INSERT / UPDATE /
   DELETE, `SET search_path` and SELECT. A DML, ALTER or ADD CONSTRAINT whose database or schema is missing names that

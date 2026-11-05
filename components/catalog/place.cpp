@@ -36,6 +36,9 @@ namespace components::catalog {
 
     std::string place_t::to_string() const {
         std::string written;
+        if (database.empty() && schema.empty()) {
+            return written;
+        }
         if (!connection.empty()) {
             written += connection;
             written += '.';
@@ -48,6 +51,10 @@ namespace components::catalog {
 
     core::result_wrapper_t<std::pmr::string> canonical_search_path(std::string_view raw,
                                                                    std::pmr::memory_resource* resource) {
+        // PostgreSQL's empty search_path: no place.
+        if (raw.empty()) {
+            return std::pmr::string{resource};
+        }
         const auto parts = parts_of(raw);
         const bool shaped =
             parts.count <= 3 && std::none_of(parts.part.begin(),
@@ -71,6 +78,9 @@ namespace components::catalog {
     }
 
     place_t place_of(std::string_view search_path) {
+        if (search_path.empty()) {
+            return place_t{};
+        }
         const auto parts = parts_of(search_path);
         const auto& part = parts.part;
         switch (parts.count) {

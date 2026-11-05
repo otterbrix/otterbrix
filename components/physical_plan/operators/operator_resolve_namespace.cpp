@@ -42,10 +42,9 @@ namespace components::operators {
                 }
                 // A miss leaves the entry at INVALID_OID from the missing level down: that is how "database / schema
                 // does not exist" is reported.
-                auto found = co_await lookup_schema(
-                    resource_,
-                    ctx,
-                    catalog::complete_name(ctx->place, entry.connection, entry.database, entry.schema));
+                const auto completed =
+                    catalog::complete_name(ctx->place, entry.connection, entry.database, entry.schema);
+                auto found = co_await lookup_schema(resource_, ctx, completed);
                 if (found.has_error()) {
                     // A failed catalog read is not a miss; saying "not found" here hides it.
                     set_error(found.error());
@@ -53,6 +52,10 @@ namespace components::operators {
                 }
                 entry.database_oid = found.value().database_oid;
                 entry.namespace_oid = found.value().namespace_oid;
+                if (entry.namespace_oid != catalog::INVALID_OID) {
+                    entry.found_place =
+                        catalog::place_t{found.value().connection, found.value().database, completed.schema};
+                }
             }
         }
 

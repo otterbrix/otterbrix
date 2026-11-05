@@ -10,18 +10,41 @@
 #include <utility>
 
 namespace components::operators {
-
-    namespace catalog = components::catalog;
-
     namespace {
+        // The columns `projected` of every row of the catalog table `table_oid` whose `key_columns` are `keys`.
+        actor_zeta::unique_future<core::result_wrapper_t<chunks_vector_t>>
+        read_keyed(pipeline::context_t* ctx,
+                   catalog::oid_t table_oid,
+                   std::pmr::vector<std::uint64_t> key_columns,
+                   vector::data_chunk_t keys,
+                   std::pmr::vector<std::uint64_t> projected) {
+            components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+            auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::read_chunks_by_key,
+                                                        exec_ctx,
+                                                        table_oid,
+                                                        std::move(key_columns),
+                                                        std::move(keys),
+                                                        std::move(projected));
+            co_return co_await std::move(rf);
+        }
+
         // The first row's column 0 of a keyed read as an oid; INVALID_OID for no row.
-        catalog::oid_t first_oid(const std::pmr::vector<vector::data_chunk_t>& batches) {
+        catalog::oid_t first_oid(const chunks_vector_t& batches) {
             for (const auto& chunk : batches) {
                 if (chunk.size() != 0 && chunk.column_count() >= 1 && !chunk.is_null(0, 0)) {
                     return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
                 }
             }
             return catalog::INVALID_OID;
+        }
+
+        std::uint64_t row_count(const chunks_vector_t& batches) {
+            std::uint64_t rows = 0;
+            for (const auto& chunk : batches) {
+                rows += chunk.size();
+            }
+            return rows;
         }
     } // namespace
 
@@ -32,17 +55,10 @@ namespace components::operators {
              std::pmr::vector<std::uint64_t> key_columns,
              vector::data_chunk_t keys,
              std::uint64_t column) {
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         std::pmr::vector<std::uint64_t> projected(resource);
         projected.emplace_back(column);
-        auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::read_chunks_by_key,
-                                                    exec_ctx,
-                                                    table_oid,
-                                                    std::move(key_columns),
-                                                    std::move(keys),
-                                                    std::move(projected));
-        auto batches = co_await std::move(rf);
+        auto batches =
+            co_await read_keyed(ctx, table_oid, std::move(key_columns), std::move(keys), std::move(projected));
         if (batches.has_error()) {
             co_return batches.error();
         }
@@ -66,36 +82,116 @@ namespace components::operators {
         }
     } // namespace
 
+    namespace {
+        actor_zeta::unique_future<core::result_wrapper_t<catalog::oid_t>>
+        database_of(std::pmr::memory_resource* resource,
+                    pipeline::context_t* ctx,
+                    std::string connection,
+                    std::string name) {
+            std::pmr::vector<std::uint64_t> keys(resource);
+            keys.emplace_back(catalog::pg_database_col::datname);
+            keys.emplace_back(catalog::pg_database_col::datconnection);
+            co_return co_await read_oid(resource,
+                                        ctx,
+                                        catalog::well_known_oid::pg_database_table,
+                                        std::move(keys),
+                                        make_key_chunk(resource, std::string_view{name}, std::string_view{connection}));
+        }
+
+        actor_zeta::unique_future<core::result_wrapper_t<chunks_vector_t>>
+        databases_of_connection(std::pmr::memory_resource* resource, pipeline::context_t* ctx, std::string connection) {
+            std::pmr::vector<std::uint64_t> keys(resource);
+            keys.emplace_back(catalog::pg_database_col::datconnection);
+            std::pmr::vector<std::uint64_t> projected(resource);
+            projected.emplace_back(catalog::pg_database_col::oid);
+            projected.emplace_back(catalog::pg_database_col::datname);
+            co_return co_await read_keyed(ctx,
+                                          catalog::well_known_oid::pg_database_table,
+                                          std::move(keys),
+                                          make_key_chunk(resource, std::string_view{connection}),
+                                          std::move(projected));
+        }
+
+        // The first row's datname (column 1) of databases_of_connection.
+        std::string first_datname(const chunks_vector_t& batches) {
+            for (const auto& chunk : batches) {
+                if (chunk.size() != 0) {
+                    return std::string{chunk.get_value<std::string_view>(1, 0)};
+                }
+            }
+            return {};
+        }
+
+        core::error_t ambiguous(std::pmr::memory_resource* resource, const std::string& what) {
+            return core::error_t{core::error_code_t::ambiguous_alias, std::pmr::string{what, resource}};
+        }
+    } // namespace
+
+    actor_zeta::unique_future<core::result_wrapper_t<found_database_t>>
+    lookup_database(std::pmr::memory_resource* resource,
+                    pipeline::context_t* ctx,
+                    std::string connection,
+                    std::string name) {
+        if (!connection.empty()) {
+            auto oid = co_await database_of(resource, ctx, connection, name);
+            if (oid.has_error()) {
+                co_return oid.error();
+            }
+            co_return found_database_t{oid.value(), std::move(connection), std::move(name)};
+        }
+        if (name.empty()) {
+            co_return found_database_t{};
+        }
+        if (name == catalog::well_known_oid::main_database_name) {
+            co_return found_database_t{catalog::well_known_oid::main_database, {}, std::move(name)};
+        }
+        auto of_connection = co_await databases_of_connection(resource, ctx, name);
+        if (of_connection.has_error()) {
+            co_return of_connection.error();
+        }
+        auto local = co_await database_of(resource, ctx, std::string{}, name);
+        if (local.has_error()) {
+            co_return local.error();
+        }
+        const auto databases = row_count(of_connection.value());
+        if (databases == 0) {
+            co_return found_database_t{local.value(), {}, std::move(name)};
+        }
+        if (local.value() != catalog::INVALID_OID) {
+            co_return ambiguous(resource, "database \"" + name + "\" is ambiguous: a connection and a local database");
+        }
+        if (databases > 1) {
+            co_return ambiguous(resource, "connection \"" + name + "\" has more than one database");
+        }
+        co_return found_database_t{first_oid(of_connection.value()), name, first_datname(of_connection.value())};
+    }
+
     actor_zeta::unique_future<core::result_wrapper_t<catalog::oid_t>>
     lookup_database_oid(std::pmr::memory_resource* resource,
                         pipeline::context_t* ctx,
                         std::string connection,
                         std::string name) {
-        if (connection.empty() && name == catalog::well_known_oid::main_database_name) {
-            co_return catalog::well_known_oid::main_database;
+        auto found = co_await lookup_database(resource, ctx, std::move(connection), std::move(name));
+        if (found.has_error()) {
+            co_return found.error();
         }
-        std::pmr::vector<std::uint64_t> keys(resource);
-        keys.emplace_back(catalog::pg_database_col::datname);
-        keys.emplace_back(catalog::pg_database_col::datconnection);
-        co_return co_await read_oid(resource,
-                                    ctx,
-                                    catalog::well_known_oid::pg_database_table,
-                                    std::move(keys),
-                                    make_key_chunk(resource, std::string_view{name}, std::string_view{connection}));
+        co_return found.value().oid;
     }
 
     actor_zeta::unique_future<core::result_wrapper_t<found_schema_t>>
     lookup_schema(std::pmr::memory_resource* resource, pipeline::context_t* ctx, catalog::place_t name) {
         found_schema_t found;
-        auto database = co_await lookup_database_oid(resource, ctx, name.connection, name.database);
+        auto database = co_await lookup_database(resource, ctx, name.connection, name.database);
         if (database.has_error()) {
             co_return database.error();
         }
-        found.database_oid = database.value();
+        found.database_oid = database.value().oid;
         if (found.database_oid == catalog::INVALID_OID) {
             co_return found;
         }
-        if (name.connection.empty() && name.schema == "pg_catalog") {
+        found.connection = std::move(database.value().connection);
+        found.database = std::move(database.value().name);
+        if (found.connection.empty() && name.schema == "pg_catalog") {
             found.namespace_oid = catalog::well_known_oid::pg_catalog_namespace;
             co_return found;
         }
@@ -141,21 +237,17 @@ namespace components::operators {
 
     actor_zeta::unique_future<core::result_wrapper_t<catalog::place_t>>
     names_of_namespace(std::pmr::memory_resource* resource, pipeline::context_t* ctx, catalog::oid_t namespace_oid) {
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         catalog::place_t named;
         std::pmr::vector<std::uint64_t> ns_keys(resource);
         ns_keys.emplace_back(catalog::pg_namespace_col::oid);
         std::pmr::vector<std::uint64_t> ns_cols(resource);
         ns_cols.emplace_back(catalog::pg_namespace_col::nspname);
         ns_cols.emplace_back(catalog::pg_namespace_col::nspdatabase);
-        auto [_ns, nsf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                      &services::disk::manager_disk_t::read_chunks_by_key,
-                                                      exec_ctx,
-                                                      catalog::well_known_oid::pg_namespace_table,
-                                                      std::move(ns_keys),
-                                                      make_key_chunk(resource, namespace_oid),
-                                                      std::move(ns_cols));
-        auto schema_rows = co_await std::move(nsf);
+        auto schema_rows = co_await read_keyed(ctx,
+                                               catalog::well_known_oid::pg_namespace_table,
+                                               std::move(ns_keys),
+                                               make_key_chunk(resource, namespace_oid),
+                                               std::move(ns_cols));
         if (schema_rows.has_error()) {
             co_return schema_rows.error();
         }
@@ -176,14 +268,11 @@ namespace components::operators {
         std::pmr::vector<std::uint64_t> db_cols(resource);
         db_cols.emplace_back(catalog::pg_database_col::datname);
         db_cols.emplace_back(catalog::pg_database_col::datconnection);
-        auto [_db, dbf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                      &services::disk::manager_disk_t::read_chunks_by_key,
-                                                      exec_ctx,
-                                                      catalog::well_known_oid::pg_database_table,
-                                                      std::move(db_keys),
-                                                      make_key_chunk(resource, database_oid),
-                                                      std::move(db_cols));
-        auto database_rows = co_await std::move(dbf);
+        auto database_rows = co_await read_keyed(ctx,
+                                                 catalog::well_known_oid::pg_database_table,
+                                                 std::move(db_keys),
+                                                 make_key_chunk(resource, database_oid),
+                                                 std::move(db_cols));
         if (database_rows.has_error()) {
             co_return database_rows.error();
         }

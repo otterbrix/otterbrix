@@ -132,6 +132,8 @@ namespace components::operators {
                     if (schema.value().namespace_oid == catalog::INVALID_OID) {
                         continue;
                     }
+                    where->connection = schema.value().connection;
+                    where->database = schema.value().database;
                     auto found =
                         co_await lookup_relation_oid(resource_, ctx, schema.value().namespace_oid, entry.relname);
                     if (found.has_error()) {

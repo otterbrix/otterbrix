@@ -8,10 +8,7 @@
 
 namespace services::planner::impl {
 
-    // Lower a node_register_cast_t into operator_register_cast_t. The registry
-    // fan-out is driven by the dispatcher; this operator only writes pg_cast /
-    // pg_depend. The node's (source, target) types are mapped to their pg_type
-    // oids here.
+    // The node's (source, target) types, resolved by the executor, are mapped to their pg_type oids here.
     components::operators::operator_ptr create_plan_register_cast(const context_storage_t& context,
                                                                   const components::logical_plan::node_ptr& node);
 

@@ -20,48 +20,11 @@ namespace components::table::storage {
     struct eviction_queue_t;
 
     class standard_buffer_manager_t : public buffer_manager_t {
-        friend class buffer_handle_t;
-        friend class block_handle_t;
-        friend class block_manager_t;
-
     public:
         standard_buffer_manager_t(std::pmr::memory_resource* resource,
                                   core::filesystem::local_file_system_t& fs,
                                   buffer_pool_t& buffer_pool);
 
-        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
-        register_transient_memory(uint64_t size, uint64_t block_size) final;
-        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
-        register_small_memory(uint64_t size) final;
-        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
-        register_small_memory(memory_tag tag, uint64_t size) final;
-
-        uint64_t block_allocation_size() const final;
-        uint64_t block_size() const final;
-
-        [[nodiscard]] core::result_wrapper_t<buffer_handle_t>
-        allocate(memory_tag tag, uint64_t block_size, bool can_destroy = true) final;
-
-        [[nodiscard]] core::result_wrapper_t<bool> reallocate(std::shared_ptr<block_handle_t>& handle,
-                                                              uint64_t block_size) final;
-
-        [[nodiscard]] core::result_wrapper_t<buffer_handle_t> pin(std::shared_ptr<block_handle_t>& handle) final;
-        void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) final;
-        void unpin(block_handle_t* handle) final;
-
-        [[nodiscard]] core::result_wrapper_t<bool>
-        set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max()) final;
-
-        std::vector<memory_info_t> get_memory_usage_info() const override;
-
-        std::unique_ptr<file_buffer_t>
-        construct_manager_buffer(uint64_t size,
-                                 std::unique_ptr<file_buffer_t>&& source,
-                                 file_buffer_type type = file_buffer_type::MANAGED_BUFFER) override;
-
-        void free_reserved_memory(uint64_t size) final;
-
-        std::pmr::memory_resource* resource() const noexcept final { return resource_; }
         core::filesystem::local_file_system_t& filesystem() const noexcept { return fs_; }
 
     protected:
@@ -70,12 +33,6 @@ namespace components::table::storage {
 
         [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_memory(memory_tag tag, uint64_t block_size, bool can_destroy);
-
-        void purge_queue(const block_handle_t& handle) final;
-
-        buffer_pool_t& buffer_pool() const final;
-
-        void add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle) final;
 
         [[nodiscard]] core::result_wrapper_t<bool> batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
                                                               const std::map<uint64_t, uint64_t>& load_map,
@@ -89,9 +46,33 @@ namespace components::table::storage {
         std::atomic<uint64_t> evicted_data_per_tag_[static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT)];
 
     private:
-        // NVI: overrides buffer_manager_t's private customization point; callers use the
-        // public non-virtual reserve_memory inherited from the base.
+        [[nodiscard]] core::result_wrapper_t<buffer_handle_t>
+        allocate_impl(memory_tag tag, uint64_t block_size, bool can_destroy) final;
+        [[nodiscard]] core::result_wrapper_t<bool> reallocate_impl(std::shared_ptr<block_handle_t>& handle,
+                                                                   uint64_t block_size) final;
+        [[nodiscard]] core::result_wrapper_t<buffer_handle_t> pin_impl(std::shared_ptr<block_handle_t>& handle) final;
+        void prefetch_impl(std::vector<std::shared_ptr<block_handle_t>>& handles) final;
+        void unpin_impl(block_handle_t* handle) final;
+
+        uint64_t block_allocation_size_impl() const final;
+        uint64_t block_size_impl() const final;
+
+        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        register_transient_memory_impl(uint64_t size, uint64_t block_size) final;
+        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        register_small_memory_impl(memory_tag tag, uint64_t size) final;
+
         [[nodiscard]] core::result_wrapper_t<bool> reserve_memory_impl(uint64_t size) final;
+        void free_reserved_memory_impl(uint64_t size) final;
+        std::vector<memory_info_t> get_memory_usage_info_impl() const final;
+        [[nodiscard]] core::result_wrapper_t<bool> set_memory_limit_impl(uint64_t limit) final;
+
+        std::unique_ptr<file_buffer_t> construct_manager_buffer_impl(uint64_t size,
+                                                                     std::unique_ptr<file_buffer_t>&& source,
+                                                                     file_buffer_type type) final;
+        buffer_pool_t& buffer_pool_impl() const final;
+
+        std::pmr::memory_resource* resource_impl() const noexcept final { return resource_; }
     };
 
 } // namespace components::table::storage

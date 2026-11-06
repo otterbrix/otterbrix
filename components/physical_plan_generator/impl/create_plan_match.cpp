@@ -4,15 +4,12 @@
 #include <cassert>
 #include <cstdlib>
 
-#include "index_selection_helpers.hpp"
-
 #include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_having.hpp>
 #include <components/physical_plan/operators/operator_match.hpp>
-#include <components/physical_plan/operators/scan/full_scan.hpp>
 #include <components/physical_plan/operators/scan/index_scan.hpp>
 #include <components/physical_plan/operators/scan/transfer_scan.hpp>
 
@@ -21,99 +18,6 @@ namespace services::planner::impl {
     namespace {
 
         namespace expr = components::expressions;
-
-        bool is_range_compare(expr::compare_type type) {
-            return type == expr::compare_type::lt || type == expr::compare_type::lte ||
-                   type == expr::compare_type::gt || type == expr::compare_type::gte;
-        }
-
-        // Index info is scoped per table_oid; another table's indexes from the same statement never apply.
-        [[maybe_unused]] bool can_use_index(const context_storage_t& context,
-                                            components::catalog::oid_t table_oid,
-                                            const expr::compare_expression_t& comp,
-                                            bool& key_on_left) {
-            if (expr::is_union_compare_condition(comp.type())) {
-                return false;
-            }
-            switch (comp.type()) {
-                case expr::compare_type::eq:
-                case expr::compare_type::lt:
-                case expr::compare_type::lte:
-                case expr::compare_type::gt:
-                case expr::compare_type::gte:
-                case expr::compare_type::is_null:
-                case expr::compare_type::is_not_null:
-                    break;
-                default:
-                    return false;
-            }
-            if (!context.parameters) {
-                return false;
-            }
-
-            if (std::holds_alternative<expr::key_t>(comp.left()) &&
-                std::holds_alternative<core::parameter_id_t>(comp.right())) {
-                const auto& key = std::get<expr::key_t>(comp.left());
-                const bool range = is_range_compare(comp.type());
-                if (context.has_index_on(table_oid, key) &&
-                    (!range || context.has_index_on_with_other_type(table_oid,
-                                                                    key,
-                                                                    components::logical_plan::index_type::hashed))) {
-                    key_on_left = true;
-                    return true;
-                }
-            }
-            if (std::holds_alternative<core::parameter_id_t>(comp.left()) &&
-                std::holds_alternative<expr::key_t>(comp.right())) {
-                const auto& key = std::get<expr::key_t>(comp.right());
-                const bool range = is_range_compare(comp.type());
-                if (context.has_index_on(table_oid, key) &&
-                    (!range || context.has_index_on_with_other_type(table_oid,
-                                                                    key,
-                                                                    components::logical_plan::index_type::hashed))) {
-                    key_on_left = false;
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        bool is_pure_compare(const components::expressions::expression_ptr& expr) {
-            using namespace components::expressions;
-            if (expr->group() != expression_group::compare) {
-                return false;
-            }
-            const auto* comp_expr = static_cast<const compare_expression_t*>(expr.get());
-            // do_not_fold() (correlated / sub-query-array compares) must stay in-memory, never pushed to disk.
-            if (comp_expr->do_not_fold()) {
-                return false;
-            }
-            for (const auto& child : comp_expr->children()) {
-                if (!is_pure_compare(child)) {
-                    return false;
-                }
-            }
-
-            // Union compare expressions carry nullptr in left/right (handled above).
-            if (!is_union_compare_condition(comp_expr->type())) {
-                // param_storage is variant<key_t, expression_ptr, parameter_id_t>; no_expr leaves the
-                // operand as a key or a bound parameter.
-                const bool no_expr = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right());
-                const bool col_op_const = no_expr && (is_key(comp_expr->left()) != is_key(comp_expr->right()));
-                const auto t = comp_expr->type();
-                const bool plain_cmp = t == compare_type::eq || t == compare_type::ne || t == compare_type::lt ||
-                                       t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
-                const bool col_op_col = no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
-                // The non-expression operand may be a column too: this filter resolves paths on both
-                // sides, not just the expression side.
-                const bool expr_op_other = (is_expr(comp_expr->left()) && !is_expr(comp_expr->right())) ||
-                                           (is_expr(comp_expr->right()) && !is_expr(comp_expr->left()));
-                if (!col_op_const && !col_op_col && !expr_op_other) {
-                    return false;
-                }
-            }
-            return true;
-        }
 
         // Where the indexed column lands in a fetched chunk of `projected_cols` (empty: every column), so
         // index_scan can re-read it off the row and re-apply the comparison the index answered. -1 when
@@ -145,59 +49,46 @@ namespace services::planner::impl {
         }
 
         plan_result_t create_plan_match_(const context_storage_t& context,
-                                         components::catalog::oid_t table_oid,
-                                         const components::expressions::expression_ptr& expr,
+                                         const components::logical_plan::node_match_t& match,
                                          components::logical_plan::row_cap_t cap,
-                                         const std::vector<size_t>& projected_cols) {
+                                         const std::vector<size_t>& requested_cols) {
+            const auto table_oid = match.table_oid();
+            const auto& expr = match.expressions().front();
             if (context.has_table_oid(table_oid)) {
-                // TODO: function_expr in scans
-                if (is_pure_compare(expr)) {
-                    auto comp_expr = boost::static_pointer_cast<expr::compare_expression_t>(expr);
-                    if (!comp_expr->is_union()) {
-                        bool key_on_left = true;
-                        if (can_use_index(context, table_oid, *comp_expr, key_on_left)) {
-                            auto& key = key_on_left ? std::get<expr::key_t>(comp_expr->left())
-                                                    : std::get<expr::key_t>(comp_expr->right());
-                            auto param_id = key_on_left ? std::get<core::parameter_id_t>(comp_expr->right())
-                                                        : std::get<core::parameter_id_t>(comp_expr->left());
-                            auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
-                            auto preferred_index_type = context.preferred_index_type_for_compare(table_oid, key, ctype);
-                            return boost::intrusive_ptr(new components::operators::index_scan(
-                                context.resource,
-                                context.log.clone(),
-                                table_oid,
-                                key,
-                                param_id,
-                                ctype,
-                                preferred_index_type,
-                                cap,
-                                projected_cols,
-                                indexed_chunk_position(context, table_oid, key, projected_cols)));
-                        }
-                    }
-
-                    return boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                                     context.log.clone(),
-                                                                                     table_oid,
-                                                                                     comp_expr,
-                                                                                     cap,
-                                                                                     projected_cols));
-                } else {
-                    // The inner full_scan is unlimited because operator_match filters above it; capping
-                    // here could starve the filter of matching rows. operator_match's own limit is an
-                    // advisory hint under operator_limit for SELECT, but the authoritative affected-row
-                    // bound for DML (no operator_limit over a DML root).
-                    auto match_operator = boost::intrusive_ptr(
-                        new components::operators::operator_match_t(context.resource, context.log.clone(), expr, cap));
-                    match_operator->set_children(boost::intrusive_ptr(
-                        new components::operators::full_scan(context.resource,
-                                                             context.log.clone(),
-                                                             table_oid,
-                                                             nullptr,
-                                                             components::logical_plan::row_cap_t::uncapped(),
-                                                             projected_cols)));
-                    return match_operator;
+                const auto projected_cols = scan_columns_of(context, table_oid, requested_cols);
+                if (const auto& index = match.index(); index.has_value()) {
+                    const auto& compare = static_cast<const expr::compare_expression_t&>(*expr);
+                    const auto& key = expr::as_key(index->key_on_left ? compare.left() : compare.right());
+                    const auto param_id = expr::as_parameter(index->key_on_left ? compare.right() : compare.left());
+                    return boost::intrusive_ptr(new components::operators::index_scan(
+                        context.resource,
+                        context.log.clone(),
+                        table_oid,
+                        key,
+                        param_id,
+                        index->compare,
+                        index->type,
+                        cap,
+                        projected_cols,
+                        indexed_chunk_position(context, table_oid, key, projected_cols)));
                 }
+                VALUE_OR_RETURN(auto address, storage_address_of(context, table_oid));
+                // The scan is unlimited because operator_match filters above it; capping it could starve the
+                // filter of matching rows. operator_match's own limit is an advisory hint under operator_limit
+                // for SELECT, but the authoritative affected-row bound for DML (no operator_limit over a DML root).
+                auto match_operator = boost::intrusive_ptr(
+                    new components::operators::operator_match_t(context.resource, context.log.clone(), expr, cap));
+                VALUE_OR_RETURN(auto types, page_types_of(context, table_oid, projected_cols));
+                auto scan = boost::intrusive_ptr(
+                    new components::operators::transfer_scan(context.resource,
+                                                             table_oid,
+                                                             std::move(address),
+                                                             full_name_of(context, table_oid),
+                                                             components::logical_plan::row_cap_t::uncapped(),
+                                                             projected_cols));
+                scan->set_page_types(std::move(types));
+                match_operator->set_children(std::move(scan));
+                return match_operator;
             } else {
                 return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, expr, cap));
             }
@@ -216,53 +107,45 @@ namespace services::planner::impl {
                                     components::logical_plan::row_cap_t cap,
                                     const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
-            // relkind::computed ('g') columns are read live by chunk_position, resolved at resolve-table
-            // time; relkind::regular ('r') tables use the caller's projected_cols (column_pruning output).
-            std::vector<size_t> effective_cols;
-            if (const auto* md = context.table_metadata_for(node->table_oid())) {
-                if (md->relkind == components::catalog::relkind::computed) {
-                    effective_cols.reserve(md->columns.size());
-                    for (const auto& col : md->columns) {
-                        if (col.chunk_position >= 0) {
-                            effective_cols.push_back(static_cast<size_t>(col.chunk_position));
-                        }
-                    }
-                } else {
-                    effective_cols = projected_cols;
-                }
-            }
+            auto effective_cols = scan_columns_of(context, node->table_oid(), projected_cols);
             if (context.has_table_oid(node->table_oid())) {
-                return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
-                                                                                     node->table_oid(),
-                                                                                     cap,
-                                                                                     std::move(effective_cols)));
+                VALUE_OR_RETURN(auto types, page_types_of(context, node->table_oid(), effective_cols));
+                VALUE_OR_RETURN(auto address, storage_address_of(context, node->table_oid()));
+                auto scan = boost::intrusive_ptr(
+                    new components::operators::transfer_scan(context.resource,
+                                                             node->table_oid(),
+                                                             std::move(address),
+                                                             full_name_of(context, node->table_oid()),
+                                                             cap,
+                                                             std::move(effective_cols)));
+                scan->set_page_types(std::move(types));
+                return scan;
             }
             // node->source() — not the oid, which is INVALID_OID either way — says which absent-table
             // case this is. No default arm: a new match_source value must get a case here or the build stops.
             switch (static_cast<const components::logical_plan::node_match_t*>(node.get())->source()) {
                 case components::logical_plan::match_source::none:
                     // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next).
-                    return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
-                                                                                         node->table_oid(),
-                                                                                         cap,
-                                                                                         std::move(effective_cols)));
+                    return boost::intrusive_ptr(
+                        new components::operators::transfer_scan(context.resource,
+                                                                 node->table_oid(),
+                                                                 components::table::storage_address_t{},
+                                                                 std::pmr::string{context.resource},
+                                                                 cap,
+                                                                 std::move(effective_cols)));
                 case components::logical_plan::match_source::table: {
                     // Validation should refuse a named table with an unresolved oid before plan generation;
                     // refusing here (not the `none` sentinel) stops a regression from silently answering a
                     // synthetic row for a nonexistent table.
                     const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
-                    return unresolved_table_refusal(context.resource,
-                                                    static_cast<const std::string&>(match_node->target().database),
-                                                    static_cast<const std::string&>(match_node->target().collection));
+                    return unresolved_table_refusal(context.resource, match_node->target());
                 }
             }
             assert(false && "unknown source of a WHERE scan");
             std::abort();
         } else {
-            const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,
-                                      match_node->table_oid(),
-                                      match_node->expressions()[0],
+                                      static_cast<const components::logical_plan::node_match_t&>(*node),
                                       cap,
                                       projected_cols);
         }

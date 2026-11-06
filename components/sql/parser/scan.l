@@ -44,15 +44,12 @@
 #define YY_DECL int yylex(YYSTYPE *yylval_param, YYLTYPE *yylloc_param, std::pmr::memory_resource *resource, yyscan_t yyscanner)
 
 
-/* Avoid exit() on fatal scanner errors (a bit ugly -- see yy_fatal_error) */
+/*
+ * flex's yy_fatal_error (out of memory, input buffer overflow, no action found) cannot be
+ * caused by SQL text: report it and abort instead of exit(2)
+ */
 #undef fprintf
-#define fprintf(file, fmt, msg)  fprintf_to_ereport(fmt, msg)
-
-static void
-fprintf_to_ereport(const char *fmt, const char *msg)
-{
-	ereport(ERROR, (errmsg_internal("%s", msg)));
-}
+#define fprintf(file, fmt, msg)  parser_abort(msg)
 
 /*
  * GUC variables.  This is a DIRECT violation of the warning given at the
@@ -103,7 +100,12 @@ static pg_wchar surrogate_pair_to_codepoint(pg_wchar first, pg_wchar second);
 static void addunicode(pg_wchar c, yyscan_t yyscanner);
 static bool check_uescapechar(unsigned char escape);
 
-#define yyerror(msg)  scanner_yyerror(msg, yyscanner)
+/*
+ * Rule actions only: the error is recorded and bison is handed end of input, which ends the parse.
+ * The helper functions below the rules get record-only versions.
+ */
+#define yyerror(msg)  do { scanner_yyerror(msg, yyscanner); return 0; } while (0)
+#define ereport(level, ...)  do { if (parser_report(yyscanner, level, __VA_ARGS__)) return 0; } while (0)
 
 #define lexer_errposition()  scanner_errposition(*(yylloc), yyscanner)
 
@@ -564,6 +566,8 @@ other			.
 					yyless(0);
 					BEGIN(INITIAL);
 					yylval->str = litbuf_udeescape('\\', yyscanner);
+					if (scanner_failed(yyscanner))
+						return 0;
 					return SCONST;
 				}
 <xusend>{xustop2} {
@@ -576,6 +580,8 @@ other			.
 						yyerror("invalid Unicode escape character");
 					}
 					yylval->str = litbuf_udeescape(yytext[yyleng-2], yyscanner);
+					if (scanner_failed(yyscanner))
+						return 0;
 					return SCONST;
 				}
 <xq,xe,xus>{xqdouble} {
@@ -600,7 +606,11 @@ other			.
 					else if (is_utf16_surrogate_second(c))
 						yyerror("invalid Unicode surrogate pair");
 					else
+					{
 						addunicode(c, yyscanner);
+						if (scanner_failed(yyscanner))
+							return 0;
+					}
 				}
 <xeu>{xeunicode} {
 					pg_wchar c = strtoul(yytext+2, NULL, 16);
@@ -611,6 +621,8 @@ other			.
 					c = surrogate_pair_to_codepoint(yyextra->utf16_first_part, c);
 
 					addunicode(c, yyscanner);
+					if (scanner_failed(yyscanner))
+						return 0;
 
 					BEGIN(xe);
 				}
@@ -751,6 +763,8 @@ other			.
 					if (yyextra->literallen == 0)
 						yyerror("zero-length delimited identifier");
 					ident = litbuf_udeescape('\\', yyscanner);
+					if (scanner_failed(yyscanner))
+						return 0;
 					identlen = strlen(ident);
 					if (identlen >= NAMEDATALEN)
 						truncate_identifier(ident, identlen, true);
@@ -772,6 +786,8 @@ other			.
 						yyerror("invalid Unicode escape character");
 					}
 					ident = litbuf_udeescape(yytext[yyleng - 2], yyscanner);
+					if (scanner_failed(yyscanner))
+						return 0;
 					identlen = strlen(ident);
 					if (identlen >= NAMEDATALEN)
 						truncate_identifier(ident, identlen, true);
@@ -1015,6 +1031,60 @@ other			.
 #undef yyleng
 #define yyleng  (((struct yyguts_t *) yyscanner)->yyleng_r)
 
+#undef yyerror
+#define yyerror(msg)  scanner_yyerror(msg, yyscanner)
+#undef ereport
+#define ereport(level, ...)  parser_report(yyscanner, level, __VA_ARGS__)
+
+bool
+parser_report(core_yyscan_t yyscanner, int level, int sqlerrcode, std::string message, std::string detail,
+			  int position)
+{
+	if (level < ERROR)
+		return false;
+	if (!yyextra->error.contains_error())
+		yyextra->error = core::error_t(core::error_code_t::sql_parse_error,
+									   std::pmr::string(message.data(), message.size(), yyextra->resource),
+									   position > 0 ? position : -1);
+	return true;
+}
+
+bool
+parser_report(core_yyscan_t yyscanner, int level, std::string message)
+{
+	return parser_report(yyscanner, level, -1, std::move(message), std::string(), -1);
+}
+
+bool
+parser_report(core_yyscan_t yyscanner, int level, std::string message, int position)
+{
+	return parser_report(yyscanner, level, -1, std::move(message), std::string(), position);
+}
+
+bool
+parser_report(core_yyscan_t yyscanner, int level, int sqlerrcode, std::string message)
+{
+	return parser_report(yyscanner, level, sqlerrcode, std::move(message), std::string(), -1);
+}
+
+bool
+parser_report(core_yyscan_t yyscanner, int level, int sqlerrcode, std::string message, int position)
+{
+	return parser_report(yyscanner, level, sqlerrcode, std::move(message), std::string(), position);
+}
+
+bool
+parser_report(core_yyscan_t yyscanner, int level, int sqlerrcode, std::string message, std::string detail)
+{
+	return parser_report(yyscanner, level, sqlerrcode, std::move(message), std::move(detail), -1);
+}
+
+bool
+scanner_failed(core_yyscan_t yyscanner)
+{
+	return yyextra->error.contains_error();
+}
+
 
 /*
  * scanner_errposition
@@ -1091,7 +1161,9 @@ scanner_init(std::pmr::memory_resource* resource, const char *str,
 	yyext->resource = resource;
 
 	if (yylex_init(&scanner) != 0)
-		elog(ERROR, "yylex_init() failed: %m");
+	{
+		parser_abort("yylex_init() failed");
+	}
 
 	core_yyset_extra(yyext, scanner);
 
@@ -1226,8 +1298,8 @@ hexval(unsigned char c)
 		return c - 'a' + 0xA;
 	if (c >= 'A' && c <= 'F')
 		return c - 'A' + 0xA;
-	elog(ERROR, "invalid hexadecimal digit");
-	return 0; /* not reached */
+	/* every caller checked isxdigit first */
+	parser_abort("invalid hexadecimal digit");
 }
 
 static void
@@ -1267,11 +1339,17 @@ addunicode(pg_wchar c, core_yyscan_t yyscanner)
 	char buf[8];
 
 	if (c == 0 || c > 0x10FFFF)
+	{
 		yyerror("invalid Unicode escape value");
+		return;
+	}
 	if (c > 0x7F)
 	{
 		if (GetDatabaseEncoding() != PG_UTF8)
+		{
 			yyerror("Unicode escape values cannot be used for code point values above 007F when the server encoding is not UTF8");
+			return;
+		}
 		yyextra->saw_non_ascii = true;
 	}
 	unicode_to_utf8(c, (unsigned char *) buf);
@@ -1324,6 +1402,7 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 				{
 					ADVANCE_YYLLOC(in - litbuf + 3);   /* 3 for U&" */
 					yyerror("invalid Unicode surrogate pair");
+					return NULL;
 				}
 				*out++ = escape;
 				in += 2;
@@ -1340,6 +1419,8 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 					(hexval(in[3]) << 4) +
 					hexval(in[4]);
 				check_unicode_value(unicode, in, yyscanner);
+				if (scanner_failed(yyscanner))
+					return NULL;
 				if (pair_first)
 				{
 					if (is_utf16_surrogate_second(unicode))
@@ -1351,10 +1432,14 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 					{
 						ADVANCE_YYLLOC(in - litbuf + 3);   /* 3 for U&" */
 						yyerror("invalid Unicode surrogate pair");
+						return NULL;
 					}
 				}
 				else if (is_utf16_surrogate_second(unicode))
+				{
 					yyerror("invalid Unicode surrogate pair");
+					return NULL;
+				}
 
 				if (is_utf16_surrogate_first(unicode))
 					pair_first = unicode;
@@ -1382,6 +1467,8 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 					(hexval(in[6]) << 4) +
 					hexval(in[7]);
 				check_unicode_value(unicode, in, yyscanner);
+				if (scanner_failed(yyscanner))
+					return NULL;
 				if (pair_first)
 				{
 					if (is_utf16_surrogate_second(unicode))
@@ -1393,10 +1480,14 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 					{
 						ADVANCE_YYLLOC(in - litbuf + 3);   /* 3 for U&" */
 						yyerror("invalid Unicode surrogate pair");
+						return NULL;
 					}
 				}
 				else if (is_utf16_surrogate_second(unicode))
+				{
 					yyerror("invalid Unicode surrogate pair");
+					return NULL;
+				}
 
 				if (is_utf16_surrogate_first(unicode))
 					pair_first = unicode;
@@ -1411,6 +1502,7 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 			{
 				ADVANCE_YYLLOC(in - litbuf + 3);   /* 3 for U&" */
 				yyerror("invalid Unicode escape value");
+				return NULL;
 			}
 		}
 		else
@@ -1419,6 +1511,7 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 			{
 				ADVANCE_YYLLOC(in - litbuf + 3);   /* 3 for U&" */
 				yyerror("invalid Unicode surrogate pair");
+				return NULL;
 			}
 			*out++ = *in++;
 		}
@@ -1429,6 +1522,7 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 	{
 		ADVANCE_YYLLOC(in - litbuf + 3);				/* 3 for U&" */
 		yyerror("invalid Unicode surrogate pair");
+		return NULL;
 	}
 
 	*out = '\0';

@@ -20,7 +20,7 @@ TEST_CASE("integration::list_array::fixed_array_crud") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("DDL: a fixed-size int[3] ARRAY column is accepted");
     { REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.arr (id bigint, v int[3]);")->is_success()); }
@@ -115,7 +115,7 @@ TEST_CASE("integration::list_array::fixed_array_element_types") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("boolean[] and double[] fixed arrays parse and accept literals");
     {
@@ -145,7 +145,7 @@ TEST_CASE("integration::list_array::variadic_list_crud") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("DDL: a variadic int[] LIST column is accepted");
     { REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.l (id bigint, v int[]);")->is_success()); }
@@ -248,7 +248,7 @@ TEST_CASE("integration::list_array::list_array_conversion") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.src_arr (id bigint, v int[3]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.src_arr (id, v) VALUES (1, ARRAY[5,6,7]);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.src_list (id bigint, v int[]);")->is_success());
@@ -302,7 +302,7 @@ TEST_CASE("integration::list_array::list_to_array_length") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.src (id bigint, v int[]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.src (id, v) VALUES (1, ARRAY[10,20]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.src (id, v) VALUES (2, ARRAY[30,40,50]);")->is_success());
@@ -370,7 +370,7 @@ TEST_CASE("integration::list_array::empty_array_literal") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("empty ARRAY[] into a variadic LIST column stores an empty list");
     {
@@ -409,7 +409,7 @@ TEST_CASE("integration::list_array::array_default_padding") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("VALUES short ARRAY into a nullable no-default column pads NULL");
     {
@@ -520,7 +520,7 @@ TEST_CASE("integration::list_array::subscript_in_where") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("fixed ARRAY: WHERE v[i] = x filters on a single element");
     {
@@ -574,7 +574,7 @@ TEST_CASE("integration::list_array::unsupported_clean_failures") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("ARRAY[...] with mixed element types is rejected at parse time");
     {
@@ -617,7 +617,7 @@ TEST_CASE("integration::list_array::full_array_update") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("fixed ARRAY: UPDATE v = ARRAY[...] replaces the whole array, casting widths");
     {
@@ -670,7 +670,7 @@ TEST_CASE("integration::list_array::full_list_update") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.l (id bigint, v int[]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.l (id, v) VALUES (1, ARRAY[10,20]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.l (id, v) VALUES (2, ARRAY[30,40,50]);")->is_success());
@@ -731,7 +731,7 @@ TEST_CASE("integration::list_array::null_array_value_reads_safely") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.arr (id bigint, v int[3]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.arr (id, v) VALUES (1, ARRAY[7,8,9]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.arr (id, v) VALUES (2, NULL);")->is_success());
@@ -765,7 +765,7 @@ TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.a (id bigint, v int[3]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (1, ARRAY[7,8,9]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (2, NULL);")->is_success());
@@ -824,7 +824,7 @@ TEST_CASE("integration::list_array::array_equality_subquery") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.a (id bigint, v int[3]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (1, ARRAY[7,8,9]);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (2, ARRAY[1,2,3]);")->is_success());
@@ -867,7 +867,7 @@ TEST_CASE("integration::list_array::null_elements") {
         return cur;
     };
 
-    ok("CREATE DATABASE db;");
+    ok("CREATE SCHEMA db;");
     ok("CREATE TABLE db.a (id int, arr int[3], lst int[]);");
     ok("INSERT INTO db.a (id, arr, lst) VALUES (1, ARRAY[10,20,30], ARRAY[10,20,30]);");
     // A row whose ARRAY and LIST both carry a NULL middle element.
@@ -1004,7 +1004,7 @@ TEST_CASE("integration::list_array::min_max_over_whole_array") {
         return cur;
     };
 
-    ok("CREATE DATABASE db;");
+    ok("CREATE SCHEMA db;");
     ok("CREATE TABLE db.l (id int, grp int, v int[]);");
     ok("INSERT INTO db.l (id, grp, v) VALUES (1, 1, ARRAY[1,2]);");
     ok("INSERT INTO db.l (id, grp, v) VALUES (2, 1, ARRAY[1,2,3]);");
@@ -1122,7 +1122,7 @@ TEST_CASE("integration::list_array::min_max_over_fixed_array") {
         return cur;
     };
 
-    ok("CREATE DATABASE db;");
+    ok("CREATE SCHEMA db;");
     ok("CREATE TABLE db.a (id int, v int[3]);");
     ok("INSERT INTO db.a (id, v) VALUES (1, ARRAY[1,2,3]);");
     ok("INSERT INTO db.a (id, v) VALUES (2, ARRAY[1,5,0]);");
@@ -1176,7 +1176,7 @@ TEST_CASE("integration::list_array::cast_array_to_text") {
         return std::string{cell138.value()};
     };
 
-    ok("CREATE DATABASE db;");
+    ok("CREATE SCHEMA db;");
     ok("CREATE TABLE db.one (id int);");
     ok("INSERT INTO db.one (id) VALUES (1);");
 

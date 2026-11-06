@@ -20,7 +20,7 @@ namespace {
 
     template<typename D>
     void seed(D* d) {
-        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE SCHEMA m;"));
         REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, v BIGINT);"));
         REQUIRE(ok(d, "INSERT INTO m.t (id, v) VALUES (1,10),(2,20),(3,30);"));
     }
@@ -30,7 +30,7 @@ namespace {
         auto* r = d->resource();
         auto predicate = expressions::make_compare_expression(r, compare_type::eq, key{r, "id"}, id);
         return logical_plan::make_node_match(r,
-                                             qualified_name_t{core::dbname_t{"m"}, core::relname_t{"t"}},
+                                             qualified_name_t{core::schema_t{"m"}, core::relname_t{"t"}},
                                              std::move(predicate));
     }
 } // namespace
@@ -45,7 +45,7 @@ TEST_CASE("integration::cpp::undefined_side_key::select") {
     auto params = logical_plan::make_parameter_node(r);
     const auto id = params->add_parameter(components::vector::make_scalar(r, int64_t{2}),
                                           components::vector::parameter_kind::literal);
-    auto agg = logical_plan::make_node_aggregate(r, qualified_name_t{core::dbname_t{"m"}, core::relname_t{"t"}});
+    auto agg = logical_plan::make_node_aggregate(r, qualified_name_t{core::schema_t{"m"}, core::relname_t{"t"}});
     agg->append_child(match_id_eq(d, id));
     auto cur = d->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{r, agg, params});
     REQUIRE(cur);
@@ -74,7 +74,7 @@ TEST_CASE("integration::cpp::undefined_side_key::delete") {
         test_dml_target(logical_plan::make_node_delete(r,
                                                        match_id_eq(d, id),
                                                        logical_plan::make_node_limit(r, logical_plan::limit_t::all())),
-                        core::dbname_t{"m"},
+                        core::schema_t{"m"},
                         core::relname_t{"t"});
     auto cur = d->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{r, del, params});
     REQUIRE(cur);
@@ -104,11 +104,11 @@ TEST_CASE("integration::cpp::undefined_side_key::catalog_select") {
                                             components::vector::parameter_kind::literal);
     auto agg =
         logical_plan::make_node_aggregate(r,
-                                          qualified_name_t{core::dbname_t{"pg_catalog"}, core::relname_t{"pg_class"}});
+                                          qualified_name_t{core::schema_t{"pg_catalog"}, core::relname_t{"pg_class"}});
     auto predicate = expressions::make_compare_expression(r, compare_type::eq, key{r, "relname"}, name);
     agg->append_child(
         logical_plan::make_node_match(r,
-                                      qualified_name_t{core::dbname_t{"pg_catalog"}, core::relname_t{"pg_class"}},
+                                      qualified_name_t{core::schema_t{"pg_catalog"}, core::relname_t{"pg_class"}},
                                       std::move(predicate)));
     auto cur = d->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{r, agg, params});
     REQUIRE(cur);

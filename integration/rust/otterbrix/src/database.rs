@@ -1,7 +1,7 @@
 use crate::config::Config;
-use crate::cursor::Cursor;
+use crate::cursor::{transaction_status_of, Cursor};
 use crate::error::{Error, Result};
-use crate::utils::{make_sv, string_from_c};
+use crate::utils::{make_sv, string_from_c, take_string_from_c};
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -148,17 +148,23 @@ impl fmt::Debug for Database {
 
 fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
     if unsafe { otterbrix_sys::cursor_is_error(ptr) } {
-        let err = unsafe { otterbrix_sys::cursor_get_error(ptr) };
-        let message = unsafe { string_from_c(err.message) };
+        let code = unsafe { otterbrix_sys::cursor_error_code(ptr) };
+        let message = unsafe { string_from_c(otterbrix_sys::cursor_error_message(ptr)) };
         let message = if message.is_empty() {
-            format!("error code {}", err.code)
+            format!("error code {code}")
         } else {
             message
         };
+        let transaction_status = transaction_status_of(ptr);
+        let position = u32::try_from(unsafe { otterbrix_sys::cursor_error_position(ptr) })
+            .ok()
+            .filter(|p| *p > 0);
         unsafe { otterbrix_sys::release_cursor(ptr) };
         return Err(Error::Engine {
-            code: err.code,
+            code,
             message,
+            transaction_status,
+            position,
         });
     }
     Ok(Cursor {
@@ -191,7 +197,7 @@ impl Database {
     /// use otterbrix::{Config, Database};
     /// let cfg = Config::new("./data");
     /// let db = Database::open(cfg).expect("open database");
-    /// db.execute("CREATE DATABASE app;").unwrap();
+    /// db.execute("CREATE SCHEMA app;").unwrap();
     /// ```
     pub fn open(config: Config) -> Result<Self> {
         let log_path = path_to_str(&config.log_path)?;
@@ -213,10 +219,12 @@ impl Database {
         };
         let ptr = unsafe { otterbrix_sys::otterbrix_create(cfg, &mut refusal) };
         if ptr.is_null() {
-            let message = unsafe { string_from_c(refusal.message) };
+            let message = unsafe { take_string_from_c(refusal.message) };
             return Err(Error::Engine {
                 code: refusal.code,
                 message,
+                transaction_status: None,
+                position: None,
             });
         }
         Ok(Database { ptr })
@@ -251,7 +259,7 @@ impl Database {
     /// ```no_run
     /// use otterbrix::{Config, Database, SqlParam, SqlParamValue};
     /// # let db = Database::open(Config::new("./data")).unwrap();
-    /// # db.execute("CREATE DATABASE app;").unwrap();
+    /// # db.execute("CREATE SCHEMA app;").unwrap();
     /// # db.execute("CREATE TABLE app.t();").unwrap();
     /// let params = [
     ///     SqlParam { index: 1, value: SqlParamValue::Int64(7) },

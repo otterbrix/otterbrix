@@ -71,7 +71,7 @@ namespace core::b_plus_tree {
         public:
             // Lazy-mode leaf: the segment tree remembers its file path and holds no descriptor
             // at rest. The only production door; the pinned-handle ctor is the tests' fault seam.
-            leaf_node_t(std::pmr::memory_resource* resource,
+            leaf_node_t(core::pmr::budget_resource_t* resource,
                         filesystem::local_file_system_t& fs,
                         filesystem::path_t file_path,
                         index_t (*func)(const item_data&),
@@ -159,7 +159,7 @@ namespace core::b_plus_tree {
             base_node_t** nodes_end_;
         };
 
-        btree_t(std::pmr::memory_resource* resource,
+        btree_t(core::pmr::budget_resource_t* resource,
                 filesystem::local_file_system_t& fs,
                 const filesystem::path_t& storage_directory,
                 index_t (*func)(const item_data&),
@@ -245,7 +245,7 @@ namespace core::b_plus_tree {
         uint64_t get_unique_id_();
 
         filesystem::local_file_system_t& fs_;
-        std::pmr::memory_resource* resource_;
+        core::pmr::budget_resource_t* resource_;
         index_t (*key_func_)(const item_data&);
         // Writers hold it exclusively and readers shared, each for the whole operation: a descent reads its
         // children's bounds without their locks, and a scan walks the leaf chain under this lock alone.

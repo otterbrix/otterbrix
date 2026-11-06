@@ -249,7 +249,7 @@ namespace {
 
     // CREATE + the DEFAULT (btree) index + ids 1..200 + CHECKPOINT. Leaves the engine open.
     void build_durable_prefix(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE rdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA rdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE rdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX t_k ON rdb.t (k);")->is_success());
         for (int64_t start = 1; start <= kCheckpointed; start += 100) {

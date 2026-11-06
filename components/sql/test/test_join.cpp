@@ -3,6 +3,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -11,7 +12,7 @@ using namespace components::sql::transform;
 
 #define TEST_JOIN(QUERY, RESULT, PARAMS)                                                                               \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         auto result = ([](auto _w) {                                                                                   \
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \
@@ -89,9 +90,9 @@ TEST_CASE("components::sql::join") {
     }
 
     SECTION("join names") {
-        auto select = linitial(raw_parser(&arena_resource,
-                                          "SELECT * from uid1.db1.sch1.test1 inner join uid2.db2.sch2.test2 on x = y "
-                                          "full outer join uid3.db3.sch3.test3 on y = z;"));
+        auto select = linitial(parse_ok(&arena_resource,
+                                        "SELECT * from uid1.db1.sch1.test1 inner join uid2.db2.sch2.test2 on x = y "
+                                        "full outer join uid3.db3.sch3.test3 on y = z;"));
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();

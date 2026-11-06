@@ -11,7 +11,7 @@ namespace components::operators {
     // (reset_source) before each pass so the walk restarts over the freshly-repointed set.
     //
     // role()==source lets the recursive term (typically JOIN(scan, cte_scan)) stream
-    // through execute_pipeline: traverse_plan_ / the runner's build-side materialization
+    // through pump_pipeline_: traverse_plan_ / the runner's build-side materialization
     // pre-runs the join's RIGHT child (this cte_scan) into its output_, so the join builds
     // its hash table from the working set and probes the streaming base scan. Each call
     // emits a COPY of one working-set chunk (the working set is shared — owned by the

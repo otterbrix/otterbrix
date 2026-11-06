@@ -9,6 +9,7 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/table/row_version_manager.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
@@ -24,6 +25,7 @@
 #include <fstream>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -47,12 +49,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit fresh_disk(const std::filesystem::path& path)
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{path};
                 c.path = path;
                 return c;
             }())
@@ -104,7 +107,12 @@ namespace {
                                                        components::table::transaction_data::committed(),
                                                        {},
                                                        table_oid};
-            auto r = fd.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            auto r = fd.invoke(&manager_disk_t::storage_append,
+                               append_ctx,
+                               table_oid,
+                               std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fd.resource),
+                               std::move(batch),
+                               false);
             REQUIRE_FALSE(r.has_error());
             written += rows;
         }
@@ -115,12 +123,15 @@ namespace {
         columns.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto table_oid = test_create_table(fd, ns_oid, name, columns);
         REQUIRE(table_oid >= catalog::FIRST_USER_OID);
-        fd.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  columns,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fd.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      columns,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fd, table_oid, 0, rows);
         return table_oid;
     }
@@ -188,7 +199,7 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
 
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "dirty_ns");
 
         tables.reserve(kTables);
@@ -230,9 +241,9 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
     // A fresh manager over the same dir catches a skip that never wrote the table, not just one left untouched.
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
-        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.load_user_table_storages_sync().contains_error());
 
         REQUIRE(disk_test_helpers::read_ok(
                     fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0])) == 2 * kRows);
@@ -254,7 +265,7 @@ TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_f
 
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "floor_ns");
         auto table_oid = make_table(fd, ns_oid, "floored", 100);
 
@@ -278,7 +289,7 @@ TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_c
     std::filesystem::create_directories(root);
     {
         fresh_disk fd(root);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns_defer");
         auto table_oid = make_table(fd, ns_oid, "t_defer", 8);
 
@@ -297,7 +308,12 @@ TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_c
             components::table::transaction_data td(88, 1);
             td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
             components::execution_context_t append_ctx{session_id_t{}, td, {}, table_oid};
-            auto r = fd.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            auto r = fd.invoke(&manager_disk_t::storage_append,
+                               append_ctx,
+                               table_oid,
+                               std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fd.resource),
+                               std::move(batch),
+                               false);
             REQUIRE_FALSE(r.has_error());
         }
 
@@ -317,6 +333,72 @@ TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_c
         }
         REQUIRE(services::disk::checkpoint_entries_rewritten() >= 1);
         REQUIRE(services::disk::checkpoint_entries_deferred() == 0);
+    }
+    std::filesystem::remove_all(root);
+}
+
+// One write message is one write: a refusal of any of its chunks (here a NULL in a NOT NULL column of the third)
+// leaves none of them in the table, and nothing of it defers a checkpoint.
+TEST_CASE("services::disk::checkpoint_dirty::a_refused_message_writes_none_of_its_chunks") {
+    const auto root = std::filesystem::path(dirty_dir() + "_atomic_message");
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    {
+        fresh_disk fd(root);
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
+        auto ns_oid = test_create_namespace(fd, "ns_atomic");
+        std::vector<components::table::column_definition_t> columns;
+        columns.emplace_back("value",
+                             components::types::complex_logical_type{components::types::logical_type::BIGINT},
+                             /*not_null=*/true);
+        auto table_oid = test_create_table(fd, ns_oid, "t_atomic", columns);
+        REQUIRE_FALSE(
+            fd.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      columns,
+                      /*is_computed=*/false)
+                .has_error());
+
+        std::pmr::vector<components::vector::data_chunk_t> chunks(&fd.resource);
+        for (int part = 0; part < 3; ++part) {
+            std::pmr::vector<components::types::complex_logical_type> types(&fd.resource);
+            components::types::complex_logical_type t{components::types::logical_type::BIGINT};
+            t.set_alias("value");
+            types.push_back(std::move(t));
+            components::vector::data_chunk_t chunk(&fd.resource, types, 2);
+            chunk.set_cardinality(2);
+            chunk.set_value(0, 0, static_cast<std::int64_t>(part * 10));
+            chunk.set_value(0, 1, static_cast<std::int64_t>(part * 10 + 1));
+            if (part == 2) {
+                chunk.data[0].set_null(1, true);
+            }
+            chunks.emplace_back(std::move(chunk));
+        }
+        components::table::transaction_data td(components::table::TRANSACTION_ID_START + 88, 1);
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        components::execution_context_t append_ctx{session_id_t{}, td, {}, table_oid};
+        auto refused = fd.invoke(&manager_disk_t::storage_append,
+                                 append_ctx,
+                                 table_oid,
+                                 std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fd.resource),
+                                 std::move(chunks),
+                                 false);
+        REQUIRE(refused.has_error());
+        CHECK(refused.error().type == core::error_code_t::not_null_violation);
+
+        auto rows = fd.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
+        REQUIRE_FALSE(rows.has_error());
+        CHECK(rows.value() == 0);
+
+        // A watermark past every commit so far: only rows the open transaction stamped could defer the table.
+        services::disk::reset_checkpoint_entry_tallies();
+        auto floor =
+            fd.invoke(&manager_disk_t::checkpoint_all, session_id_t{}, services::wal::id_t{10}, std::uint64_t{1000000});
+        CHECK(floor <= services::wal::id_t{10});
+        CHECK(services::disk::checkpoint_entries_deferred() == 0);
     }
     std::filesystem::remove_all(root);
 }

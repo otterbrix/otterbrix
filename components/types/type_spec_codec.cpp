@@ -36,7 +36,7 @@ namespace components::types {
         }
 
         core::error_t encode_error(std::pmr::memory_resource* resource, const char* what) {
-            return core::error_t(core::error_code_t::schema_error, std::pmr::string(what, resource));
+            return core::error_t(core::error_code_t::internal_error, std::pmr::string(what, resource));
         }
 
         // ---- decode helpers -------------------------------------------------------
@@ -132,7 +132,9 @@ namespace components::types {
             // Same predicate and constant as decode_one: refusing here costs a failed DDL,
             // letting it through costs a database that never opens again.
             if (depth > MAX_SPEC_DEPTH) {
-                return encode_error(resource, "type spec encode: nesting exceeds the format depth limit");
+                return core::error_t(
+                    core::error_code_t::program_limit_exceeded,
+                    std::pmr::string("type spec encode: nesting exceeds the format depth limit", resource));
             }
 
             put_u8(out, static_cast<uint8_t>(type.type()));

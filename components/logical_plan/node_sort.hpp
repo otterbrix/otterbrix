@@ -20,8 +20,12 @@ namespace components::logical_plan {
         void set_read_cap(const row_cap_t& read_cap) noexcept { read_cap_ = read_cap; }
         const row_cap_t& read_cap() const noexcept { return read_cap_; }
 
+        void set_keep_computed_keys(bool keep) noexcept { keep_computed_keys_ = keep; }
+        bool keep_computed_keys() const noexcept { return keep_computed_keys_; }
+
     private:
         row_cap_t read_cap_{};
+        bool keep_computed_keys_{false};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

@@ -55,7 +55,7 @@ namespace components::table::storage {
         , eviction_queue_idx_(INVALID_INDEX) {
         eviction_seq_num_ = 0;
         state_ = block_state::UNLOADED;
-        memory_usage_ = block_alloc_size_;
+        memory_usage_ = block_alloc_size_ + file_buffer_t::lead_for(DEFAULT_BLOCK_HEADER_SIZE);
     }
 
     block_handle_t::block_handle_t(block_manager_t& block_manager,
@@ -117,8 +117,8 @@ namespace components::table::storage {
             std::unique_lock<std::mutex> lock(lock_);
             unswizzled_ = nullptr;
             assert(!buffer_ || buffer_->buffer_type() == buffer_type_);
-            if (buffer_ && buffer_type_ != file_buffer_type::TINY_BUFFER) {
-                buffer_manager.buffer_pool().increment_dead_nodes(*this);
+            if (queued_) {
+                buffer_manager.buffer_pool().retire_queued_node(*this);
             }
 
             if (buffer_ && state_ == block_state::LOADED) {
@@ -173,7 +173,7 @@ namespace components::table::storage {
         assert(buffer_);
         buffer_->resize(block_size);
         memory_usage_ = static_cast<uint64_t>(static_cast<int64_t>(memory_usage_.load()) + memory_delta);
-        assert(memory_usage_ == buffer_->allocation_size());
+        assert(memory_usage_ == buffer_->memory_footprint());
     }
 
     buffer_handle_t block_handle_t::load_from_buffer(std::unique_lock<std::mutex>&,

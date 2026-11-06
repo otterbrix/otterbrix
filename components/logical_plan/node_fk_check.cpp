@@ -5,10 +5,10 @@
 namespace components::logical_plan {
 
     node_fk_check_t::node_fk_check_t(std::pmr::memory_resource* resource,
-                                     core::dbname_t dbname,
+                                     core::schema_t schema,
                                      core::relname_t relname,
                                      catalog::fk_info_t fk)
-        : node_t(resource, node_type::fk_check_t, qualified_name_t{std::move(dbname), std::move(relname)})
+        : node_t(resource, node_type::fk_check_t, qualified_name_t{std::move(schema), std::move(relname)})
         , fk_(std::move(fk)) {}
 
     hash_t node_fk_check_t::hash_impl() const { return 0; }

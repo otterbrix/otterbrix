@@ -57,7 +57,7 @@ namespace components::logical_plan {
                                              const graph_execution_context& context) {
         auto* resource = this->resource();
         if (column >= chunks_.front().data.size()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"VALUES: a column past the end of the VALUES list", resource});
         }
         std::pmr::vector<const deferred_cell_t*> cells(resource);
@@ -80,7 +80,7 @@ namespace components::logical_plan {
             const uint64_t count = chunk.size();
             if (stored.type() != written_type) {
                 return core::error_t(
-                    core::error_code_t::schema_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"VALUES: a column of differing types spans several chunks", resource});
             }
             vector::vector_t converted_rows(resource, target_type, count == 0 ? uint64_t{1} : count);
@@ -119,7 +119,7 @@ namespace components::logical_plan {
             chunk_start += count;
         }
         if (next_cell != cells.size()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"VALUES: a deferred cell points outside the VALUES list", resource});
         }
         deferred_cells_.erase(std::remove_if(deferred_cells_.begin(),

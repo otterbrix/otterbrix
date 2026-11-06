@@ -190,7 +190,7 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_trunc
         test_spaces space(config);
         auto* d = space.dispatcher();
 
-        REQUIRE(exec(d, "CREATE DATABASE tdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA tdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE tdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX k_idx ON tdb.t (k);")->is_success());
         load(d, "tdb");

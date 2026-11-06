@@ -16,14 +16,14 @@ namespace components::catalog {
     // catalog rows with garbage that survives restart. make() refuses a short round at construction;
     // exhaustion instead latches overrun() for planner_t::create_plan to refuse the statement.
     //
-    // Every consumer of allocate()/peek() must check overrun(): pg_proc, pg_cast and pg_attribute mint
-    // an identity outside the planner's round via single_oid_round.hpp. Skipping the check reopens this hole.
+    // Every consumer of allocate()/peek() must check overrun(): pg_proc and pg_cast mint an identity outside
+    // the planner's round via single_oid_round.hpp. Skipping the check reopens this hole.
     //
     // The demand and the consumption live in different files (planner.cpp against the rewrite_* /
     // ddl_metadata_builder.cpp functions) and are kept equal BY HAND.
     struct oid_batch_t {
-        // need == 0 is a legal success: DROP (except DROP INDEX's own rewrite), ALTER TABLE and
-        // CREATE MATERIALIZED VIEW inferring no columns never run a round at all.
+        // need == 0 is a legal success: DROP (except DROP INDEX's own rewrite), an ALTER TABLE that adds no
+        // column and CREATE MATERIALIZED VIEW inferring no columns never run a round at all.
         [[nodiscard]] static core::result_wrapper_t<oid_batch_t>
         make(std::pmr::memory_resource* resource, std::vector<oid_t> oids, std::size_t need) {
             if (oids.size() < need) {

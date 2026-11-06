@@ -21,7 +21,7 @@ namespace {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
         };
-        exec("CREATE DATABASE nulls_db;");
+        exec("CREATE SCHEMA nulls_db;");
         exec("CREATE TABLE nulls_db.t (id INT, v INT);");
         // Rows deliberately inserted out of order; one row has a NULL v.
         exec("INSERT INTO nulls_db.t (id, v) VALUES (2, 20), (4, NULL), (1, 10), (3, 30);");

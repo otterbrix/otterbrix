@@ -34,7 +34,7 @@ namespace {
     }
 
     void create_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        run_ok(dispatcher, "CREATE DATABASE d;");
+        run_ok(dispatcher, "CREATE SCHEMA d;");
         run_ok(dispatcher, "CREATE TABLE d.t (i integer, day date, s text);");
         run_ok(dispatcher, "INSERT INTO d.t (i, day, s) VALUES ('5', '2020-01-15', '7');");
     }

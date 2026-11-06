@@ -4,7 +4,9 @@
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/date/date_types.hpp>
 #include <core/pmr.hpp>
+#include <core/pmr/budget_resource.hpp>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory_resource>
 #include <services/index/bitcask_index_disk.hpp>
@@ -644,7 +646,8 @@ TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_
 
     {
         core::filesystem::local_file_system_t fs;
-        core::b_plus_tree::btree_t tree(&resource, fs, path, services::index::item_key_getter);
+        core::pmr::budget_resource_t tree_budget(&resource, std::numeric_limits<uint64_t>::max());
+        core::b_plus_tree::btree_t tree(&tree_budget, fs, path, services::index::item_key_getter);
         tree.load();
 
         auto good = services::index::tests::key_bytes(&resource, make_scalar(&resource, int64_t(7)));

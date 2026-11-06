@@ -32,7 +32,7 @@ namespace components::vector::operations {
                                                    std::is_same_v<T, types::int128_t>;
 
         core::error_t shift_out_of_range(std::pmr::memory_resource* resource) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::numeric_value_out_of_range,
                                  std::pmr::string{"shift count is out of range", resource});
         }
 
@@ -131,12 +131,12 @@ namespace components::vector::operations {
                         break;
                     case operator_code::divide:
                         if (is_zero(rhs)) {
-                            return core::error_t(core::error_code_t::invalid_parameter,
+                            return core::error_t(core::error_code_t::division_by_zero,
                                                  std::pmr::string{"division by zero", output->resource()});
                         }
                         if (is_min_over_minus_one(lhs, rhs)) {
                             return core::error_t(
-                                core::error_code_t::invalid_parameter,
+                                core::error_code_t::numeric_value_out_of_range,
                                 std::pmr::string{std::string(signed_integer_name<T>()) + " out of range",
                                                  output->resource()});
                         }
@@ -146,12 +146,12 @@ namespace components::vector::operations {
                         if constexpr (std::is_floating_point_v<T>) {
                             // Not data-dependent: no float value of the operand makes % meaningful.
                             return core::error_t(
-                                core::error_code_t::invalid_parameter,
+                                core::error_code_t::unrecognized_function,
                                 std::pmr::string{"operator does not accept modulus on floating point types",
                                                  output->resource()});
                         } else {
                             if (is_zero(rhs)) {
-                                return core::error_t(core::error_code_t::invalid_parameter,
+                                return core::error_t(core::error_code_t::division_by_zero,
                                                      std::pmr::string{"division by zero", output->resource()});
                             }
                             write<T>(output, row, is_min_over_minus_one(lhs, rhs) ? T{} : static_cast<T>(lhs % rhs));
@@ -159,7 +159,7 @@ namespace components::vector::operations {
                         break;
                     default:
                         return core::error_t(
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::internal_error,
                             std::pmr::string{"operator encountered unsupported operator code", output->resource()});
                 }
             }
@@ -205,7 +205,7 @@ namespace components::vector::operations {
                         break;
                     default:
                         return core::error_t(
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::internal_error,
                             std::pmr::string{"compare_rows encountered unsupported operator code", output->resource()});
                 }
             }
@@ -220,7 +220,7 @@ namespace components::vector::operations {
                                    const bool* active) {
             if (left.type().to_physical_type() != types::physical_type::BOOL ||
                 right.type().to_physical_type() != types::physical_type::BOOL) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"compare_rows encountered unsupported type", output->resource()});
             }
             for (uint64_t row = 0; row < count; row++) {
@@ -282,7 +282,7 @@ namespace components::vector::operations {
                                    uint64_t count,
                                    const bool* active) {
             if constexpr (!is_integral_value<T>) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"bitwise_rows encountered unsupported type", output->resource()});
             } else {
                 core::error_t failure = core::error_t::no_error();
@@ -320,7 +320,7 @@ namespace components::vector::operations {
                         }
                         default:
                             failure = core::error_t(
-                                core::error_code_t::invalid_parameter,
+                                core::error_code_t::internal_error,
                                 std::pmr::string{"compare_rows encountered unsupported operation", output->resource()});
                             return;
                     }
@@ -373,7 +373,7 @@ namespace components::vector::operations {
                                           const bool* active) {
             if constexpr (!is_decimal_storage<T>) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"decimal_scaled_rows received non-decimal type", output->resource()});
             } else {
                 types::int128_t factor = types::POWERS_OF_TEN[scale];
@@ -388,26 +388,26 @@ namespace components::vector::operations {
                     types::int128_t scaled = 0;
                     if (code == operator_code::multiply) {
                         if (multiplication_overflows(lhs, rhs)) {
-                            failure = core::error_t(core::error_code_t::invalid_parameter,
+                            failure = core::error_t(core::error_code_t::numeric_value_out_of_range,
                                                     std::pmr::string{"decimal overflow", output->resource()});
                             return;
                         }
                         scaled = lhs * rhs / factor;
                     } else {
                         if (rhs == 0) {
-                            failure = core::error_t(core::error_code_t::invalid_parameter,
+                            failure = core::error_t(core::error_code_t::division_by_zero,
                                                     std::pmr::string{"division by zero", output->resource()});
                             return;
                         }
                         if (multiplication_overflows(lhs, factor)) {
-                            failure = core::error_t(core::error_code_t::invalid_parameter,
+                            failure = core::error_t(core::error_code_t::numeric_value_out_of_range,
                                                     std::pmr::string{"decimal overflow", output->resource()});
                             return;
                         }
                         scaled = lhs * factor / rhs;
                     }
                     if (scaled >= limit || scaled <= -limit) {
-                        failure = core::error_t(core::error_code_t::invalid_parameter,
+                        failure = core::error_t(core::error_code_t::numeric_value_out_of_range,
                                                 std::pmr::string{"decimal overflow", output->resource()});
                         return;
                     }
@@ -527,7 +527,7 @@ namespace components::vector::operations {
                 assert((interval_left || rhs == lt::INTERVAL) && "scaling needs an interval operand");
                 if (code == operator_code::divide && !interval_left) {
                     return core::error_t(
-                        core::error_code_t::invalid_parameter,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
                 }
                 const vector_t& interval = interval_left ? left : right;
@@ -541,7 +541,7 @@ namespace components::vector::operations {
 
             if (!is_add && code != operator_code::subtract) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
             }
 
@@ -607,7 +607,7 @@ namespace components::vector::operations {
 
             if (is_add) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
             }
 
@@ -639,7 +639,7 @@ namespace components::vector::operations {
                 });
             }
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"temporal_arithmetic encountered unsupported type", output->resource()});
         }
 
@@ -785,7 +785,7 @@ namespace components::vector::operations {
                         write<bool>(output, row, ordering != std::partial_ordering::less);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::invalid_parameter,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"ordered_compare encountered unsupported operator code",
                                                               output->resource()});
                 }
@@ -812,7 +812,7 @@ namespace components::vector::operations {
                     return arithmetic_rows<T>(code, left, right, output, count, active);
                 } else {
                     return core::error_t(
-                        core::error_code_t::invalid_parameter,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"binary operator encountered unsupported operation", output->resource()});
                 }
             }
@@ -833,7 +833,7 @@ namespace components::vector::operations {
                     return core::error_t::no_error();
                 } else {
                     return core::error_t(
-                        core::error_code_t::invalid_parameter,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
                 }
             }
@@ -854,7 +854,7 @@ namespace components::vector::operations {
                     return core::error_t::no_error();
                 } else {
                     return core::error_t(
-                        core::error_code_t::invalid_parameter,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
                 }
             }
@@ -964,7 +964,7 @@ namespace components::vector::operations {
                         return ordered_compare(code, left, right, output, count, active_rows, compare_struct_rows);
                     default:
                         return core::error_t(
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::internal_error,
                             std::pmr::string{"comparison is not defined for this row-shaped type", output->resource()});
                 }
             }
@@ -978,14 +978,14 @@ namespace components::vector::operations {
         // If casts were applied correctly, left and right should be the same
         if (left.type().to_physical_type() != right.type().to_physical_type()) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"operator operands must be pre-cast to a common type", output->resource()});
         }
         if (is_decimal(left) && (code == operator_code::multiply || code == operator_code::divide)) {
             if (!is_decimal(right) || !is_decimal(*output) || decimal_scale(left) != decimal_scale(right) ||
                 decimal_scale(left) != decimal_scale(*output)) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"decimal operands and result must share a scale", output->resource()});
             }
             return types::simple_physical_type_switch<decimal_dispatch>(left.type().to_physical_type(),
@@ -1030,7 +1030,7 @@ namespace components::vector::operations {
             case operator_code::logical_not:
                 if (operand.type().to_physical_type() != types::physical_type::BOOL) {
                     return core::error_t(
-                        core::error_code_t::invalid_parameter,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"unary operator encountered unsupported type", output->resource()});
                 }
                 for (uint64_t row = 0; row < count; row++) {
@@ -1056,7 +1056,7 @@ namespace components::vector::operations {
                                                                             count);
             default:
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"unary operator encountered unsupported operation", output->resource()});
         }
     }

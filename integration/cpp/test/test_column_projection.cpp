@@ -33,7 +33,7 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);")->is_success());
     REQUIRE(exec(dispatcher,
                  "INSERT INTO db.wide (a, b, c, d, e) VALUES "
@@ -120,7 +120,7 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(
         exec(dispatcher, "CREATE TABLE db.orders (oid bigint, cid bigint, amount bigint, note string);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.customers (cid bigint, name string, city string, tier string);")
@@ -179,7 +179,7 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -244,7 +244,7 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -308,7 +308,7 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -371,7 +371,7 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -473,7 +473,7 @@ TEST_CASE("integration::cpp::column_projection::three_table_join") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -532,7 +532,7 @@ TEST_CASE("integration::cpp::column_projection::subquery") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -566,7 +566,7 @@ TEST_CASE("integration::cpp::column_projection::case_when") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -600,7 +600,7 @@ TEST_CASE("integration::cpp::column_projection::order_by_non_select") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -632,7 +632,7 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE db;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA db;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -667,7 +667,7 @@ TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_gua
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);")->is_success());
     REQUIRE(exec(dispatcher,
                  "INSERT INTO db.wide (a, b, c, d, e) VALUES "
@@ -675,7 +675,7 @@ TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_gua
                  "(2, 20, 200, 2000, 20000);")
                 ->is_success());
 
-    INFO("pruned filtered scan (full_scan) + WHERE filtering everything + scalar aggregate");
+    INFO("pruned scan with the disk's WHERE + WHERE filtering everything + scalar aggregate");
     {
         // projected_cols = {c, e}; the COUNT arg reads e at position 1 of the 0-row guard
         // chunk the drained scan emits.

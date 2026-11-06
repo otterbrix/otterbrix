@@ -38,7 +38,7 @@ TEST_CASE("integration::cpp::create_table_duplicate::second_create_is_refused") 
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dup;");
+    run_ok(d, "CREATE SCHEMA dup;");
     run_ok(d, "CREATE TABLE dup.t (id bigint);");
 
     auto again = exec(d, "CREATE TABLE dup.t (id bigint);");
@@ -54,7 +54,7 @@ TEST_CASE("integration::cpp::create_table_duplicate::second_create_with_other_co
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dup;");
+    run_ok(d, "CREATE SCHEMA dup;");
     run_ok(d, "CREATE TABLE dup.t (id bigint);");
 
     auto again = exec(d, "CREATE TABLE dup.t (other text, third bigint);");
@@ -72,7 +72,7 @@ TEST_CASE("integration::cpp::create_table_duplicate::second_create_of_a_computin
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dup;");
+    run_ok(d, "CREATE SCHEMA dup;");
     run_ok(d, "CREATE TABLE dup.g();");
 
     auto again = exec(d, "CREATE TABLE dup.g();");
@@ -87,7 +87,7 @@ TEST_CASE("integration::cpp::create_table_duplicate::inline_constraint_form_is_r
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dup;");
+    run_ok(d, "CREATE SCHEMA dup;");
     run_ok(d, "CREATE TABLE dup.k (id bigint PRIMARY KEY);");
 
     auto again = exec(d, "CREATE TABLE dup.k (id bigint PRIMARY KEY);");
@@ -100,7 +100,7 @@ TEST_CASE("integration::cpp::create_table_duplicate::if_not_exists_is_still_a_no
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dup;");
+    run_ok(d, "CREATE SCHEMA dup;");
     run_ok(d, "CREATE TABLE IF NOT EXISTS dup.t (id bigint);");
     run_ok(d, "INSERT INTO dup.t (id) VALUES (1);");
 
@@ -118,7 +118,7 @@ TEST_CASE("integration::cpp::create_table_duplicate::second_create_after_restart
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        run_ok(d, "CREATE DATABASE dup;");
+        run_ok(d, "CREATE SCHEMA dup;");
         run_ok(d, "CREATE TABLE dup.t (id bigint);");
         run_ok(d, "INSERT INTO dup.t (id) VALUES (1);");
     }

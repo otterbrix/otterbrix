@@ -11,7 +11,7 @@
 #include <thread>
 #include <vector>
 
-static const core::dbname_t lifecycle_database_name{"lifecycledb"};
+static const core::schema_t lifecycle_database_name{"lifecycledb"};
 static const core::relname_t lifecycle_collection_one{"lifecycle_col_one"};
 static const core::relname_t lifecycle_collection_two{"lifecycle_col_two"};
 
@@ -38,7 +38,7 @@ namespace {
             return engine_->dispatcher()->execute_sql(otterbrix::session_id_t(), query);
         }
 
-        components::cursor::cursor_t_ptr create_collection(const core::dbname_t& database,
+        components::cursor::cursor_t_ptr create_collection(const core::schema_t& database,
                                                            const core::relname_t& collection,
                                                            components::catalog::oid_t& out_oid) {
             out_oid = components::catalog::INVALID_OID;
@@ -83,7 +83,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
     INFO("create database via execute_sql");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + lifecycle_database_name.t + ";");
+        auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA " + lifecycle_database_name.t + ";");
         REQUIRE(cur->is_success());
         REQUIRE(inst->use_count() == 2u);
     }
@@ -173,7 +173,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + lifecycle_database_name.t + ";");
+            auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA " + lifecycle_database_name.t + ";");
             ok[op] = cur->is_success();
             counts[op] = inst->use_count();
             ++op;
@@ -259,7 +259,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
         std::thread client([&]() {
             size_t op = 0;
             {
-                auto cur = wrapper.execute_sql("CREATE DATABASE " + lifecycle_database_name.t + ";");
+                auto cur = wrapper.execute_sql("CREATE SCHEMA " + lifecycle_database_name.t + ";");
                 ok[op] = cur->is_success();
                 counts[op] = wrapper.engine_use_count();
                 ++op;
@@ -341,7 +341,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     constexpr int num_iterations = 25;
     constexpr int preload_batches = 20;
     constexpr int batch_size = 100;
-    static const core::dbname_t eviction_database_name{"evictiondb"};
+    static const core::schema_t eviction_database_name{"evictiondb"};
 
     // Serializes only session construction: duplicate ids would collide because begin_transaction is
     // idempotent per session.
@@ -372,7 +372,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + eviction_database_name.t + ";");
+            auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA " + eviction_database_name.t + ";");
             REQUIRE(cur->is_success());
         }
         for (size_t id = 0; id < num_collections; ++id) {
@@ -500,7 +500,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_tear
         auto inst = test_make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
 
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE leakreprodb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE SCHEMA leakreprodb;")->is_success());
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE leakreprodb.t (g bigint, v bigint);")
                     ->is_success());
         REQUIRE(dispatcher
@@ -523,7 +523,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_n
 
         auto inst = test_make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE stressdb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE SCHEMA stressdb;")->is_success());
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE stressdb.t (g bigint, v bigint);")
                     ->is_success());
         REQUIRE(

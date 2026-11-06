@@ -45,7 +45,7 @@ namespace {
     constexpr unsigned kRows = 20;
 
     void create_and_seed(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE oiddb;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA oiddb;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE oiddb.ta (id bigint, ka bigint, kb bigint);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE oiddb.tb (id bigint, ka bigint, kb bigint);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE INDEX idx_ta_ka ON oiddb.ta (ka);")->is_success());

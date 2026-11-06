@@ -4,6 +4,9 @@
 #include <core/pmr.hpp>
 #include <services/dispatcher/resolve_function.hpp>
 
+#include <algorithm>
+#include <span>
+
 using namespace services::dispatcher;
 using components::types::complex_logical_type;
 using components::types::logical_type;
@@ -81,7 +84,8 @@ namespace {
                                                                             "pick",
                                                                             arity::binary(),
                                                                             function_doc{resource()},
-                                                                            overloads.size());
+                                                                            overloads.size(),
+                                                                            volatility_t::immutable);
         for (const auto& [first, second] : overloads) {
             kernel_signature_t signature(function_type_t::vector,
                                          {parameter_type::exact(first), parameter_type::exact(second)},
@@ -93,11 +97,11 @@ namespace {
         auto arguments = args(types);
         return resolve_function(resource(),
                                 casts(),
-                                components::graph_execution_context{},
                                 registry,
                                 function_qualified_name_t{core::function_name_t{"pick"}},
                                 arguments,
                                 any_kind(),
+                                components::compute::function_scope_t{},
                                 {});
     }
 
@@ -106,11 +110,11 @@ namespace {
         auto arguments = args(types);
         return resolve_function(resource(),
                                 casts(),
-                                components::graph_execution_context{},
                                 functions(),
                                 function_qualified_name_t{core::function_name_t{std::string{name}}},
                                 arguments,
                                 any_kind(),
+                                components::compute::function_scope_t{},
                                 {});
     }
 
@@ -199,11 +203,11 @@ TEST_CASE("dispatcher::resolve_function: the function decides its own return typ
     std::pmr::vector<complex_logical_type> none(resource());
     auto star = resolve_function(resource(),
                                  casts(),
-                                 components::graph_execution_context{},
                                  functions(),
                                  function_qualified_name_t{core::function_name_t{"count"}},
                                  none,
                                  any_kind(),
+                                 components::compute::function_scope_t{},
                                  {});
     REQUIRE_FALSE(star.has_error());
     REQUIRE(star.value().result.type() == logical_type::UBIGINT);
@@ -216,7 +220,7 @@ TEST_CASE("dispatcher::resolve_function: an unknown name and a non-viable call r
 
     auto wrong = resolve("substring", {logical_type::BIGINT, logical_type::BIGINT});
     REQUIRE(wrong.has_error());
-    REQUIRE(wrong.error().type == core::error_code_t::incorrect_function_argument);
+    REQUIRE(wrong.error().type == core::error_code_t::unrecognized_function);
 }
 
 TEST_CASE("dispatcher::resolve_function: mergeable rides along from the matched function") {
@@ -234,11 +238,11 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
 
     auto resolved = resolve_function(resource(),
                                      casts(),
-                                     components::graph_execution_context{},
                                      functions(),
                                      function_qualified_name_t{core::function_name_t{"sum"}},
                                      arguments,
                                      any_kind(),
+                                     components::compute::function_scope_t{},
                                      {});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
@@ -258,42 +262,42 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
 
     auto sum_in_where = resolve_function(resource(),
                                          casts(),
-                                         components::graph_execution_context{},
                                          functions(),
                                          function_qualified_name_t{core::function_name_t{"sum"}},
                                          integer,
                                          scalar_only,
+                                         components::compute::function_scope_t{},
                                          {});
     REQUIRE(sum_in_where.has_error());
-    REQUIRE(sum_in_where.error().type == core::error_code_t::incorrect_function_argument);
+    REQUIRE(sum_in_where.error().type == core::error_code_t::grouping_error);
 
     auto length_in_aggregate = resolve_function(resource(),
                                                 casts(),
-                                                components::graph_execution_context{},
                                                 functions(),
                                                 function_qualified_name_t{core::function_name_t{"length"}},
                                                 text,
                                                 aggregate_only,
+                                                components::compute::function_scope_t{},
                                                 {});
     REQUIRE(length_in_aggregate.has_error());
 
     // Each is fine in the clause that accepts it.
     REQUIRE_FALSE(resolve_function(resource(),
                                    casts(),
-                                   components::graph_execution_context{},
                                    functions(),
                                    function_qualified_name_t{core::function_name_t{"sum"}},
                                    integer,
                                    aggregate_only,
+                                   components::compute::function_scope_t{},
                                    {})
                       .has_error());
     REQUIRE_FALSE(resolve_function(resource(),
                                    casts(),
-                                   components::graph_execution_context{},
                                    functions(),
                                    function_qualified_name_t{core::function_name_t{"length"}},
                                    text,
                                    scalar_only,
+                                   components::compute::function_scope_t{},
                                    {})
                       .has_error());
 }
@@ -318,11 +322,11 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
     decimal_arg.emplace_back(decimal);
     auto scaled = resolve_function(resource(),
                                    casts(),
-                                   components::graph_execution_context{},
                                    functions(),
                                    function_qualified_name_t{core::function_name_t{"abs"}},
                                    decimal_arg,
                                    any_kind(),
+                                   components::compute::function_scope_t{},
                                    {});
     REQUIRE_FALSE(scaled.has_error());
     REQUIRE_FALSE(scaled.value().arguments[0].cast);
@@ -347,7 +351,7 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
 }
 
 // An untyped literal fits exactly only a STRING_LITERAL parameter; which other type its text is meant as is a guess,
-// so it never ranks overloads -- the typed arguments do, or the call is ambiguous.
+// so it never ranks overloads -- the typed arguments do; a tie left goes to the text overload, else is ambiguous.
 TEST_CASE("dispatcher::resolve_function: an untyped literal does not choose between overloads") {
     constexpr auto integer = logical_type::INTEGER;
     constexpr auto literal = logical_type::STRING_LITERAL;
@@ -357,9 +361,10 @@ TEST_CASE("dispatcher::resolve_function: an untyped literal does not choose betw
             resolve_overloaded({{integer, integer}, {integer, logical_type::FLOAT}}, {integer, literal}).has_error());
     }
 
-    SECTION("a text target is no closer than a numeric one") {
-        REQUIRE(
-            resolve_overloaded({{integer, integer}, {integer, logical_type::TEXT}}, {integer, literal}).has_error());
+    SECTION("a tie goes to the text target") {
+        auto resolved = resolve_overloaded({{integer, integer}, {integer, logical_type::TEXT}}, {integer, literal});
+        REQUIRE_FALSE(resolved.has_error());
+        REQUIRE(resolved.value().arguments[1].target.type() == logical_type::TEXT);
     }
 
     SECTION("a literal parameter takes it as written") {
@@ -383,4 +388,51 @@ TEST_CASE("dispatcher::resolve_function: an untyped literal does not choose betw
         REQUIRE(resolved.value().arguments[0].target.type() == integer);
         REQUIRE(resolved.value().arguments[1].target.type() == integer);
     }
+}
+
+// PostgreSQL 18 func_select_candidate: at an unknown-typed position the string category wins a tie, so
+// regexp_replace(s, p, r, NULL) is the flags form, not the start form.
+TEST_CASE("dispatcher::resolve_function: an untyped NULL breaks a tie toward the string overload") {
+    auto resolved =
+        resolve("regexp_replace", {logical_type::TEXT, logical_type::TEXT, logical_type::TEXT, logical_type::NA});
+    INFO((resolved.has_error() ? std::string{resolved.error().what} : std::string{}));
+    REQUIRE_FALSE(resolved.has_error());
+    REQUIRE(resolved.value().arguments.size() == 4);
+    REQUIRE(resolved.value().arguments[3].target.type() == logical_type::TEXT);
+    REQUIRE(resolved.value().result.type() == logical_type::TEXT);
+
+    auto like = resolve("regexp_like", {logical_type::TEXT, logical_type::TEXT, logical_type::NA});
+    INFO((like.has_error() ? std::string{like.error().what} : std::string{}));
+    REQUIRE_FALSE(like.has_error());
+    REQUIRE(like.value().arguments[2].target.type() == logical_type::TEXT);
+}
+
+TEST_CASE("dispatcher::resolve_function: an internal builtin resolves only for a call that pins it") {
+    const auto* row = std::find_if(components::compute::DEFAULT_FUNCTIONS.begin(),
+                                   components::compute::DEFAULT_FUNCTIONS.end(),
+                                   [](const auto& entry) { return entry.first == "like_match"; });
+    REQUIRE(row != components::compute::DEFAULT_FUNCTIONS.end());
+
+    const std::initializer_list<logical_type> mode_call{logical_type::TEXT, logical_type::TEXT, logical_type::UTINYINT};
+    auto unpinned = resolve("like_match", mode_call);
+    REQUIRE(unpinned.has_error());
+    REQUIRE(unpinned.error().type == core::error_code_t::unrecognized_function);
+
+    auto arguments = args(mode_call);
+    const components::compute::function_pin_t pin{row->second, 0};
+    auto pinned = resolve_function(resource(),
+                                   casts(),
+                                   functions(),
+                                   function_qualified_name_t{core::function_name_t{"like_match"}},
+                                   arguments,
+                                   any_kind(),
+                                   components::compute::function_scope_t{},
+                                   std::span<const components::compute::function_pin_t>{&pin, 1});
+    INFO((pinned.has_error() ? std::string{pinned.error().what} : std::string{}));
+    REQUIRE_FALSE(pinned.has_error());
+    REQUIRE(pinned.value().pin.uid == row->second);
+    REQUIRE(pinned.value().result.type() == logical_type::BOOLEAN);
+
+    auto mode_through_regexp_like = resolve("regexp_like", mode_call);
+    REQUIRE(mode_through_regexp_like.has_error());
 }

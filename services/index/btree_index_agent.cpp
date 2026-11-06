@@ -159,7 +159,7 @@ namespace services::index {
         trace(log_, "btree_index_agent_t::clear, session: {}", session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::clear: the index has been dropped", resource()}};
         }
         auto clear_error = store_.clear();
@@ -177,7 +177,7 @@ namespace services::index {
               session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::stage_inserts: the index has been dropped", resource()}};
         }
         append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
@@ -193,7 +193,7 @@ namespace services::index {
               session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::stage_deletes: the index has been dropped", resource()}};
         }
         append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
@@ -241,7 +241,7 @@ namespace services::index {
               session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::commit_inserts: the index has been dropped", resource()}};
         }
         co_return publish_buckets(pending_inserts_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
@@ -258,7 +258,7 @@ namespace services::index {
               session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::commit_deletes: the index has been dropped", resource()}};
         }
         co_return publish_buckets(pending_deletes_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
@@ -271,7 +271,7 @@ namespace services::index {
         trace(log_, "btree_index_agent_t::revert_inserts, txn_id: {}, session: {}", txn_id, session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::revert_inserts: the index has been dropped", resource()}};
         }
         pending_inserts_.erase(txn_id);
@@ -283,7 +283,7 @@ namespace services::index {
         trace(log_, "btree_index_agent_t::revert_deletes, txn_id: {}, session: {}", txn_id, session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::revert_deletes: the index has been dropped", resource()}};
         }
         pending_deletes_.erase(txn_id);
@@ -294,11 +294,12 @@ namespace services::index {
     btree_index_agent_t::read_rows(session_id_t session,
                                    components::expressions::compare_type compare,
                                    components::vector::vector_t key,
-                                   uint64_t txn_id) {
+                                   uint64_t txn_id,
+                                   bool hides_own_deletes) {
         trace(log_, "btree_index_agent_t::read_rows, session: {}", session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::read_rows: the index has been dropped", resource()}};
         }
         using components::expressions::compare_type;
@@ -329,7 +330,7 @@ namespace services::index {
             probe = decode_as_tree_key(encoded_probe, staged_ok);
             if (!staged_ok) {
                 co_return core::error_t{
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"btree_index_agent_t::read_rows: the key type has no ordered encoding",
                                      resource()}};
             }
@@ -400,7 +401,7 @@ namespace services::index {
         if (auto merge_error = drop_bucket(0); merge_error.contains_error()) {
             co_return merge_error;
         }
-        if (txn_id != 0) {
+        if (txn_id != 0 && hides_own_deletes) {
             if (auto merge_error = drop_bucket(txn_id); merge_error.contains_error()) {
                 co_return merge_error;
             }

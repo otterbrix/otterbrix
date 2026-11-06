@@ -25,7 +25,7 @@ TEST_CASE("integration::cpp::test_gather_string_lifetime::gather_leaves_no_borro
     constexpr int kRows = 50000;
     constexpr int kBatch = 1000;
 
-    REQUIRE(exec("CREATE DATABASE g;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA g;")->is_success());
     REQUIRE(exec("CREATE TABLE g.t (id bigint, tag text, v bigint);")->is_success());
     for (int base = 0; base < kRows; base += kBatch) {
         std::string sql = "INSERT INTO g.t (id, tag, v) VALUES ";

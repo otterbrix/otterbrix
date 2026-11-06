@@ -19,7 +19,7 @@ namespace {
         INFO(sql);
         REQUIRE(cur);
         REQUIRE(cur->is_error());
-        CHECK(cur->get_error().type == core::error_code_t::index_create_fail);
+        CHECK(cur->get_error().type == core::error_code_t::undefined_object);
     }
 
 } // namespace
@@ -29,7 +29,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE g;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA g;")->is_success());
     // INTERVAL/TIMETZ are physically STRUCT; HUGEINT/UHUGEINT are 16-byte ints the codec has no case for.
     REQUIRE(exec(d, "CREATE TABLE g.t (id BIGINT, iv INTERVAL, ttz TIMETZ, h HUGEINT, uh UHUGEINT);")->is_success());
 
@@ -51,7 +51,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_a
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE g;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA g;")->is_success());
     REQUIRE(exec(d,
                  "CREATE TABLE g.t (id BIGINT, b BOOLEAN, i INT, s SMALLINT, f FLOAT, dd DOUBLE, "
                  "txt TEXT, d DATE, tm TIME, ts TIMESTAMP, tstz TIMESTAMPTZ);")
@@ -71,7 +71,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_t
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE g;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA g;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE g.ti (id BIGINT, d DATE, tm TIME, ts TIMESTAMP);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE g.tp (id BIGINT, d DATE, tm TIME, ts TIMESTAMP);")->is_success());
     REQUIRE(exec(d, "CREATE INDEX i_d ON g.ti (d);")->is_success());
@@ -117,7 +117,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE g;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA g;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE g.t (id BIGINT, n DECIMAL(10,2));")->is_success());
     REQUIRE(exec(d, "CREATE TABLE g.p (id BIGINT, n DECIMAL(10,2));")->is_success());
 
@@ -145,7 +145,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_index_survives_r
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE g;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA g;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE g.t (id BIGINT, dt DATE, ts TIMESTAMP);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX i_dt ON g.t (dt);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX i_ts ON g.t (ts);")->is_success());

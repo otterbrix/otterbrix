@@ -26,7 +26,9 @@ namespace components {
         {
             added_at,
             dropped_at,
-            storage_rename
+            storage_rename,
+            // ALTER's PRIMARY KEY made the column NOT NULL: a stamp on the storage's column, nothing in pg_attribute.
+            not_null_at
         };
 
         // A pair, not a bare type: PG11+ ADD COLUMN DEFAULT doesn't rewrite the table, so old rows need both.
@@ -49,7 +51,8 @@ namespace components {
         added_column_type_t added_column_type;
 
         [[nodiscard]] catalog::oid_t column_stamped_table() const noexcept {
-            bool stamps_a_column = kind == kind_t::added_at || kind == kind_t::dropped_at;
+            bool stamps_a_column =
+                kind == kind_t::added_at || kind == kind_t::dropped_at || kind == kind_t::not_null_at;
             return stamps_a_column ? release_table_oid : catalog::INVALID_OID;
         }
     };

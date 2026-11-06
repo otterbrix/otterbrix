@@ -45,7 +45,7 @@ namespace {
         REQUIRE_FALSE(answer.has_error());                                                                             \
         return answer.value();                                                                                         \
     };                                                                                                                 \
-    REQUIRE(exec("CREATE DATABASE i;")->is_success())
+    REQUIRE(exec("CREATE SCHEMA i;")->is_success())
 
 TEST_CASE("integration::cpp::test_inline_constraints::column_primary_key", "[inlinecons]") {
     MAKE_ENV("col_pk");

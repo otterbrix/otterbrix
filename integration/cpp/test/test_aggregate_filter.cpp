@@ -45,7 +45,7 @@ TEST_CASE("integration::cpp::aggregate_filter::scalar") {
     auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/scalar"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT, g INT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x, g) VALUES (1,10,0),(2,20,1),(3,30,0),(4,NULL,1),(5,40,0);"));
 
@@ -65,7 +65,7 @@ TEST_CASE("integration::cpp::aggregate_filter::three_valued") {
     auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/tvl"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (1,10),(2,NULL),(3,30);"));
 
@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::aggregate_filter::first_row_null") {
     auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/frn"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT, g INT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x, g) VALUES (1,NULL,0),(2,20,0),(3,NULL,1),(4,40,0);"));
 
@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::aggregate_filter::group_by") {
     auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/group"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (g INT, x BIGINT, flag INT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (g, x, flag) VALUES (1,10,1),(1,20,0),(2,30,1),(2,40,1);"));
 

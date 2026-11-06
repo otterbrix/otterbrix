@@ -25,7 +25,7 @@ namespace {
     }
 
     void make_table(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& rows) {
-        run_ok(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_ok(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_ok(dispatcher, "CREATE TABLE TestDatabase.t (a bigint);");
         run_ok(dispatcher, "INSERT INTO TestDatabase.t (a) VALUES " + rows + ";");
     }
@@ -421,7 +421,7 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        run_ok(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_ok(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_ok(dispatcher, "CREATE TABLE TestDatabase.t (id bigint, name text);");
         run_ok(dispatcher, "INSERT INTO TestDatabase.t (id, name) VALUES (1, 'one');");
         run_ok(dispatcher, "ALTER TABLE TestDatabase.t ADD COLUMN a bigint;");
@@ -459,7 +459,7 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
             {
                 test_spaces space(config);
                 auto* dispatcher = space.dispatcher();
-                run_ok(dispatcher, "CREATE DATABASE TestDatabase;");
+                run_ok(dispatcher, "CREATE SCHEMA TestDatabase;");
                 run_ok(dispatcher, "CREATE TABLE TestDatabase.t (a bigint, b bigint);");
                 run_ok(dispatcher, "INSERT INTO TestDatabase.t (a, b) VALUES (1, 10);");
                 run_ok(dispatcher, "CHECKPOINT;");

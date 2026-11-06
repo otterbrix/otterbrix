@@ -37,8 +37,11 @@ namespace components::catalog {
     // calls return a zero-cost span view.
     std::span<const system_table_def_t> all_system_tables();
 
-    // System tables are addressed by oid, never by name; nullptr means the OID isn't a system table.
+    // System tables are addressed by oid; nullptr means the OID isn't a system table.
     const system_table_def_t* find_system_table(oid_t relation_oid);
+
+    // The system table a bare name finds in pg_catalog (name resolution only); nullptr when none is called so.
+    const system_table_def_t* find_system_table_by_name(std::string_view name);
 
     std::pmr::vector<oid_t> system_column_attoids(std::pmr::memory_resource* resource, oid_t relation_oid);
 

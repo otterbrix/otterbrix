@@ -5,15 +5,17 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/log/test/test_log.hpp>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <sstream>
 #include <thread>
 
 using namespace components::types;
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 
 #define CHECK_FIND_SQL(QUERY, COUNT)                                                                                   \
     do {                                                                                                               \
@@ -34,7 +36,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -99,7 +101,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -152,7 +154,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -219,7 +221,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -291,7 +293,7 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -356,7 +358,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -411,7 +413,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -489,7 +491,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -542,7 +544,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -614,7 +616,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -778,7 +780,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -935,7 +937,7 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1005,7 +1007,7 @@ TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_r
         auto* dispatcher = space.dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1047,7 +1049,7 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1120,7 +1122,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1175,7 +1177,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1249,7 +1251,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1317,7 +1319,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1396,7 +1398,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1481,7 +1483,7 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1557,7 +1559,7 @@ TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1614,7 +1616,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1663,7 +1665,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1745,7 +1747,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1820,7 +1822,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -1917,7 +1919,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+        dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
     }
 
     {
@@ -1995,6 +1997,147 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 2);
 }
 
+// A crash between a DROP's catalog commit and its file removal leaves the table directory behind, with a
+// `.wal_id.tmp` if a checkpoint was staging its sidecar. The reopen rebuilds the dropped entry from pg_class
+// and the first commit's horizon must sweep the whole directory, staging sidecar included.
+TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_after_reopen_removes_a_staged_sidecar") {
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_drop_gc_reopen_src"));
+    test_clear_directory(config);
+    const auto crash_dir = integration_fixture_path("test_persistence/disk_drop_gc_reopen_crash");
+
+    std::filesystem::path victim_relative;
+    INFO("phase 1: a checkpointed table is dropped; the crash image is taken before any later checkpoint");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return dispatcher->execute_sql(session, sql);
+        };
+        REQUIRE(run("CREATE SCHEMA " + database_name.t + ";")->is_success());
+        REQUIRE(run("CREATE TABLE TestDatabase.GcSurvivor (val bigint);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        const auto baseline_files = scan_otbx_files(config.disk.path);
+
+        REQUIRE(run("CREATE TABLE TestDatabase.GcVictim (val bigint);")->is_success());
+        REQUIRE(run("INSERT INTO TestDatabase.GcVictim (val) VALUES (1), (2);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        for (const auto& f : scan_otbx_files(config.disk.path)) {
+            if (baseline_files.find(f) == baseline_files.end()) {
+                victim_relative = std::filesystem::relative(f.parent_path(), config.main_path);
+            }
+        }
+        REQUIRE_FALSE(victim_relative.empty());
+
+        REQUIRE(run("DROP TABLE TestDatabase.GcVictim;")->is_success());
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
+    }
+
+    auto crash_config = test_create_config(crash_dir);
+    const auto victim_dir = crash_config.main_path / victim_relative;
+    INFO("crash leftovers: the table directory with both checkpoint sidecars, the .otbx already gone");
+    REQUIRE_FALSE(std::filesystem::exists(victim_dir));
+    std::filesystem::create_directories(victim_dir);
+    for (const char* name : {"table.otbx.wal_id", "table.otbx.wal_id.tmp"}) {
+        std::ofstream out(victim_dir / name, std::ios::binary);
+        out << "12345678";
+    }
+
+    INFO("phase 2: reopen the crash image; one commit advances the horizon past the rebuilt dropped entry");
+    {
+        test_spaces space(crash_config);
+        auto* dispatcher = space.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.GcSurvivor (val) VALUES (7);")
+                        ->is_success());
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::filesystem::exists(victim_dir) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        INFO("victim directory: " << victim_dir.string());
+        CHECK_FALSE(std::filesystem::exists(victim_dir));
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 1);
+    }
+}
+
+// A crash between a DROP's catalog commit and its file removal leaves the dropped table's .otbx on disk. The
+// reopen must not take that file into a disk agent's slice: pg_class says the table is gone.
+TEST_CASE("integration::cpp::test_persistence::a_dropped_tables_file_left_by_a_crash_is_not_loaded") {
+    auto config = test_create_config(integration_fixture_path("test_persistence/dropped_file_src"));
+    test_clear_directory(config);
+    const auto crash_dir = integration_fixture_path("test_persistence/dropped_file_crash");
+    const auto saved_dir = integration_fixture_path("test_persistence/dropped_file_saved");
+
+    std::filesystem::path victim_relative;
+    INFO("phase 1: a checkpointed table's files are saved, then it is dropped and the crash image is taken");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return dispatcher->execute_sql(session, sql);
+        };
+        REQUIRE(run("CREATE SCHEMA " + database_name.t + ";")->is_success());
+        REQUIRE(run("CREATE TABLE TestDatabase.Survivor (val bigint);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        const auto baseline_files = scan_otbx_files(config.disk.path);
+
+        REQUIRE(run("CREATE TABLE TestDatabase.Victim (val bigint);")->is_success());
+        REQUIRE(run("INSERT INTO TestDatabase.Victim (val) VALUES (1), (2);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        for (const auto& f : scan_otbx_files(config.disk.path)) {
+            if (baseline_files.find(f) == baseline_files.end()) {
+                victim_relative = std::filesystem::relative(f.parent_path(), config.main_path);
+            }
+        }
+        REQUIRE_FALSE(victim_relative.empty());
+        test_helpers::copy_crash_image(config.main_path / victim_relative, saved_dir);
+
+        REQUIRE(run("DROP TABLE TestDatabase.Victim;")->is_success());
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
+    }
+
+    auto crash_config = test_create_config(crash_dir);
+    crash_config.log.level = log_t::level::warn;
+    std::filesystem::remove_all(crash_config.log.path);
+    const auto victim_dir = crash_config.main_path / victim_relative;
+    INFO("crash leftovers: the dropped table's directory exactly as its last checkpoint wrote it");
+    test_helpers::copy_crash_image(saved_dir, victim_dir);
+
+    INFO("phase 2: reopen the crash image");
+    {
+        test_spaces space(crash_config);
+        auto* dispatcher = space.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.Survivor (val) VALUES (7);")->is_success());
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::filesystem::exists(victim_dir) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        CHECK_FALSE(std::filesystem::exists(victim_dir));
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+        }
+    }
+
+    INFO("a loaded phantom would be checkpointed into its swept directory and warn every round");
+    std::istringstream lines(log_text(crash_config.log.path));
+    std::size_t mentions = 0;
+    for (std::string line; std::getline(lines, line);) {
+        if (line.find(victim_dir.string()) != std::string::npos) {
+            ++mentions;
+            UNSCOPED_INFO(line);
+        }
+    }
+    CHECK(mentions == 0);
+}
+
 // A DROP TABLE inside an explicit transaction is revertible until COMMIT: the catalog delete is
 // MVCC-visible to the dropping session (self-write) but the storage drop is deferred to the
 // post-publish commit tail, so ROLLBACK leaves the file untouched and only COMMIT reclaims it.
@@ -2009,7 +2152,7 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         baseline_files = scan_otbx_files(config.disk.path);
         {
@@ -2116,7 +2259,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -2210,7 +2353,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2268,7 +2411,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2352,7 +2495,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2406,7 +2549,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2472,7 +2615,7 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2540,26 +2683,26 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
     }
 }
 
-// SET TIMEZONE persists via pg_settings, refreshed into default_tz_cat_ on restart; not
-// queryable via SELECT, so this only characterizes that the write survives restart and stays usable.
+// ALTER SYSTEM SET timezone persists via pg_settings, read back into the dispatcher's defaults on restart; this only
+// characterizes that the write survives restart and SET stays usable.
 TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/set_timezone_survives_restart"));
     test_clear_directory(config);
 
-    INFO("phase 1: SET TIMEZONE, then create + populate a table");
+    INFO("phase 1: ALTER SYSTEM SET timezone, then create + populate a table");
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "SET TIMEZONE TO 'Asia/Tokyo';");
+            auto cur = dispatcher->execute_sql(session, "ALTER SYSTEM SET timezone TO 'Asia/Tokyo';");
             REQUIRE(cur->is_success());
         }
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {
@@ -2617,7 +2760,7 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2693,7 +2836,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2762,7 +2905,7 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2857,7 +3000,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();

@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -12,7 +13,7 @@ using namespace components::sql::transform;
 // to the delete consumer to inspect delete_t shape.
 #define TEST_SIMPLE_DELETE(QUERY, RESULT, PARAMS)                                                                      \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         auto result = ([](auto _w) {                                                                                   \
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \

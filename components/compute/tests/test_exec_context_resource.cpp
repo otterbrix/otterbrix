@@ -40,7 +40,8 @@ TEST_CASE("components::compute::exec_context::executing_a_function_never_touches
                                                                   "ctx_probe",
                                                                   arity::unary(),
                                                                   function_doc{&resource},
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});

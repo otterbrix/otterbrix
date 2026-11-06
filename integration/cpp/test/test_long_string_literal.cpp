@@ -34,7 +34,7 @@ TEST_CASE("integration::cpp::long_string_literal::round_trips_whole") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA d;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT, s TEXT);")->is_success());
 
     SECTION("stored and read back") {

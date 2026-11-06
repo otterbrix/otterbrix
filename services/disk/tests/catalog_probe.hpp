@@ -79,6 +79,11 @@ namespace services::disk::test_probe {
         bool found{false};
     };
 
+    struct probe_namespace_result_t {
+        bool found{false};
+        catalog::oid_t oid{catalog::INVALID_OID};
+    };
+
     // Local key-chunk builder (mirrors components::operators::make_key_chunk): disk tests do not
     // link physical_plan/operators, so the 1-row columnar key carrier is rebuilt here. Pass string keys
     // as std::string_view.
@@ -121,6 +126,32 @@ namespace services::disk::test_probe {
         // here would make every caller below silently read as "not found", so assert loudly instead.
         assert(!r.has_error() && "catalog_probe::probe_read: keyed catalog read failed");
         return std::move(r.value());
+    }
+
+    // --- probe_namespace -----------------------------------------------------
+    // pg_namespace layout: oid(0), nspname(1), nspdatabase(2). A schema of any database, read in ctx's own
+    // transaction, as a statement reads it.
+    template<typename Fx>
+    probe_namespace_result_t probe_namespace(Fx& fx, components::execution_context_t ctx, std::string name) {
+        probe_namespace_result_t out;
+        std::pmr::vector<std::uint64_t> keys{&fx.resource};
+        keys.emplace_back(catalog::pg_namespace_col::nspname);
+        auto batches = probe_read(fx,
+                                  ctx,
+                                  catalog::well_known_oid::pg_namespace_table,
+                                  std::move(keys),
+                                  test_key_chunk(&fx.resource, std::string_view{name}),
+                                  false);
+        for (const auto& chunk : batches) {
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                if (!chunk.data[0].is_null(i)) {
+                    out.found = true;
+                    out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                    return out;
+                }
+            }
+        }
+        return out;
     }
 
     // --- probe_table ---------------------------------------------------------

@@ -11,21 +11,17 @@ namespace components::operators {
         // empty/batch/unused are never rendered) share one "?".
         std::string_view default_explain_label(operator_type type) {
             switch (type) {
-                case operator_type::full_scan:
                 case operator_type::transfer_scan:
+                case operator_type::remote_scan:
                     return "Seq Scan";
                 case operator_type::index_scan:
                     return "Index Scan";
-                case operator_type::pushed_reduce_scan:
-                    return "Pushed Aggregate Scan";
                 case operator_type::hash_join:
                     return "Hash Join";
                 case operator_type::join:
                     return "Nested Loop";
                 case operator_type::aggregate:
                     return "Aggregate";
-                case operator_type::group_merge:
-                    return "Finalize Aggregate";
                 case operator_type::sort:
                     return "Sort";
                 case operator_type::match:
@@ -66,8 +62,8 @@ namespace components::operators {
                     return "FK Cascade";
                 case operator_type::computed_field_register:
                     return "Computed Fields";
-                case operator_type::extension:
-                    return "Extension Scan";
+                case operator_type::remote_write:
+                    return "Remote Query";
                 case operator_type::unused:
                 case operator_type::empty:
                 case operator_type::sequence:
@@ -75,9 +71,11 @@ namespace components::operators {
                 case operator_type::alter_column_add:
                 case operator_type::alter_column_rename:
                 case operator_type::alter_column_drop:
+                case operator_type::alter_column_set_not_null:
                 case operator_type::dynamic_cascade_delete:
                 case operator_type::checkpoint:
                 case operator_type::set_setting:
+                case operator_type::prepared_statement:
                 case operator_type::vacuum:
                 case operator_type::register_udf:
                 case operator_type::unregister_udf:
@@ -97,6 +95,8 @@ namespace components::operators {
                 case operator_type::resolve_constraint:
                 case operator_type::allocate_oids:
                 case operator_type::batch:
+                case operator_type::portal_fetch:
+                case operator_type::portal_close:
                     break;
             }
             return "?";
@@ -191,7 +191,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     operator_t::source_next(pipeline::context_t* /*ctx*/) {
-        co_return core::error_t(core::error_code_t::physical_plan_error,
+        co_return core::error_t(core::error_code_t::internal_error,
                                 std::pmr::string{"operator is not a pipeline source", resource_});
     }
 
@@ -202,7 +202,7 @@ namespace components::operators {
 
     core::error_t
     operator_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& /*input*/, chunks_vector_t& /*out*/) {
-        return core::error_t(core::error_code_t::physical_plan_error,
+        return core::error_t(core::error_code_t::internal_error,
                              std::pmr::string{"operator is not a streaming/sink pipeline operator", resource_});
     }
 
@@ -219,5 +219,20 @@ namespace components::operators {
 
     read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : operator_t(resource, std::move(log), type) {}
+
+    std::pmr::string foreign_label(std::pmr::memory_resource* resource,
+                                   const table::storage_address_t& address,
+                                   std::string_view verb,
+                                   std::string_view name) {
+        if (address.connection().empty()) {
+            return std::pmr::string{resource};
+        }
+        std::pmr::string label{verb, resource};
+        if (!name.empty()) {
+            label += " on ";
+            label.append(name.data(), name.size());
+        }
+        return label;
+    }
 
 } // namespace components::operators

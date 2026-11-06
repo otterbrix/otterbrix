@@ -91,7 +91,7 @@ namespace components::sql::transform {
         VALUE_OR_RETURN(auto upd_limit_res, build_dml_limit(node.limitCount, plan));
         auto upd_limit = std::move(upd_limit_res);
         auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates);
-        set_target(*upd, names.left_name, target_slots::relation_with_schema);
+        set_target(*upd, names.left_name, target_slots::relation);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling
         // resolve_table splice is needed.
@@ -101,10 +101,7 @@ namespace components::sql::transform {
         if (node.returningList) {
             VALUE_OR_RETURN(upd->returning(), transform_returning(node.returningList, names, plan));
         }
-        // Catalog-resolve for the UPDATE target table, with the outgoing
-        // constraint gather so enrich reads FKs stamped by
-        // operator_resolve_constraint_t.
-        register_write_target(names.left_name, constraint_resolve_kind::outgoing);
+        register_write_target(names.left_name);
         return upd;
     }
 } // namespace components::sql::transform

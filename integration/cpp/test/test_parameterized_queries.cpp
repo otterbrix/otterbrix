@@ -55,11 +55,11 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"alltypes"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"alltypes"});
     }
 
     INFO("bind Int64 / UInt64 / Double / Str / Bool via $N");
@@ -122,11 +122,11 @@ TEST_CASE("integration::cpp::params::uint64_max") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"u"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"u"});
     }
 
     INFO("UInt64 max round-trips through a schema-free column");
@@ -162,11 +162,11 @@ TEST_CASE("integration::cpp::params::placeholders") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"place"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"place"});
     }
 
     INFO("repeated placeholder bound once fills both columns");
@@ -231,11 +231,11 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"rows"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"rows"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -334,11 +334,11 @@ TEST_CASE("integration::cpp::params::validation_errors") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"val"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"val"});
     }
 
     INFO("missing param: query has $2, only $1 bound");
@@ -377,11 +377,11 @@ TEST_CASE("integration::cpp::params::injection_quote_in_string_stored_verbatim")
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"t"});
     }
 
     const std::string nasty = "Robert'); DROP TABLE ParamDb.T;--";
@@ -412,11 +412,11 @@ TEST_CASE("integration::cpp::params::injection_or_1_eq_1_matches_no_rows") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -443,15 +443,15 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"victim"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"victim"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -494,11 +494,11 @@ TEST_CASE("integration::cpp::params::injection_int_param_type_safety") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -529,11 +529,11 @@ TEST_CASE("integration::cpp::params::injection_comment_marker_stored_literally")
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE ParamDb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA ParamDb;");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
+        test_create_collection(dispatcher, session, core::schema_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -584,7 +584,7 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
     INFO("SELECT from nonexistent table -> table_not_exists with a message naming it");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM ErrDb.NoSuchTable;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM ErrDb.public.NoSuchTable;");
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
         REQUIRE_FALSE(cur->get_error().what.empty());
@@ -596,7 +596,7 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
     INFO("aggregate over nonexistent table -> table_not_exists with a message");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT count(*) FROM ErrDb.NoSuchTable;");
+        auto cur = dispatcher->execute_sql(session, "SELECT count(*) FROM ErrDb.public.NoSuchTable;");
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
         REQUIRE_FALSE(cur->get_error().what.empty());
@@ -605,7 +605,7 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
     INFO("INSERT into nonexistent table -> table_not_exists with a message");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "INSERT INTO ErrDb.NoSuchTable (a) VALUES (1);");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO ErrDb.public.NoSuchTable (a) VALUES (1);");
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
         REQUIRE_FALSE(cur->get_error().what.empty());
@@ -614,18 +614,18 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
     INFO("CREATE INDEX on nonexistent table -> table_not_exists with a message");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "CREATE INDEX ix ON ErrDb.NoSuchTable (a);");
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX ix ON ErrDb.public.NoSuchTable (a);");
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
         REQUIRE_FALSE(cur->get_error().what.empty());
     }
 
-    INFO("aggregate over a table in a nonexistent database -> database_not_exists with a message");
+    INFO("aggregate over a table in a nonexistent database -> table_not_exists with a message");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT count(*) FROM NoSuchDb.NoSuchTable;");
+        auto cur = dispatcher->execute_sql(session, "SELECT count(*) FROM NoSuchDb.public.NoSuchTable;");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::database_not_exists);
+        REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
         REQUIRE_FALSE(cur->get_error().what.empty());
     }
 }

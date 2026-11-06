@@ -3,6 +3,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/table/storage_address.hpp>
 
 namespace components::operators {
 
@@ -12,7 +13,8 @@ namespace components::operators {
         operator_alter_column_add_t(std::pmr::memory_resource* resource,
                                     log_t log,
                                     components::catalog::oid_t table_oid,
-                                    components::table::column_definition_t column);
+                                    components::table::column_definition_t column,
+                                    components::table::storage_address_t address);
 
         // Sourceless sink leaf driven via the bottom-up needs_async_finalize pass; push()/finalize() default to no-ops.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
@@ -22,6 +24,7 @@ namespace components::operators {
     private:
         components::catalog::oid_t table_oid_;
         components::table::column_definition_t column_;
+        components::table::storage_address_t address_;
     };
 
 } // namespace components::operators

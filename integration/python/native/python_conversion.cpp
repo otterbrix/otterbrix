@@ -26,8 +26,8 @@ using components::types::logical_type;
 using components::vector::vector_t;
 
 namespace otterbrix {
-    static core::error_t make_error(std::pmr::memory_resource* r, const std::string& what) {
-        return core::error_t{core::error_code_t::other_error, std::pmr::string{what, r}};
+    static core::error_t make_error(core::error_code_t code, std::pmr::memory_resource* r, const std::string& what) {
+        return core::error_t{code, std::pmr::string{what, r}};
     }
 
     namespace {
@@ -118,7 +118,8 @@ namespace otterbrix {
             }
             auto common = c.casts().find_best_common_type(std::span<const complex_logical_type>{types});
             if (!common.has_value()) {
-                return make_error(c.resource,
+                return make_error(core::error_code_t::datatype_mismatch,
+                                  c.resource,
                                   "Cannot infer common type for elements: " + type_names(c.resource, types));
             }
             for (size_t i = 0; i < elements.size(); i++) {
@@ -290,7 +291,9 @@ namespace otterbrix {
         core::result_wrapper_t<vector_t> transform_python_integer(std::pmr::memory_resource* r, py::handle ele) {
             auto ptr = ele.ptr();
             const auto failure = [r]() {
-                return make_error(r, "An error occurred attempting to convert a python integer");
+                return make_error(core::error_code_t::numeric_value_out_of_range,
+                                  r,
+                                  "An error occurred attempting to convert a python integer");
             };
 
             int overflow;
@@ -356,14 +359,20 @@ namespace otterbrix {
                     return components::vector::make_scalar(resource, ele.cast<std::string>());
                 }
                 case python_object_type_t::ByteArray: {
-                    return make_error(resource, "OtterBrix doens\'t support byte array conversation");
+                    return make_error(core::error_code_t::unimplemented_yet,
+                                      resource,
+                                      "OtterBrix doens\'t support byte array conversation");
                 }
                 case python_object_type_t::MemoryView: {
                     py::memoryview py_view = ele.cast<py::memoryview>();
-                    return make_error(resource, "OtterBrix doens\'t support memory view conversation");
+                    return make_error(core::error_code_t::unimplemented_yet,
+                                      resource,
+                                      "OtterBrix doens\'t support memory view conversation");
                 }
                 case python_object_type_t::Bytes: {
-                    return make_error(resource, "OtterBrix doens\'t support blob conversation");
+                    return make_error(core::error_code_t::unimplemented_yet,
+                                      resource,
+                                      "OtterBrix doens\'t support blob conversation");
                 }
                 case python_object_type_t::List:
                 case python_object_type_t::Tuple:
@@ -376,11 +385,14 @@ namespace otterbrix {
                 case python_object_type_t::NdDatetime:
                     return convert(c, ele.attr("tolist")());
                 case python_object_type_t::Other:
-                    return make_error(resource,
+                    return make_error(core::error_code_t::unimplemented_yet,
+                                      resource,
                                       "No implementation: Unable to transform python value of type " +
                                           py::str(ele.get_type()).cast<std::string>() + " to OtterBrix logical_type");
                 default:
-                    return make_error(resource, "Object type recognized but not implemented!");
+                    return make_error(core::error_code_t::unimplemented_yet,
+                                      resource,
+                                      "Object type recognized but not implemented!");
             }
         }
     } // namespace

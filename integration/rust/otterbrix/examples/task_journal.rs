@@ -24,7 +24,7 @@ fn main() {
 pub fn run(data_dir: &Path) -> Result<(), Error> {
     let db = Database::open(Config::new(data_dir))?;
 
-    db.execute("CREATE DATABASE tracker;")?;
+    db.execute("CREATE SCHEMA tracker;")?;
     db.execute("CREATE TABLE tracker.tasks();")?;
 
     db.execute(

@@ -74,7 +74,7 @@ namespace {
     std::string control_query() { return "SELECT k FROM rdb.t WHERE id = " + std::to_string(kProbeId) + ";"; }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE rdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA rdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE rdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX k_idx ON rdb.t (k);")->is_success());
         for (int64_t start = 1; start <= kRows; start += 500) {

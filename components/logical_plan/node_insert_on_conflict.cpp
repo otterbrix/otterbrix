@@ -9,7 +9,7 @@ namespace components::logical_plan {
         , constraint_name(resource) {}
 
     node_insert_on_conflict_t::node_insert_on_conflict_t(std::pmr::memory_resource* resource, node_insert_ptr insert)
-        : node_t(resource, node_type::insert_on_conflict_t)
+        : node_t(resource, node_type::insert_on_conflict_t, insert->target())
         , on_conflict_(resource) {
         append_child(std::move(insert));
     }

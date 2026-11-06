@@ -1,6 +1,7 @@
 #pragma once
 
 #include "context.hpp"
+#include "parameter_types.hpp"
 #include "schema.hpp"
 
 #include <components/casts/cast_registry.hpp>
@@ -36,6 +37,8 @@ namespace services::dispatcher::validation {
         components::compute::function_types_mask allowed_functions;
         // CREATE VIEW's collector of the catalog columns the expression reads; null otherwise.
         column_uses_t* column_uses;
+        // The statement's $n without a type, which a coercion types instead of casting; null when none are.
+        parameter_types_t* parameter_types{nullptr};
         const named_schema* schema_right{nullptr};
         const std::pmr::vector<precomputed_column_t>* precomputed{nullptr};
         components::types::complex_logical_type required_type{components::types::logical_type::ANY};
@@ -43,6 +46,11 @@ namespace services::dispatcher::validation {
         components::casts::cast_type required_level{components::casts::cast_type::implicit};
         untyped_literals literals{untyped_literals::become_text};
     };
+
+    // A result type the validator has set: INVALID is the type of an expression it has not resolved yet.
+    [[nodiscard]] inline bool is_stamped(const components::types::complex_logical_type& type) noexcept {
+        return type.type() != components::types::logical_type::INVALID;
+    }
 
     [[nodiscard]] core::error_t resolve_expression(components::expressions::expression_ptr& expression,
                                                    const expression_context_t& context,

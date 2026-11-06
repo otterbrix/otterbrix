@@ -281,9 +281,6 @@ namespace core::filesystem {
             }
         }
         if ((flags & file_flags::DIRECT_IO) != file_flags::EMPTY) {
-#if defined(__sun) && defined(__SVR4)
-            throw std::logic_error("DIRECT_IO not supported on Solaris");
-#endif
 #if defined(__DARWIN__) || defined(__APPLE__) || defined(__OpenBSD__)
             open_flags |= O_SYNC;
 #else

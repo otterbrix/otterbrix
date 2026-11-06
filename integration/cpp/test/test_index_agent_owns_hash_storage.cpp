@@ -46,7 +46,7 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE hsdb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA hsdb;")->is_success());
         REQUIRE(exec("CREATE TABLE hsdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON hsdb.t USING hash (k);")->is_success());
         REQUIRE(exec("INSERT INTO hsdb.t (id, k) VALUES (1, 7), (2, 8), (3, 7), (4, 9);")->is_success());
@@ -111,7 +111,7 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::long_key_hash_index_
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE lkdb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA lkdb;")->is_success());
         REQUIRE(exec("CREATE TABLE lkdb.t (id bigint, k text);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON lkdb.t USING hash (k);")->is_success());
         REQUIRE(exec("INSERT INTO lkdb.t (id, k) VALUES (1, '" + long_key + "'), (2, '" + sibling_key + "'), (3, '" +

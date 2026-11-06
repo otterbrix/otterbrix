@@ -20,7 +20,7 @@ TEST_CASE("integration::cpp::dml_dictionary_rowids::delete_past_first_vector_kil
         auto session = otterbrix::session_id_t();
         return d->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE b;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA b;")->is_success());
     REQUIRE(exec("CREATE TABLE b.t (id bigint, v bigint);")->is_success());
 
     constexpr int64_t kRows = 3000;
@@ -64,7 +64,7 @@ TEST_CASE("integration::cpp::dml_dictionary_rowids::update_past_first_vector_hit
         auto session = otterbrix::session_id_t();
         return d->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE b;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA b;")->is_success());
     REQUIRE(exec("CREATE TABLE b.t (id bigint, v bigint);")->is_success());
 
     constexpr int64_t kRows = 3000;

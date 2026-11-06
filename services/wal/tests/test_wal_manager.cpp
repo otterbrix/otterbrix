@@ -5,17 +5,21 @@
 #include <actor-zeta/spawn.hpp>
 // clang-format on
 
+#include "wal_test_attoids.hpp"
 #include <catch2/catch_test_macros.hpp>
-#include <components/context/context.hpp>
 #include <chrono>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/configuration/configuration.hpp>
+#include <components/context/context.hpp>
 #include <components/log/log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/record.hpp>
@@ -23,9 +27,6 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
-#include "wal_test_attoids.hpp"
-#include <components/log/test/test_log.hpp>
-#include <core/tests/wait_ready.hpp>
 
 using namespace services::wal;
 using namespace components::session;
@@ -291,8 +292,9 @@ TEST_CASE("wal_manager::rewire_dispatcher_address") {
 
     // Setting the absent mailbox again (twice, as a bootstrap retry would) must not disturb it.
     if (env.manager_) {
-        REQUIRE_NOTHROW(env.manager_->set_manager_dispatcher_sync(components::pipeline::no_mailbox()));
-        REQUIRE_NOTHROW(env.manager_->set_manager_dispatcher_sync(components::pipeline::no_mailbox()));
+        manager_wal_replicate_t::bootstrap_t boot{*env.manager_, services::bootstrap_token_t{}};
+        REQUIRE_NOTHROW(boot.set_manager_dispatcher_sync(components::pipeline::no_mailbox()));
+        REQUIRE_NOTHROW(boot.set_manager_dispatcher_sync(components::pipeline::no_mailbox()));
     }
 
     auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/900, /*row_count=*/2);

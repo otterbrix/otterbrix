@@ -22,7 +22,7 @@ TEST_CASE("integration::cpp::test_index_key_binding::key_lookup_is_per_chunk_not
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE b;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA b;")->is_success());
     REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint, v bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX t_k ON b.t (k);")->is_success());
 

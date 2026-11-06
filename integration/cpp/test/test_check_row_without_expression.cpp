@@ -54,11 +54,11 @@ namespace {
                                                                              std::move(cols),
                                                                              {},
                                                                              false);
-        created->set_target(qualified_name_t{core::dbname_t{db}, core::relname_t{rel}});
+        created->set_target(qualified_name_t{core::schema_t{db}, core::relname_t{rel}});
 
         auto cstr = components::logical_plan::make_node_create_constraint(
             resource,
-            qualified_name_t{core::dbname_t{db}, core::relname_t{rel}},
+            qualified_name_t{core::schema_t{db}, core::relname_t{rel}},
             core::constraint_name_t{con_name},
             components::logical_plan::constraint_kind::check);
         cstr->set_inline_with_table(true);
@@ -70,11 +70,14 @@ namespace {
         components::logical_plan::execution_plan_t plan{resource,
                                                         created,
                                                         components::logical_plan::make_parameter_node(resource)};
-        components::sql::transform::register_catalog_resolve_namespace(resource, &plan.catalog_resolves, db);
+        components::sql::transform::register_catalog_resolve_namespace(
+            resource,
+            &plan.catalog_resolves,
+            qualified_name_t{core::schema_t{db}, core::relname_t{}});
         return d->execute_plan(otterbrix::session_id_t(), std::move(plan));
     }
 
-    void seed(otterbrix::wrapper_dispatcher_t* d) { REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success()); }
+    void seed(otterbrix::wrapper_dispatcher_t* d) { REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success()); }
 
 } // namespace
 

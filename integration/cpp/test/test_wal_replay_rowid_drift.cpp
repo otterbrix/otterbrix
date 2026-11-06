@@ -94,7 +94,7 @@ namespace {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE b;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA b;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE b.t (id bigint, k bigint);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE INDEX k_idx ON b.t (k);")->is_success());
 

@@ -13,7 +13,7 @@ namespace {
     void setup(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -59,7 +59,7 @@ TEST_CASE("integration::cpp::like_type_guards::non_string_pattern_computing_tabl
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();

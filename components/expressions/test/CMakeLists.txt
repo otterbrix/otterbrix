@@ -1,6 +1,7 @@
 project(test_expressions)
 
 set(${PROJECT_NAME}_SOURCES
+        test_clone_expression.cpp
         test_compare_expression.cpp
         test_aggregate_expression.cpp
         test_scalar_expression.cpp

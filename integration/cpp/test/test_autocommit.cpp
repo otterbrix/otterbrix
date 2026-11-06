@@ -54,7 +54,7 @@ namespace {
     void create_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -273,7 +273,7 @@ TEST_CASE("integration::cpp::autocommit::the_setting_survives_restart") {
         auto* dispatcher = space.dispatcher();
         create_table(dispatcher);
         auto session = otterbrix::session_id_t();
-        REQUIRE(run(dispatcher, session, "SET autocommit = off;")->is_success());
+        REQUIRE(run(dispatcher, session, "ALTER SYSTEM SET autocommit = off;")->is_success());
         REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
         REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
     }
@@ -312,7 +312,7 @@ TEST_CASE("integration::cpp::autocommit::a_failed_statement_leaves_the_transacti
     REQUIRE(committed_rows(dispatcher) == 1);
 }
 
-TEST_CASE("integration::cpp::autocommit::commit_ends_a_failed_transaction_and_reports_it") {
+TEST_CASE("integration::cpp::autocommit::commit_ends_a_failed_transaction_as_a_rollback") {
     auto config = test_create_config(integration_fixture_path("test_autocommit/commit_after_failure"));
     test_clear_directory(config);
     test_spaces space(config);
@@ -324,7 +324,9 @@ TEST_CASE("integration::cpp::autocommit::commit_ends_a_failed_transaction_and_re
     REQUIRE(run(dispatcher, writer, "INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
     REQUIRE(run(dispatcher, writer, "INSERT INTO TestDatabase.missing (id) VALUES (2);")->is_error());
 
-    REQUIRE(run(dispatcher, writer, "COMMIT;")->is_error());
+    auto commit = run(dispatcher, writer, "COMMIT;");
+    REQUIRE(commit->is_success());
+    CHECK(commit->transaction_status() == components::session::transaction_status_t::idle);
     REQUIRE(committed_rows(dispatcher) == 0);
 
     // The COMMIT ended the transaction, so the session needs no ROLLBACK to be usable again.

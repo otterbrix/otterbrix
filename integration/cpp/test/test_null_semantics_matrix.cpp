@@ -154,7 +154,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_bigint") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_bigint"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     seed_numeric(d, "m.t");
     comparison_battery(d, "m.t");
@@ -164,7 +164,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_integer") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_int"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x INTEGER);"));
     seed_numeric(d, "m.t");
     comparison_battery(d, "m.t");
@@ -174,7 +174,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_double") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_double"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x DOUBLE PRECISION);"));
     seed_numeric(d, "m.t");
     // DOUBLE isn't read back as int, so this inlines row-count/aggregate checks instead of reusing
@@ -198,7 +198,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_text") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_text"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, s TEXT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, s) VALUES (1, 'ann');"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, s) VALUES (2, NULL);"));
@@ -225,7 +225,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_computing_table") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_comp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.c ();"));
     REQUIRE(okq(d, "INSERT INTO m.c (id, x) VALUES (1, 5);"));
     REQUIRE(okq(d, "INSERT INTO m.c (id) VALUES (2);"));
@@ -240,7 +240,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_disk_and_restart") {
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(okq(d, "CREATE DATABASE m;"));
+        REQUIRE(okq(d, "CREATE SCHEMA m;"));
         REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
         seed_numeric(d, "m.t");
         comparison_battery(d, "m.t");
@@ -256,7 +256,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_projection") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arith_proj"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (1, 5);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (2, NULL);"));
@@ -283,7 +283,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_where_and_update") {
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(okq(d, "CREATE DATABASE m;"));
+        REQUIRE(okq(d, "CREATE SCHEMA m;"));
         REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
         REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (1, 5);"));
         REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (2, NULL);"));
@@ -314,7 +314,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_aggregate") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arith_agg"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.g (k INT, a BIGINT, b BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.g (k, a, b) VALUES (1, 3, NULL);"));
     REQUIRE(okq(d, "INSERT INTO m.g (k, a, b) VALUES (1, 4, NULL);"));
@@ -331,7 +331,7 @@ TEST_CASE("integration::cpp::null_matrix::aggregates_grouped") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/agg_grp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (k INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (k, x) VALUES (1, NULL);"));
     REQUIRE(okq(d, "INSERT INTO m.t (k, x) VALUES (1, NULL);"));
@@ -364,7 +364,7 @@ TEST_CASE("integration::cpp::null_matrix::case_when") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/case"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (1, 5);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (2, NULL);"));
@@ -384,7 +384,7 @@ TEST_CASE("integration::cpp::null_matrix::having") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/having"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.g (k INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (1, NULL);"));
     REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (1, NULL);"));
@@ -407,7 +407,7 @@ TEST_CASE("integration::cpp::null_matrix::check_constraints") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/check"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
 
     // In a CHECK, a NULL operand is UNKNOWN and thus accepted; a definitely-false row is rejected.
     struct ck {
@@ -439,7 +439,7 @@ TEST_CASE("integration::cpp::null_matrix::distinct") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/distinct"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT, y BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x, y) VALUES (1, 5, 1);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x, y) VALUES (2, NULL, 1);"));
@@ -459,7 +459,7 @@ TEST_CASE("integration::cpp::null_matrix::array_element") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arr"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.a (id BIGINT, v INT[3]);"));
     REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (1, ARRAY[10, 20, 30]);"));
     REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (2, NULL);"));      // whole cell NULL
@@ -484,7 +484,7 @@ TEST_CASE("integration::cpp::null_matrix::index_parity") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/idx"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     seed_numeric(d, "m.t");
     REQUIRE(okq(d, "CREATE INDEX ix ON m.t (x);"));
@@ -501,7 +501,7 @@ TEST_CASE("integration::cpp::null_matrix::jsonb_absent_key") {
     auto config = test_helpers::make_test_config(integration_fixture_path("nmx/jsonb"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.j ();"));
     REQUIRE(okq(d, "INSERT INTO m.j (id, doc) VALUES (1, 5);"));
     REQUIRE(okq(d, "INSERT INTO m.j (id) VALUES (2);"));

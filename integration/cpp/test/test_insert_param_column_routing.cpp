@@ -37,7 +37,7 @@ TEST_CASE("integration::cpp::insert_param_column_routing::leading_parameter_befo
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     params_t params{{1, i64(resource, 1)}};
@@ -63,7 +63,7 @@ TEST_CASE("integration::cpp::insert_param_column_routing::trailing_parameter_aft
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     params_t params{{1, i64(resource, 1)}};
@@ -89,7 +89,7 @@ TEST_CASE("integration::cpp::insert_param_column_routing::middle_parameter_among
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (a BIGINT, b BIGINT, c BIGINT);")->is_success());
 
     params_t params{{1, i64(resource, 20)}};
@@ -118,7 +118,7 @@ TEST_CASE("integration::cpp::insert_param_column_routing::placeholders_written_i
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     params_t params{{1, i64(resource, 5)}, {2, i64(resource, 6)}};
@@ -144,7 +144,7 @@ TEST_CASE("integration::cpp::insert_param_column_routing::two_rows_swap_the_para
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     params_t params{{1, i64(resource, 1)}, {2, i64(resource, 2)}};
@@ -176,7 +176,7 @@ TEST_CASE("integration::cpp::insert_param_column_routing::literals_only_stay_in_
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     REQUIRE(exec(d, "INSERT INTO w.t (id, d) VALUES (7, 8);")->is_success());

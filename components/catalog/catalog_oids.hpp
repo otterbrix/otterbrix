@@ -34,6 +34,7 @@ namespace components::catalog {
         // a single default database "main" is bootstrapped at first start. Additional
         // databases get OIDs from oid_generator (>= FIRST_USER_OID) via ddl_create_database.
         inline constexpr oid_t main_database = 4;
+        inline constexpr const char* main_database_name = "main";
 
         // Namespaces (pg_namespace.oid)
         inline constexpr oid_t pg_catalog_namespace = 1;
@@ -137,5 +138,11 @@ namespace components::catalog {
     private:
         std::atomic<oid_t> next_;
     };
+
+    // Every relation of main.pg_catalog is the system's for a user statement: DML, DROP, ALTER, CREATE INDEX and
+    // CREATE in the schema are refused by the schema, not by an oid range.
+    inline bool in_system_schema(oid_t namespace_oid) noexcept {
+        return namespace_oid == well_known_oid::pg_catalog_namespace;
+    }
 
 } // namespace components::catalog

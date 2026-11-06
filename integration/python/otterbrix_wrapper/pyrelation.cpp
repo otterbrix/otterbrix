@@ -13,6 +13,7 @@
 
 #include <optional>
 #include <string>
+#include <util/util.hpp>
 #include <vector>
 
 using namespace components;
@@ -54,7 +55,7 @@ namespace otterbrix {
     } // namespace
 
     py_relation_t::py_relation_t(std::shared_ptr<py_connection_t> env, built_relation_t rel)
-        : space_(env ? env->space_ptr() : boost::intrusive_ptr<otterbrix_t>{})
+        : arena_(env ? env->arena() : engine_arena_ptr{})
         , node_(std::move(rel.node))
         , schema_(std::move(rel.columns))
         , env(std::move(env)) {
@@ -63,12 +64,6 @@ namespace otterbrix {
         }
         if (!this->env) {
             throw std::runtime_error("PyRelation created without a connection");
-        }
-        // `node_`/`schema_` are pmr-allocated from the engine's arena and freed in a
-        // destructor, which can't refuse -- so a relation carrying a plan must carry the
-        // space it came from, checked here rather than relying on callers upstream.
-        if (!space_) {
-            throw std::runtime_error("relation: the connection is closed");
         }
         this->executed = false;
     }
@@ -80,15 +75,15 @@ namespace otterbrix {
             throw std::runtime_error("PyRelation created without a result");
         }
         this->executed = true;
-        // No space_ and no env: this relation has no plan and no arena of its own, and the
-        // result it wraps already holds the space its rows live in.
+        // No arena_ and no env: this relation has no plan and no arena of its own, and the
+        // result it wraps already holds the arena its rows live in.
     }
 
     py_relation_t::~py_relation_t() {
         assert(py::gil_check());
         py::gil_scoped_release gil;
         node_.reset();
-        // schema_ frees into the same arena and is destroyed after this body runs; space_
+        // schema_ frees into the same arena and is destroyed after this body runs; arena_
         // is destroyed after that again, so both releases still have their resource.
     }
 
@@ -142,8 +137,6 @@ namespace otterbrix {
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::order(const std::string& arg) {
-        // Before get_expression_factory(): sort_expression() dereferences
-        // expression_factory_t::space, the copy close() nulls, one frame further down.
         auto& conn = live_env();
         auto* factory = get_expression_factory();
         auto expr = factory->sort_expression(arg);
@@ -151,7 +144,6 @@ namespace otterbrix {
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::sort(const py::args& args) {
-        // Before get_expression_factory(), for the same reason as order() above.
         auto& conn = live_env();
         std::vector<expression_wrapper_t> order_nodes;
         order_nodes.reserve(args.size());
@@ -252,13 +244,13 @@ namespace otterbrix {
         result.reset();
         auto query_result = execute_internal(stream_result);
         if (!query_result) {
-            throw std::runtime_error("ExecuteOrThrow - no query available to execute");
+            util::raise_no_cursor_error("ExecuteOrThrow - no query available to execute");
         }
         if (query_result->is_error()) {
-            throw std::runtime_error(query_result->get_error().what.c_str());
+            util::raise_cursor_error(query_result->get_error().what.c_str(), *query_result);
         }
         result = std::make_unique<py_result_t>(
-            env.get(),
+            *env,
             std::move(query_result),
             std::vector<components::table::column_definition_t>(schema_.begin(), schema_.end()));
     }
@@ -336,9 +328,9 @@ namespace otterbrix {
         py::list res;
         for (const auto& col : schema_) {
             // A copied complex_logical_type keeps the source allocator, so a STRUCT/MAP
-            // column's child vector still lives in this space's pool -- otterbrix_py_type_t
-            // must hold the space or `rel.types` outlives the connection and reads freed pool.
-            res.append(otterbrix_py_type_t(space_, col.type()));
+            // column's child vector still lives in the engine arena's pool -- otterbrix_py_type_t
+            // must hold the arena or `rel.types` outlives the connection and reads freed pool.
+            res.append(otterbrix_py_type_t(arena_, col.type()));
         }
         return res;
     }

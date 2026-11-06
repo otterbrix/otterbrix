@@ -100,34 +100,15 @@ namespace components::sql::transform {
                                                                           logical_plan::execution_plan_t* plan) {
         core::result_wrapper_t<logical_plan::node_ptr> log_node{nullptr};
         switch (node.type) {
-            case T_CreatedbStmt: {
-                auto& n = pg_cast<CreatedbStmt>(node);
-                const std::string dbname = construct(n.dbname);
-                auto created = transform_create_database(n);
-                if (created.has_error()) {
-                    log_node = created.error();
-                    break;
-                }
-                // Resolve the namespace name so a later patch can use the
-                // resolve node to detect duplicates through the pipeline.
-                register_namespace(dbname);
-                log_node = std::move(created.value());
+            case T_CreatedbStmt:
+                log_node = transform_create_database(pg_cast<CreatedbStmt>(node));
                 break;
-            }
-            case T_DropdbStmt: {
-                auto& n = pg_cast<DropdbStmt>(node);
-                const std::string dbname = construct(n.dbname);
-                auto dropped = transform_drop_database(n);
-                if (dropped.has_error()) {
-                    log_node = dropped.error();
-                    break;
-                }
-                auto drop_node = std::move(dropped.value());
-                drop_node->set_target(qualified_name_t{core::dbname_t{dbname}, core::relname_t{}});
-                register_namespace(dbname);
-                log_node = std::move(drop_node);
+            case T_DropdbStmt:
+                log_node = transform_drop_database(pg_cast<DropdbStmt>(node));
                 break;
-            }
+            case T_CreateSchemaStmt:
+                log_node = transform_create_schema(pg_cast<CreateSchemaStmt>(node));
+                break;
             case T_CreateStmt:
                 // Wrap is inside transform_create_table (mirrors DML pattern).
                 log_node = transform_create_table(pg_cast<CreateStmt>(node));
@@ -183,6 +164,15 @@ namespace components::sql::transform {
             case T_CheckPointStmt:
                 log_node = transform_checkpoint(pg_cast<CheckPointStmt>(node));
                 break;
+            case T_DeclareCursorStmt:
+                log_node = transform_declare_cursor(pg_cast<DeclareCursorStmt>(node), plan);
+                break;
+            case T_FetchStmt:
+                log_node = transform_fetch(pg_cast<FetchStmt>(node));
+                break;
+            case T_ClosePortalStmt:
+                log_node = transform_close_cursor(pg_cast<ClosePortalStmt>(node));
+                break;
             case T_VacuumStmt:
                 log_node = transform_vacuum(pg_cast<VacuumStmt>(node));
                 break;
@@ -228,6 +218,18 @@ namespace components::sql::transform {
                 break;
             case T_VariableSetStmt:
                 log_node = transform_set_setting(pg_cast<VariableSetStmt>(node));
+                break;
+            case T_AlterSystemStmt:
+                log_node = transform_alter_system(pg_cast<AlterSystemStmt>(node));
+                break;
+            case T_PrepareStmt:
+                log_node = transform_prepare(pg_cast<PrepareStmt>(node));
+                break;
+            case T_ExecuteStmt:
+                log_node = transform_execute(pg_cast<ExecuteStmt>(node), plan);
+                break;
+            case T_DeallocateStmt:
+                log_node = transform_deallocate(pg_cast<DeallocateStmt>(node));
                 break;
             case T_ExtensionNode: {
                 // route to the owning extension's transform stage by extension_id
@@ -279,7 +281,7 @@ namespace components::sql::transform {
                 }
             }
         }
-        // Only read/DML inner statements are supported — the renderer walks the physical plan the
+        // Only read/DML inner statements (and EXECUTE of one) are supported — the renderer walks the physical plan the
         // transformer already lowers for these; DDL/other inners are rejected.
         if (!node.query) {
             return core::error_t(core::error_code_t::sql_parse_error,
@@ -290,6 +292,7 @@ namespace components::sql::transform {
             case T_InsertStmt:
             case T_UpdateStmt:
             case T_DeleteStmt:
+            case T_ExecuteStmt:
                 break;
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,

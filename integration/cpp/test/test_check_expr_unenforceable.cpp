@@ -33,7 +33,7 @@ namespace {
         REQUIRE_FALSE(answer.has_error());                                                                             \
         return answer.value();                                                                                         \
     };                                                                                                                 \
-    REQUIRE(exec("CREATE DATABASE c;")->is_success())
+    REQUIRE(exec("CREATE SCHEMA c;")->is_success())
 
 // These forms fell outside a 4-shape recogniser and silently compiled to constant TRUE;
 // column-vs-column also misread its second column as literal 0. Upstream #629 evaluates them instead.

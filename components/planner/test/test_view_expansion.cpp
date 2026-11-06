@@ -4,7 +4,7 @@
 //    disables filter pushdown into the body (pushdown_cte_filter reads children()[0] as the source, see
 //    components/planner/optimizer/rules/pushdown_filter.cpp);
 //  * leaving the reference's name/oid in place lets the next bind re-stamp the view's oid, after which
-//    create_plan_match hands back a bare full_scan over a view with no storage — zero rows, no error.
+//    the plan reads the view's oid as a table with no storage — zero rows, no error.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/vector/vector_builders.hpp>
@@ -38,7 +38,7 @@ namespace {
                                                         const std::string& view_sql) {
         logical_plan::catalog_resolves_t resolves;
         logical_plan::resolve_entry_t entry;
-        entry.dbname = dbname;
+        entry.schema = dbname;
         entry.relname = relname;
         logical_plan::resolved_table_metadata_t md;
         md.table_oid = 4242;
@@ -54,7 +54,7 @@ namespace {
     logical_plan::node_aggregate_ptr make_view_ref(const std::string& dbname, const std::string& relname) {
         auto agg =
             logical_plan::make_node_aggregate(res(),
-                                              qualified_name_t{core::dbname_t{dbname}, core::relname_t{relname}});
+                                              qualified_name_t{core::schema_t{dbname}, core::relname_t{relname}});
         agg->set_table_oid(4242);
         return agg;
     }
@@ -75,7 +75,7 @@ TEST_CASE("planner::view_expansion::collects only aggregate references to a plai
         // A clause node knows the relation it filters; hanging the body under it
         // would put the body below the filter instead of below the consumer.
         auto match =
-            logical_plan::make_node_match(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"v"}}, nullptr);
+            logical_plan::make_node_match(res(), qualified_name_t{core::schema_t{"db"}, core::relname_t{"v"}}, nullptr);
         auto refs = collect_view_references(res(), resolves, match.get());
         CHECK(refs.empty());
     }
@@ -103,7 +103,7 @@ TEST_CASE("planner::view_expansion::splice puts the body in the source slot and 
     auto existing_clause = logical_plan::make_node_match(res(), qualified_name_t{}, nullptr);
     ref->append_child(existing_clause);
 
-    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
     auto err = splice_view_body(ref.get(), body);
     REQUIRE_FALSE(err.contains_error());
 
@@ -128,7 +128,7 @@ TEST_CASE("planner::view_expansion::splice puts the body in the source slot and 
 TEST_CASE("planner::view_expansion::an aliased reference keeps the alias") {
     auto ref = make_view_ref("db", "v");
     ref->set_result_alias("x");
-    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
     REQUIRE_FALSE(splice_view_body(ref.get(), body).contains_error());
     CHECK(body->result_alias() == "x");
 }
@@ -137,7 +137,7 @@ TEST_CASE("planner::view_expansion::a correlated join in the body is refused") {
     // node_join_t::correlations() is const-only, so those parameter ids cannot be
     // renumbered against the outer plan's — a silent collision. Refuse instead.
     auto ref = make_view_ref("db", "v");
-    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
     auto join = logical_plan::make_node_join(res(), logical_plan::join_type::inner);
     join->set_lateral(true);
     join->add_correlation(core::parameter_id_t{0}, expressions::key_t{res(), "col_a"});
@@ -161,7 +161,7 @@ TEST_CASE("planner::view_expansion::body parameters are renumbered into the oute
         body_params->add_parameter(vector::make_scalar(res(), int64_t{10}), vector::parameter_kind::literal);
     CHECK(body_id == core::parameter_id_t{0});
 
-    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
     auto predicate =
         expressions::make_compare_expression(res(),
                                              expressions::compare_type::gt,
@@ -194,7 +194,7 @@ TEST_CASE("planner::view_expansion::body parameters do not land on an outer id t
     const auto body_id =
         body_params->add_parameter(vector::make_scalar(res(), int64_t{10}), vector::parameter_kind::literal);
 
-    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
     body->append_expression(
         expressions::make_compare_expression(res(),
                                              expressions::compare_type::gt,
@@ -217,8 +217,9 @@ namespace {
         logical_plan::resolved_table_metadata_t view;
         view.name = "v";
         view.view_bindings.push_back({components::catalog::view_refkind::relation,
-                                      core::dbname_t{"db"},
-                                      core::schema_t{},
+                                      core::connection_name_t{},
+                                      core::dbname_t{},
+                                      core::schema_t{"db"},
                                       core::relname_t{"t"},
                                       16500,
                                       std::string{},
@@ -229,7 +230,7 @@ namespace {
     logical_plan::catalog_resolves_t body_naming(const std::string& relname) {
         logical_plan::catalog_resolves_t body;
         logical_plan::resolve_entry_t entry;
-        entry.dbname = "db";
+        entry.schema = "db";
         entry.relname = relname;
         body.ensure(res(), logical_plan::resolve_kind::table).add(std::move(entry));
         return body;
@@ -269,25 +270,28 @@ TEST_CASE("planner::view_expansion::a pin the statement disagrees with is refuse
 TEST_CASE("planner::view_expansion::refresh is an insert into the matview over its pinned body") {
     logical_plan::resolved_table_metadata_t matview;
     matview.name = "mv";
+    matview.database = "main";
+    matview.schema = "db";
     matview.table_oid = 4243;
     matview.relkind = components::catalog::relkind::materialized_view;
     matview.view_sql = "SELECT a FROM db.t";
     matview.view_bindings.push_back({components::catalog::view_refkind::relation,
-                                     core::dbname_t{"db"},
-                                     core::schema_t{},
+                                     core::connection_name_t{},
+                                     core::dbname_t{},
+                                     core::schema_t{"db"},
                                      core::relname_t{"t"},
                                      16500,
                                      std::string{},
                                      std::string{}});
 
-    auto refresh = refresh_matview_plan(res(), matview, core::dbname_t{"db"});
+    auto refresh = refresh_matview_plan(res(), matview);
     REQUIRE_FALSE(refresh.has_error());
     auto& plan = refresh.value().plan;
 
     const auto* root = plan.sub_queries.back().get();
     REQUIRE(root->type() == logical_plan::node_type::insert_t);
     const auto* insert = static_cast<const logical_plan::node_insert_t*>(root);
-    CHECK(insert->target().database.t == "db");
+    CHECK(insert->target().schema.t == "db");
     CHECK(insert->target().collection.t == "mv");
     REQUIRE(insert->children().size() == 1);
 
@@ -299,10 +303,13 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
 
     INFO("the body's name is pinned; mv is only the write target, never read");
     const auto* t = plan.catalog_resolves.table_entry(
-        qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"t"}}});
+        qualified_name_t{core::schema_t{std::string{"db"}}, core::relname_t{std::string{"t"}}});
     REQUIRE(t != nullptr);
     CHECK(t->pin.oid == 16500);
-    CHECK(plan.catalog_resolves.table_entry(
-              qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"mv"}}}) != nullptr);
+    const auto* mv = plan.catalog_resolves.table_entry(qualified_name_t{core::dbname_t{std::string{"main"}},
+                                                                        core::schema_t{std::string{"db"}},
+                                                                        core::relname_t{std::string{"mv"}}});
+    REQUIRE(mv != nullptr);
+    CHECK(mv->relation_oid == 4243);
     CHECK(collect_view_references(res(), plan.catalog_resolves, plan.sub_queries.back().get()).empty());
 }

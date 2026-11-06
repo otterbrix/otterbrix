@@ -35,13 +35,14 @@
 //! are responsible for upholding the C-side contracts:
 //!
 //! - lifetimes of pointers returned by the engine (cursors must not outlive
-//!   the database that produced them; returned strings must be released with
-//!   the matching `otterbrix_free_*` function);
+//!   the database that produced them);
 //! - thread safety (the C facade serialises every call internally, so concurrent
 //!   access to a single `otterbrix_t*` is safe; concurrent access to cursors
 //!   from multiple threads is not);
-//! - correct memory ownership (the engine owns most returned memory; never
-//!   call `free` on returned pointers).
+//! - string ownership (the only owned string is `otterbrix_create`'s
+//!   `error_message.message`, freed with `otterbrix_free_string`; a
+//!   `const char*` from a cursor or a value is borrowed until `release_cursor`
+//!   / `release_value` and is never freed).
 //!
 //! Violating these contracts is undefined behaviour. The safe wrapper crate
 //! enforces them through Rust's borrow checker.

@@ -1,4 +1,4 @@
-// Asserts a WITH RECURSIVE query streams end-to-end through execute_pipeline (fixpoint sub-plans
+// Asserts a WITH RECURSIVE query streams end-to-end through pump_pipeline_ (fixpoint sub-plans
 // AND the outer plan), not just that it is correct -- see test_subqueries.cpp for correctness.
 
 #include "integration_fixture_path.hpp"
@@ -15,7 +15,7 @@ namespace {
     }
 
     void setup_org(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE RC;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA RC;")->is_success());
         REQUIRE(
             exec(dispatcher, "CREATE TABLE RC.OrgChart (id bigint, name string, manager_id bigint);")->is_success());
         auto cur = exec(dispatcher,

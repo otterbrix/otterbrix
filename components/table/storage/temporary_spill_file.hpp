@@ -23,6 +23,9 @@ namespace components::table::storage {
         temporary_spill_file_t& operator=(const temporary_spill_file_t&) = delete;
         ~temporary_spill_file_t();
 
+        // io_error when the temporary directory is unusable; every write then answers it.
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
+
         // io_error means the buffer was NOT written -- the caller must keep it in memory, not drop it.
         [[nodiscard]] core::result_wrapper_t<uint64_t> write(const std::byte* data, uint64_t size);
 
@@ -40,6 +43,7 @@ namespace components::table::storage {
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t fs_;
         core::filesystem::path_t path_;
+        core::error_t construction_error_{core::error_t::no_error()};
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         // size -> free offsets of exactly that size
         std::pmr::map<uint64_t, std::pmr::vector<uint64_t>> free_slots_;

@@ -14,12 +14,21 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <map>
 #include <set>
 #include <vector>
 
 namespace components::operators {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<void (*)()> g_after_publish_hook{nullptr};
+    } // namespace
+
+    void dev_set_after_publish_hook(void (*hook)()) noexcept { g_after_publish_hook.store(hook); }
+#endif
 
     namespace {
         std::pmr::set<components::catalog::oid_t> tables_to_prepare(const components::table::txn_abort_drain_t& undo,
@@ -87,12 +96,10 @@ namespace components::operators {
         }
         auto prepared_tables = tables_to_prepare(undo, resource_);
         if (prepares && !prepared_tables.empty()) {
-            auto [_pr, prf] = actor_zeta::otterbrix::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::storage_prepare,
+            auto [_pr, prf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_prepare>(
+                ctx->disk_storage(),
                 components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
-                prepared_tables,
-                undo.base_appends);
+                prepared_tables);
             if (auto refused = co_await std::move(prf); refused.contains_error()) {
                 co_await refuse_(ctx, std::move(undo), std::move(refused));
                 co_return;
@@ -156,7 +163,8 @@ namespace components::operators {
         std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfill_markers{resource_};
         backfill_markers.reserve(swap_backfills.size());
         for (auto& b : swap_backfills) {
-            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename) {
+            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename &&
+                b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::not_null_at) {
                 backfill_markers.push_back(std::move(b));
             }
         }
@@ -190,6 +198,27 @@ namespace components::operators {
                   txn_data.transaction_id,
                   commit_id_,
                   backfill_appends.size());
+        }
+
+        // A backend that wrote commits its part now: the last step that may refuse before the WAL marker. Once it
+        // has, it gets nothing more but its release (an outcome the marker then loses is in doubt, #663).
+        if (commit_id_ > 0) {
+            for (auto& participant : undo.participants) {
+                if (!participant.wrote || participant.address.empty()) {
+                    continue;
+                }
+                auto [_hp, hpf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_prepare>(
+                    participant.address,
+                    components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
+                    std::pmr::set<components::catalog::oid_t>{participant.tables.begin(),
+                                                              participant.tables.end(),
+                                                              resource_});
+                if (auto refused = co_await std::move(hpf); refused.contains_error()) {
+                    co_await refuse_(ctx, std::move(undo), std::move(refused));
+                    co_return;
+                }
+                prepared_participants_.push_back(participant.address);
+            }
         }
 
         // The single durable commit point and the last step that can still fail.
@@ -298,6 +327,11 @@ namespace components::operators {
                                                         &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
                                                         commit_id_);
             compact_watermark = co_await std::move(pf);
+#ifdef DEV_MODE
+            if (auto* hook = g_after_publish_hook.exchange(nullptr)) {
+                hook();
+            }
+#endif
         }
 
         // Physical DROP happens only now, past the publish barrier; indexes are unregistered and awaited before
@@ -347,13 +381,13 @@ namespace components::operators {
         }
 
         if (prepares && !prepared_tables.empty()) {
-            auto [_rl, rlf] = actor_zeta::otterbrix::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::storage_release_prepared,
+            auto [_rl, rlf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_release_prepared>(
+                ctx->disk_storage(),
                 components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
                 std::move(prepared_tables));
             co_await std::move(rlf);
         }
+        co_await release_participants_(ctx, undo.txn, undo.participants);
 
         // Storage indexes columns BY NAME, so the copy must be renamed too or the next INSERT hits a stale name.
         if (commit_id_ > 0 && !column_renames.empty() && ctx->disk_address != actor_zeta::address_t::empty_address()) {
@@ -440,16 +474,49 @@ namespace components::operators {
         }
         // Released before the revert: the stamps it undoes must not still count as standing.
         if (undo.txn.transaction_id != 0 && ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_rl, rlf] = actor_zeta::otterbrix::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::storage_release_prepared,
+            auto [_rl, rlf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_release_prepared>(
+                ctx->disk_storage(),
                 components::execution_context_t{ctx->session, undo.txn, ctx->execution_context.timezone_offset},
                 tables_to_prepare(undo, resource_));
             co_await std::move(rlf);
         }
+        // A backend that already committed its part gets nothing but its release; every other one rolls back.
+        std::vector<components::table::participant_t> committed;
+        std::erase_if(undo.participants, [this, &committed](const components::table::participant_t& participant) {
+            const auto prepared = std::find_if(prepared_participants_.begin(),
+                                               prepared_participants_.end(),
+                                               [&participant](const table::storage_address_t& address) {
+                                                   return address.same_storage(participant.address);
+                                               });
+            if (prepared != prepared_participants_.end()) {
+                committed.push_back(participant);
+                return true;
+            }
+            return false;
+        });
+        const auto undo_txn = undo.txn;
         co_await revert_transaction(resource_, ctx, log(), std::move(undo));
+        co_await release_participants_(ctx, undo_txn, committed);
         set_error(std::move(refusal));
         co_return;
+    }
+
+    actor_zeta::unique_future<void> operator_commit_transaction_t::release_participants_(
+        pipeline::context_t* ctx,
+        components::table::transaction_data txn,
+        const std::vector<components::table::participant_t>& participants) {
+        for (const auto& participant : participants) {
+            if (participant.address.empty()) {
+                continue;
+            }
+            auto [_rl, rlf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_release_prepared>(
+                participant.address,
+                components::execution_context_t{ctx->session, txn, ctx->execution_context.timezone_offset},
+                std::pmr::set<components::catalog::oid_t>{participant.tables.begin(),
+                                                          participant.tables.end(),
+                                                          resource_});
+            co_await std::move(rlf);
+        }
     }
 
     actor_zeta::unique_future<core::error_t> operator_commit_transaction_t::check_constraints_(
@@ -548,7 +615,7 @@ namespace components::operators {
                     co_return lookup;
                 }
                 if (std::any_of(children.begin(), children.end(), [](const auto& ids) { return !ids.empty(); })) {
-                    co_return core::error_t{core::error_code_t::invalid_constraint,
+                    co_return core::error_t{core::error_code_t::foreign_key_violation,
                                             std::pmr::string{"FK constraint violated: a child row committed beside "
                                                              "the delete of its parent",
                                                              resource_}};

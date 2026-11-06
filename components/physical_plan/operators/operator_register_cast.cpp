@@ -26,7 +26,7 @@ namespace components::operators {
         // no disk actor there is nothing to write and reporting success would be a lie.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             set_error(core::error_t{
-                core::error_code_t::physical_plan_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"register_cast: no disk actor is wired — the pg_cast row cannot be written, "
                                  "so there is no cast to create",
                                  resource_}});
@@ -101,7 +101,7 @@ namespace components::operators {
         // neither a row to delete nor a way to know one exists.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             set_error(
-                core::error_t{core::error_code_t::physical_plan_error,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"unregister_cast: no disk actor is wired — pg_cast cannot be read or "
                                                "written, so there is no cast to drop",
                                                resource_}});
@@ -129,7 +129,7 @@ namespace components::operators {
         if (cast_oid == catalog::INVALID_OID) {
             // "there is no pg_cast row to delete" is a different accident from "the delete
             // failed", and DROP CAST has to be able to say which one happened.
-            set_error(core::error_t{core::error_code_t::do_not_exists,
+            set_error(core::error_t{core::error_code_t::undefined_object,
                                     std::pmr::string{"unregister_cast: no pg_cast row exists for this "
                                                      "(source, target) pair",
                                                      resource_}});
@@ -162,7 +162,7 @@ namespace components::operators {
         }
         const auto& deleted = deleted_r.value();
         if (pg_cast_spec < deleted.size() && deleted[pg_cast_spec] == 0) {
-            set_error(core::error_t{core::error_code_t::other_error,
+            set_error(core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"unregister_cast: no pg_cast row was deleted for the "
                                                      "(source, target) pair that had just resolved — the cast "
                                                      "is still in the catalog",

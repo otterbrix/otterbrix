@@ -1,4 +1,5 @@
 #include "scalar_expression.hpp"
+#include "compare_expression.hpp"
 #include <sstream>
 
 namespace components::expressions {
@@ -36,7 +37,7 @@ namespace components::expressions {
                 }
                 stream << "]";
             } else {
-                stream << expr->params().at(0);
+                stream << expr->params().front();
             }
             if (expr->type() != scalar_type::get_field) {
                 stream << "}";
@@ -90,8 +91,8 @@ namespace components::expressions {
     bool scalar_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const scalar_expression_t*>(rhs);
         auto same_param = [](const param_storage& lhs, const param_storage& rhs_param) {
-            if (std::holds_alternative<expression_ptr>(lhs) && std::holds_alternative<expression_ptr>(rhs_param)) {
-                return bool(expression_equal{}(std::get<expression_ptr>(lhs), std::get<expression_ptr>(rhs_param)));
+            if (is_expr(lhs) && is_expr(rhs_param)) {
+                return bool(expression_equal{}(as_expr(lhs), as_expr(rhs_param)));
             }
             return lhs == rhs_param;
         };

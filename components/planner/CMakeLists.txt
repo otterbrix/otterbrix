@@ -4,6 +4,7 @@ set(SOURCE_${PROJECT_NAME}
         planner.cpp
         optimizer.cpp
         view_expansion.cpp
+        prepared_expansion.cpp
         optimizer/rules/constant_folding.cpp
         optimizer/rules/column_pruning.cpp
         optimizer/rules/drop_redundant_distinct.cpp
@@ -11,7 +12,7 @@ set(SOURCE_${PROJECT_NAME}
         optimizer/rules/promote_cross_join.cpp
         optimizer/rules/pushdown_filter.cpp
         optimizer/rules/hash_join.cpp
-        optimizer/rules/pushdown_aggregate.cpp
+        optimizer/rules/index_selection.cpp
         optimizer/rules/pushdown_limit.cpp
 )
 

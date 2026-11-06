@@ -2,12 +2,17 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/session_catalog.hpp>
+#include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
+#include <components/logical_plan/prepared_statement.hpp>
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <core/result_wrapper.hpp>
+#include <services/dispatcher/registry_changes.hpp>
 
+#include <optional>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace services::dispatcher {
@@ -27,10 +32,23 @@ namespace services::dispatcher {
     //              scope for resolve + the operator pipeline.
     //   settings — dispatcher-owned settings cache (feeds context_storage_t).
     //   lowest_active_start_time — VACUUM/MVCC GC gate value for pipeline ctx.
+    //   write_connection — the connection the transaction already wrote to; a write to another one is refused
+    //              before it reaches that connection's backend.
+    //   function_uid — the uid the master registry reserved for the function a register_udf statement registers.
+    //   prepared — the session's prepared statement of the name an EXECUTE, PREPARE or DEALLOCATE names; none
+    //              when the session has none of that name.
     struct txn_session_context_t {
         components::table::transaction_data txn{0, 0};
         components::catalog::session_catalog_t settings{};
         uint64_t lowest_active_start_time{0};
+        std::string write_connection{};
+        components::compute::function_uid function_uid{components::compute::invalid_function_uid};
+        std::optional<components::logical_plan::prepared_statement_t> prepared{};
+        // The portal the statement names: the one a DECLARE or a host's window opens, or the one its session's
+        // cursor of a FETCH / CLOSE name is (0: the session has none of that name).
+        uint64_t portal_id{0};
+        // A DECLARE's name is already a cursor of the session (PostgreSQL 18 42P03, after the plan).
+        bool portal_name_taken{false};
     };
 
     // Result of txn_commit_drain_msg: the dispatcher snapshots txn_data, drains
@@ -66,6 +84,8 @@ namespace services::dispatcher {
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        // Every storage that kept state of the transaction; drained also by an empty COMMIT, which takes no commit_id.
+        std::vector<components::table::participant_t> participants{};
     };
 
     // Writes made since the savepoint, which the operator reverts, or why ROLLBACK TO can't run
@@ -102,11 +122,15 @@ namespace services::dispatcher {
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        std::vector<components::table::participant_t> participants{};
+        // The functions and casts the statement registered or dropped.
+        registry_changes_t registry_changes{};
 
         bool empty() const noexcept {
             return base_appends.empty() && base_deletes.empty() && pg_catalog_appends.empty() &&
                    pg_catalog_delete_tables.empty() && backfills.empty() && dropped_storage_oids.empty() &&
-                   created_storage_oids.empty() && created_indexes.empty() && referenced_deletes.empty();
+                   created_storage_oids.empty() && created_indexes.empty() && referenced_deletes.empty() &&
+                   participants.empty() && registry_changes.empty();
         }
     };
 

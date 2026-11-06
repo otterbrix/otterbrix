@@ -1,6 +1,5 @@
 #include "pg_std_list.h"
-
-#include <stdexcept>
+#include "pg_functions.h"
 
 // NIL is a process-wide sentinel that no mutator is ever supposed to write to (each one forks a
 // fresh PGList on the caller's resource on seeing NIL instead). null_memory_resource() makes a
@@ -26,7 +25,7 @@ PGList* list_concat(PGList* list1, PGList* list2) {
     }
 
     if (list1 == list2) {
-        throw std::runtime_error("cannot list_concat() a list to itself");
+        parser_abort("cannot list_concat() a list to itself");
     }
 
     list1->lst.insert(list1->lst.end(), list2->lst.begin(), list2->lst.end());

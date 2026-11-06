@@ -52,7 +52,7 @@ TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX k_idx ON b.t USING hash (k);")->is_success());
         for (unsigned i = 0; i < kRows; ++i) {

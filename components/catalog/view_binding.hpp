@@ -5,20 +5,22 @@
 #include <components/base/identifier_types.hpp>
 
 #include <string>
+#include <string_view>
 
 namespace components::catalog {
 
     // pg_rewrite_ref.refkind
     enum class view_refkind : char
     {
-        relation = 'r',  // a relation, by pg_class oid
-        host_name = 'h', // a name the host resolved; no catalog oid
-        function = 'f'   // a function by pg_proc oid and the signature of that row
+        relation = 'r', // a relation, by pg_class oid
+        function = 'f'  // a function by pg_proc oid and the signature of that row
     };
 
-    // One pg_rewrite_ref row: a view body name as written and what CREATE VIEW bound it to.
+    // One pg_rewrite_ref row: a view body name as written ([connection.][database.][schema.]relname) and what CREATE
+    // VIEW bound it to.
     struct view_binding_t {
         view_refkind refkind{view_refkind::relation};
+        core::connection_name_t connection;
         core::dbname_t dbname;
         core::schema_t schema;
         core::relname_t relname;

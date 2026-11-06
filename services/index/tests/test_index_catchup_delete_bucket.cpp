@@ -38,6 +38,7 @@
 #include "index_fixture_path.hpp"
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -149,16 +150,16 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             one_key(&resource),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            one_key(&resource),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 
@@ -212,7 +213,8 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
                                                             session,
                                                             compare_type::gte,
                                                             make_scalar(&resource, int64_t{10}),
-                                                            txn_id);
+                                                            txn_id,
+                                                            true);
         REQUIRE_FALSE(answer.has_error());
         auto rows = std::move(answer.value());
         std::vector<int64_t> out(rows.begin(), rows.end());
@@ -252,16 +254,16 @@ TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catch
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             one_key(&resource),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            one_key(&resource),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 
@@ -309,7 +311,8 @@ TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catch
                                                         session,
                                                         compare_type::gte,
                                                         make_scalar(&resource, int64_t{10}),
-                                                        reader_txn);
+                                                        reader_txn,
+                                                        true);
     REQUIRE_FALSE(answer.has_error());
     auto rows = std::move(answer.value());
     std::vector<int64_t> out(rows.begin(), rows.end());

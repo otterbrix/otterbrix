@@ -34,7 +34,7 @@ def test_reopening_a_database_keeps_its_data():
 
     # 1. Create the database through the binding and put three rows in it.
     conn = otterbrix.connect(path)
-    conn.execute("CREATE DATABASE persist;")
+    conn.execute("CREATE SCHEMA persist;")
     conn.execute("CREATE TABLE persist.rows (id INTEGER, name TEXT);")
     conn.execute("INSERT INTO persist.rows (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c');")
     conn.close()
@@ -100,6 +100,6 @@ def test_a_second_client_on_the_same_directory_is_refused():
     gc.collect()
 
     reopened = Client(path)
-    cursor = reopened.execute("CREATE DATABASE relocked;")
+    cursor = reopened.execute("CREATE SCHEMA relocked;")
     assert not cursor.is_error(), cursor.get_error()
     cursor.close()

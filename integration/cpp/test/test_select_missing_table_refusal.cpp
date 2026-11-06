@@ -10,7 +10,7 @@
 // fabricated cell instead of a refusal. The refusal must be loud but NOT fatal:
 // the engine has to stay usable afterwards.
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"existing_collection"};
 
 using namespace components;
@@ -24,7 +24,7 @@ TEST_CASE("integration::cpp::select_missing_table_refusal") {
     INFO("initialization");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+        auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         REQUIRE(cur->is_success());
     }
     {
@@ -61,10 +61,9 @@ TEST_CASE("integration::cpp::select_missing_table_refusal") {
 }
 
 // The same root defect, other half: an unqualified name of a table that DOES exist
-// loses its schema. The relname-only pg_class probe resolves the oid, but schema
-// construction used to run only for db-qualified names, so every column reference
-// came back as "path ... was not found". Resolution and schema must come from the
-// same decision: the resolved catalog metadata.
+// loses its schema. A bare name looks in pg_catalog and then in the session's place only, so
+// schemadb.alpha is reached by a bare name only from the place schemadb; there resolution and
+// schema come from the same decision: the resolved catalog metadata.
 TEST_CASE("integration::cpp::select_unqualified_existing_table") {
     auto config = test_create_config(integration_fixture_path("test_select_missing_table_refusal/unqualified"));
     test_clear_directory(config);
@@ -74,7 +73,7 @@ TEST_CASE("integration::cpp::select_unqualified_existing_table") {
     INFO("initialization");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE schemadb;");
+        auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA schemadb;");
         REQUIRE(cur->is_success());
     }
     {
@@ -89,10 +88,23 @@ TEST_CASE("integration::cpp::select_unqualified_existing_table") {
         REQUIRE(cur->is_success());
     }
 
+    INFO("from main.public a bare name does not reach another schema");
+    for (const std::string sql :
+         {"SELECT id FROM alpha;", "SELECT * FROM alpha;", "SELECT name FROM alpha WHERE id = 2;"}) {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, sql);
+        INFO(sql);
+        REQUIRE(cur->is_error());
+        CHECK(cur->get_error().type == core::error_code_t::table_not_exists);
+        CHECK(std::string(cur->get_error().what.c_str()) == "relation \"alpha\" does not exist");
+    }
+
+    auto in_place = otterbrix::session_id_t();
+    REQUIRE(dispatcher->execute_sql(in_place, "SET search_path = 'schemadb';")->is_success());
+
     INFO("unqualified column projection resolves against the table's schema");
     {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT id FROM alpha;");
+        auto cur = dispatcher->execute_sql(in_place, "SELECT id FROM alpha;");
         INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "<none>"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -101,8 +113,7 @@ TEST_CASE("integration::cpp::select_unqualified_existing_table") {
 
     INFO("unqualified star keeps the real column set, not a placeholder");
     {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM alpha;");
+        auto cur = dispatcher->execute_sql(in_place, "SELECT * FROM alpha;");
         INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "<none>"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -111,8 +122,7 @@ TEST_CASE("integration::cpp::select_unqualified_existing_table") {
 
     INFO("unqualified name works under a WHERE over its own columns");
     {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT name FROM alpha WHERE id = 2;");
+        auto cur = dispatcher->execute_sql(in_place, "SELECT name FROM alpha WHERE id = 2;");
         INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "<none>"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);

@@ -90,7 +90,7 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
     catalog_forging_spaces_t space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE lost;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA lost;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE lost.parent (id bigint PRIMARY KEY);")->is_success());
 
     const auto parent_oid = table_oid_named(d, "parent");
@@ -124,7 +124,7 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE dia;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA dia;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE dia.parent (id bigint PRIMARY KEY);")->is_success());
     REQUIRE(
         exec(d, "CREATE TABLE dia.child (pid bigint, FOREIGN KEY (pid) REFERENCES dia.parent (id));")->is_success());
@@ -137,6 +137,32 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_
     // The walker emits each object once per FINISHED node, not once per edge reaching it, so an
     // FK reachable from both its table and its referenced table cannot appear twice with a
     // falsely-zero duplicate own-row count; this DROP guards that invariant from the consumer side.
+    auto cur = exec(d, "DROP SCHEMA dia CASCADE;");
+    INFO("DROP SCHEMA over the FK diamond: "
+         << (cur->is_error() ? std::string{cur->get_error().what.begin(), cur->get_error().what.end()}
+                             : std::string{"success"}));
+    REQUIRE(cur->is_success());
+
+    REQUIRE(rows_where(d, "pg_constraint", "oid", fk_oid) == 0);
+    REQUIRE(rows_where(d, "pg_class", "oid", parent_oid) == 0);
+}
+
+// The same diamond one level up: DROP DATABASE cascades without the word.
+TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_in_a_dropped_database_is_judged_once") {
+    auto config = make_test_config(fixture_path("diamond_database"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    REQUIRE(exec(d, "CREATE DATABASE dia;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE dia.public.parent (id bigint PRIMARY KEY);")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE dia.public.child (pid bigint, FOREIGN KEY (pid) REFERENCES dia.public.parent (id));")
+                ->is_success());
+
+    const auto parent_oid = table_oid_named(d, "parent");
+    REQUIRE(parent_oid != catalog::INVALID_OID);
+    const auto fk_oid = fk_oid_referencing(d, parent_oid);
+    REQUIRE(fk_oid != catalog::INVALID_OID);
+
     auto cur = exec(d, "DROP DATABASE dia;");
     INFO("DROP DATABASE over the FK diamond: "
          << (cur->is_error() ? std::string{cur->get_error().what.begin(), cur->get_error().what.end()}

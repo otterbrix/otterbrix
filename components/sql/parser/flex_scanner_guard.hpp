@@ -8,7 +8,7 @@
  *
  * bison's yyparse() drives the scanner itself (it calls yylex), so an extension
  * only needs to (1) stand a scanner up over the query string and (2) tear it
- * down — including when yyparse throws. This guard does exactly that.
+ * down — including when yyparse fails. This guard does exactly that.
  *
  * Example usage:
  *

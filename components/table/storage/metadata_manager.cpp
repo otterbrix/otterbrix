@@ -100,8 +100,8 @@ namespace components::table::storage {
         auto resource = block_manager_.buffer_manager.resource();
         auto block = std::make_unique<block_t>(resource, block_id, static_cast<uint64_t>(block_manager_.block_size()));
         // read() returns a value (data_corruption/io_error). pin can run inside the table_storage_t DISK ctor
-        // on the agent thread (bootstrap_disk_inner_sync, noexcept), so it MUST NOT throw: record the sticky
-        // error and return nullptr; metadata_reader_t checks has_error()/null and unwinds.
+        // (agent_disk_t::load_local, noexcept), so it MUST NOT throw: record the sticky error and return
+        // nullptr; metadata_reader_t checks has_error()/null and unwinds.
         if (auto read_result = block_manager_.read(*block); read_result.has_error()) {
             error_ = read_result.error();
             return nullptr;

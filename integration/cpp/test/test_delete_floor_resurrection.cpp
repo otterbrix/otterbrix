@@ -49,7 +49,7 @@ namespace {
     };
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE adb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA adb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE adb.t (id bigint, k bigint);")->is_success());
         std::string sql = "INSERT INTO adb.t (id, k) VALUES ";
         for (int i = 1; i <= kRows; ++i) {

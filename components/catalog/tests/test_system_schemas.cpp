@@ -80,7 +80,8 @@ TEST_CASE("catalog::system_schemas::pg_index_has_indisvalid") {
     REQUIRE(has_indisvalid);
 }
 
-// 7. pg_database carries (oid, datname). Required for CREATE/DROP DATABASE DDL plumbing.
+// 7. pg_database carries (oid, datname, datconnection): a database is named by its connection (empty: a local one)
+// and its name.
 TEST_CASE("catalog::system_schemas::pg_database_minimal_columns") {
     const auto* def = find_system_table(well_known_oid::pg_database_table);
     REQUIRE(def != nullptr);
@@ -91,7 +92,8 @@ TEST_CASE("catalog::system_schemas::pg_database_minimal_columns") {
     }
     REQUIRE(col_names.count("oid") == 1);
     REQUIRE(col_names.count("datname") == 1);
-    REQUIRE(def->columns.size() == 2);
+    REQUIRE(col_names.count("datconnection") == 1);
+    REQUIRE(def->columns.size() == 3);
 }
 
 // 8. Column ORDER of the system tables is part of their contract.
@@ -118,7 +120,7 @@ namespace {
 } // namespace
 
 TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
-    require_layout(well_known_oid::pg_namespace_table, {"oid", "nspname"});
+    require_layout(well_known_oid::pg_namespace_table, {"oid", "nspname", "nspdatabase"});
     require_layout(well_known_oid::pg_class_table, {"oid", "relname", "relnamespace", "relkind", "relstoragemode"});
     require_layout(well_known_oid::pg_attribute_table,
                    {"attoid",
@@ -190,6 +192,7 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     // pg_namespace
     require_col(well_known_oid::pg_namespace_table, pg_namespace_col::oid, "oid");
     require_col(well_known_oid::pg_namespace_table, pg_namespace_col::nspname, "nspname");
+    require_col(well_known_oid::pg_namespace_table, pg_namespace_col::nspdatabase, "nspdatabase");
     // pg_index
     require_col(well_known_oid::pg_index_table, pg_index_col::indexrelid, "indexrelid");
     require_col(well_known_oid::pg_index_table, pg_index_col::indrelid, "indrelid");
@@ -212,6 +215,7 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     // pg_database
     require_col(well_known_oid::pg_database_table, pg_database_col::oid, "oid");
     require_col(well_known_oid::pg_database_table, pg_database_col::datname, "datname");
+    require_col(well_known_oid::pg_database_table, pg_database_col::datconnection, "datconnection");
     // pg_rewrite
     require_col(well_known_oid::pg_rewrite_table, pg_rewrite_col::oid, "oid");
     require_col(well_known_oid::pg_rewrite_table, pg_rewrite_col::rulename, "rulename");

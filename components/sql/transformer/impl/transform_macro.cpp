@@ -51,12 +51,18 @@ namespace components::sql::transform {
             qn.collection.t = strVal(name_parts.front().data);
         } else if (name_parts.size() == 2) {
             auto it = name_parts.begin();
+            qn.schema.t = strVal(it++->data);
+            qn.collection.t = strVal(it->data);
+        } else if (name_parts.size() == 3) {
+            auto it = name_parts.begin();
             qn.database.t = strVal(it++->data);
+            qn.schema.t = strVal(it++->data);
             qn.collection.t = strVal(it->data);
         } else {
+            // PostgreSQL 18 namespace.c DeconstructQualifiedName: database.schema.name at most.
             std::pmr::string msg{"CREATE FUNCTION ", resource_};
             msg += dotted;
-            msg += ": a function name has at most two parts (namespace.name) — nothing was created";
+            msg += ": improper qualified name (too many dotted names)";
             return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
         }
 
@@ -154,8 +160,7 @@ namespace components::sql::transform {
                                                       core::macroname_t{qn.collection.t},
                                                       std::move(params),
                                                       core::body_sql_t{std::move(body_sql)});
-        const std::string db_for_resolve = set_target(*m, qn, target_slots::database);
-        register_namespace(db_for_resolve);
+        register_namespace(set_target(*m, qn, target_slots::schema));
         return m;
     }
 } // namespace components::sql::transform

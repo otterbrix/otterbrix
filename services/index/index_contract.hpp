@@ -94,8 +94,8 @@ namespace services::index {
                components::index::keys_base_storage_t keys,
                components::vector::vector_t key,
                components::expressions::compare_type compare,
-               uint64_t start_time,
                uint64_t txn_id,
+               bool hides_own_deletes,
                core::date::timezone_offset_t session_tz);
         unique_future<core::result_wrapper_t<index_search_result_t>>
         search_with_preferred_type(session_id_t session,
@@ -104,8 +104,8 @@ namespace services::index {
                                    components::vector::vector_t key,
                                    components::expressions::compare_type compare,
                                    components::logical_plan::index_type preferred_index_type,
-                                   uint64_t start_time,
                                    uint64_t txn_id,
+                                   bool hides_own_deletes,
                                    core::date::timezone_offset_t session_tz);
 
         // Reports the first refusal, or an unflushed index could read as flushed to a truncating checkpoint.

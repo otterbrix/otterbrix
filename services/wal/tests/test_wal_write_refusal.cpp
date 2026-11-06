@@ -337,7 +337,7 @@ TEST_CASE("wal::refusal::an_insert_whose_attoids_do_not_match_its_columns_is_ref
         auto bad_result = await_ready(bad_fut);
         INFO("attoids narrower than the chunk are the record the reader cannot open");
         REQUIRE(bad_result.has_error());
-        REQUIRE(bad_result.error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(bad_result.error().type == core::error_code_t::internal_error);
 
         auto commit_good = env.send_commit(/*txn_id=*/600, wal_sync_mode::FULL);
         REQUIRE_FALSE(await_ready(commit_good).has_error());
@@ -411,7 +411,7 @@ TEST_CASE("wal::refusal::a_grow_whose_insert_shape_is_wrong_journals_nothing") {
                                                      kMainDb);
         auto result = await_ready(fut);
         REQUIRE(result.has_error());
-        REQUIRE(result.error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(result.error().type == core::error_code_t::internal_error);
         auto commit = env.send_commit(/*txn_id=*/700, wal_sync_mode::FULL);
         REQUIRE_FALSE(await_ready(commit).has_error());
     }
@@ -449,7 +449,7 @@ TEST_CASE("wal::refusal::an_update_whose_attoids_do_not_match_its_columns_is_ref
         auto bad = send_update(801, true);
         auto bad_result = await_ready(bad);
         REQUIRE(bad_result.has_error());
-        REQUIRE(bad_result.error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(bad_result.error().type == core::error_code_t::internal_error);
         auto commit_good = env.send_commit(800, wal_sync_mode::FULL);
         REQUIRE_FALSE(await_ready(commit_good).has_error());
         auto commit_bad = env.send_commit(801, wal_sync_mode::FULL);
@@ -486,7 +486,7 @@ TEST_CASE("wal::refusal::an_add_column_whose_attoids_do_not_match_its_columns_is
         auto bad = send_add_column(901, 2);
         auto bad_result = await_ready(bad);
         REQUIRE(bad_result.has_error());
-        REQUIRE(bad_result.error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(bad_result.error().type == core::error_code_t::internal_error);
         auto commit_good = env.send_commit(900, wal_sync_mode::FULL);
         REQUIRE_FALSE(await_ready(commit_good).has_error());
         auto commit_bad = env.send_commit(901, wal_sync_mode::FULL);

@@ -141,7 +141,7 @@ namespace components::vector {
                 uint64_t idx_in_entry;
                 entry_index(count, entry_idx, idx_in_entry);
                 for (uint64_t i = 0; i < idx_in_entry; ++i) {
-                    valid += uint64_t(entry & uint64_t(1) << uint64_t(i));
+                    valid += (entry >> uint64_t(i)) & uint64_t(1);
                 }
                 break;
             }

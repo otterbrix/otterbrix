@@ -5,11 +5,13 @@
 #include <components/expressions/forward.hpp>
 #include <components/types/physical_value.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
+#include <core/pmr/budget_resource.hpp>
 
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <string_view>
@@ -89,6 +91,7 @@ namespace services::index {
         [[nodiscard]] core::error_t flush_if_needed();
 
         std::pmr::memory_resource* resource_;
+        core::pmr::budget_resource_t tree_budget_{resource_, std::numeric_limits<uint64_t>::max()};
         uint64_t flush_threshold_;
         bool dirty_{false};
         uint64_t ops_since_flush_{0};

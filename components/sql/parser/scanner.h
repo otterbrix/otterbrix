@@ -22,6 +22,10 @@
 #include "keyword.h"
 #include "nodes/pg_type_definitions.h"
 
+#include <core/result_wrapper.hpp>
+
+#include <string>
+
 /*
 * The scanner returns extra data about scanned tokens in this union type.
 * Note that this is a subset of the fields used in YYSTYPE of the bison
@@ -97,6 +101,9 @@ typedef struct core_yy_extra_type {
     /* state variables for literal-lexing warnings */
     bool warn_on_first_escape;
     bool saw_non_ascii;
+
+    /* the first error of the parse; later ones (bison's "syntax error" after the lexer gave up) are dropped */
+    core::error_t error = core::error_t::no_error();
 } core_yy_extra_type;
 
 /*
@@ -115,5 +122,19 @@ extern int
 core_yylex(core_YYSTYPE* lvalp, YYLTYPE* llocp, std::pmr::memory_resource* resource, core_yyscan_t yyscanner);
 extern int scanner_errposition(int location, core_yyscan_t yyscanner);
 extern void scanner_yyerror(const char* message, core_yyscan_t yyscanner);
+extern bool scanner_failed(core_yyscan_t yyscanner);
+
+/* ereport's replacement: a level >= ERROR is recorded in yyextra (first one wins) and answers true */
+extern bool parser_report(core_yyscan_t yyscanner, int level, std::string message);
+extern bool parser_report(core_yyscan_t yyscanner, int level, std::string message, int position);
+extern bool parser_report(core_yyscan_t yyscanner, int level, int sqlerrcode, std::string message);
+extern bool parser_report(core_yyscan_t yyscanner, int level, int sqlerrcode, std::string message, int position);
+extern bool parser_report(core_yyscan_t yyscanner, int level, int sqlerrcode, std::string message, std::string detail);
+extern bool parser_report(core_yyscan_t yyscanner,
+                          int level,
+                          int sqlerrcode,
+                          std::string message,
+                          std::string detail,
+                          int position);
 
 #endif /* SCANNER_H */

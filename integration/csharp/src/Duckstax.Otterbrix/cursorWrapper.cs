@@ -3,6 +3,13 @@ namespace Duckstax.Otterbrix
     using System;
     using System.Runtime.InteropServices;
 
+    public enum TransactionStatus
+    {
+        Idle = 0,
+        InTransaction = 1,
+        Failed = 2,
+    }
+
     public class CursorWrapper : IDisposable
     {
         const string libotterbrix = OtterbrixWrapper.libotterbrix;
@@ -13,6 +20,10 @@ namespace Duckstax.Otterbrix
         [DllImport(libotterbrix, EntryPoint="cursor_affected_rows", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool CursorAffectedRows(CursorHandle cursor, out ulong rows);
+
+        [DllImport(libotterbrix, EntryPoint="cursor_created_oid", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorCreatedOid(CursorHandle cursor, out uint oid);
 
         [DllImport(libotterbrix, EntryPoint="cursor_column_count", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorColumnCount(CursorHandle cursor);
@@ -29,8 +40,17 @@ namespace Duckstax.Otterbrix
         [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool CursorIsError(CursorHandle cursor);
 
-        [DllImport(libotterbrix, EntryPoint="cursor_get_error", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern TransferErrorMessage CursorGetError(CursorHandle cursor);
+        [DllImport(libotterbrix, EntryPoint="cursor_error_code", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern int CursorErrorCode(CursorHandle cursor);
+
+        [DllImport(libotterbrix, EntryPoint="cursor_error_message", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern IntPtr CursorErrorMessage(CursorHandle cursor);
+
+        [DllImport(libotterbrix, EntryPoint="cursor_error_position", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern int CursorErrorPosition(CursorHandle cursor);
+
+        [DllImport(libotterbrix, EntryPoint="cursor_transaction_status", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern int CursorTransactionStatus(CursorHandle cursor);
 
         [DllImport(libotterbrix, EntryPoint="cursor_column_name", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern IntPtr CursorColumnName(CursorHandle cursor, int columnIndex);
@@ -49,15 +69,26 @@ namespace Duckstax.Otterbrix
         public ulong? AffectedRows() {
             return CursorAffectedRows(cursor, out ulong rows) ? rows : null;
         }
+        public uint? CreatedOid() {
+            return CursorCreatedOid(cursor, out uint oid) ? oid : null;
+        }
         public int ColumnCount() { return CursorColumnCount(cursor); }
         public bool HasNext() { return CursorHasNext(cursor); }
         public bool IsSuccess() { return CursorIsSuccess(cursor); }
         public bool IsError() { return CursorIsError(cursor); }
 
-        public ErrorMessage GetError() { return CursorGetError(cursor).Take(); }
+        public ErrorMessage GetError() {
+            ErrorMessage error = new ErrorMessage();
+            error.type = (ErrorCode)CursorErrorCode(cursor);
+            error.what = OtterbrixWrapper.BorrowString(cursor, () => CursorErrorMessage(cursor));
+            int position = CursorErrorPosition(cursor);
+            error.position = position > 0 ? position : null;
+            return error;
+        }
+        public TransactionStatus GetTransactionStatus() { return (TransactionStatus)CursorTransactionStatus(cursor); }
 
         public string ColumnName(int columnIndex) {
-            return OtterbrixWrapper.TakeString(CursorColumnName(cursor, columnIndex)) ?? "";
+            return OtterbrixWrapper.BorrowString(cursor, () => CursorColumnName(cursor, columnIndex));
         }
 
         public ValueWrapper GetValue(int rowIndex, int columnIndex) {

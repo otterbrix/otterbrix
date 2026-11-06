@@ -1,5 +1,8 @@
 #include "compute_kernel.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 using namespace components::vector;
 
 namespace components::compute {
@@ -76,7 +79,8 @@ namespace components::compute {
         , update_(update)
         , finalize_(finalize) {
         if (!layout_ || !update_ || !finalize_) {
-            throw std::logic_error("Aggregate kernels require a state layout, an update and a finalize!");
+            assert(false && "Aggregate kernels require a state layout, an update and a finalize!");
+            std::abort();
         }
     }
 

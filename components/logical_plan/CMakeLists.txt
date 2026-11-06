@@ -18,18 +18,20 @@ set(SOURCE_${PROJECT_NAME}
         node_register_cast.cpp
         node_transaction.cpp
         node_catalog_resolve.cpp
-        node_extension.cpp
+        detached_block.cpp
         node_allocate_oids.cpp
         node_checkpoint.cpp
         node_create_collection.cpp
         node_create_constraint.cpp
         node_create_database.cpp
+        node_create_schema.cpp
         node_create_index.cpp
         node_create_macro.cpp
         node_create_matview.cpp
         node_create_sequence.cpp
         node_create_type.cpp
         node_create_view.cpp
+        node_cursor.cpp
         node_refresh_matview.cpp
         node_data.cpp
         node_delete.cpp
@@ -46,9 +48,13 @@ set(SOURCE_${PROJECT_NAME}
         node_sort.cpp
         node_union.cpp
         node_recursive_cte.cpp
+        node_remote.cpp
         node_cte_scan.cpp
         node_update.cpp
         node_set_setting.cpp
+        node_prepare.cpp
+        node_execute.cpp
+        node_deallocate.cpp
         node_vacuum.cpp
         param_storage.cpp
 )

@@ -68,6 +68,8 @@ namespace components::table {
         , atttypid_(other.atttypid_)
         , added_at_(other.added_at_)
         , dropped_at_(other.dropped_at_)
+        , not_null_at_(other.not_null_at_)
+        , not_null_sub_id_(other.not_null_sub_id_)
         , not_null_(other.not_null_)
         , default_value_(copy_default(other.default_value_))
         , tags_(other.tags_) {}
@@ -117,10 +119,9 @@ namespace components::table {
 
     void column_definition_t::set_attoid(std::uint32_t v) {
         // attoid is immutable after first assignment; a re-stamp with a DIFFERENT value is
-        // refused (first stamp stays) and reported, same in every build. Not an assert
-        // like the sibling catalog::table_id::set_oid: these stamps come off DISK on the
-        // bootstrap/load paths, and aborting would make a database with disagreeing identity
-        // sources unopenable in the very build meant to debug it.
+        // refused (first stamp stays) and reported, same in every build. Not an assert: these
+        // stamps come off DISK on the bootstrap/load paths, and aborting would make a database
+        // with disagreeing identity sources unopenable in the very build meant to debug it.
         if (attoid_ != 0 && attoid_ != v) {
             std::fprintf(stderr,
                          "components::table::column_definition_t::set_attoid: refusing to re-stamp column "

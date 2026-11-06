@@ -53,7 +53,7 @@ namespace {
         auto session = otterbrix::session_id_t();                                                                      \
         return d->execute_sql(session, sql);                                                                           \
     };                                                                                                                 \
-    REQUIRE(exec("CREATE DATABASE p;")->is_success());                                                                 \
+    REQUIRE(exec("CREATE SCHEMA p;")->is_success());                                                                   \
     REQUIRE(exec("CREATE TABLE p.t (id bigint, tag text, note text, v bigint);")->is_success());                       \
     fill_tagged(d);                                                                                                    \
     REQUIRE(exec("CREATE INDEX t_id_idx ON p.t (id);")->is_success())

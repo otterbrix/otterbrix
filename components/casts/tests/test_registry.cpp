@@ -77,7 +77,7 @@ TEST_CASE("cast_registry: duplicate registration is rejected, no override") {
 
     core::error_t duplicate = registry.add(source, target, make_entry(cast_type::explicit_only));
     REQUIRE(duplicate.contains_error());
-    REQUIRE(duplicate.type == core::error_code_t::already_exists);
+    REQUIRE(duplicate.type == core::error_code_t::duplicate_object);
 
     // First entry is untouched (no override).
     const cast_entry* found = registry.find(source, target);

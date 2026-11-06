@@ -89,7 +89,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE tomb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA tomb;")->is_success());
         REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
         fill(d, "t", kRows);
 
@@ -178,7 +178,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_recla
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE tomb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA tomb;")->is_success());
         REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
         fill(d, "t", kRows);
 
@@ -252,7 +252,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::indexed_table_cleanup_cost
 
     constexpr int kIndexedRows = 100000;
 
-    REQUIRE(exec("CREATE DATABASE tomb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA tomb;")->is_success());
     REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
     fill(d, "t", kIndexedRows);
     REQUIRE(exec("CREATE INDEX t_id ON tomb.t (id);")->is_success());

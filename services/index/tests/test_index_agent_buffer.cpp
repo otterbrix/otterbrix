@@ -149,7 +149,7 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     const auto val42 = make_scalar(&resource, int64_t{42});
 
     auto read = [&](uint64_t txn_id, compare_type compare) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, val42, txn_id);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, val42, txn_id, true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -252,7 +252,8 @@ TEST_CASE("services::index::btree_index_agent_t answers every predicate over sta
             .contains_error());
 
     auto probe = [&](compare_type compare, int64_t key) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn);
+        auto answer =
+            ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn, true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -290,7 +291,7 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
     const uint64_t txn2 = TRANSACTION_ID_START + 2;
 
     auto read = [&](uint64_t txn_id, const components::vector::vector_t& key) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare_type::eq, key, txn_id);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare_type::eq, key, txn_id, true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -350,7 +351,7 @@ void null_keys_answer_only_the_null_tests(Agent& agent, std::pmr::memory_resourc
             components::types::complex_logical_type{components::types::logical_type::NA});
     };
     const auto read = [&](compare_type compare, const components::vector::vector_t& key, uint64_t txn_id) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, key, txn_id);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, key, txn_id, true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -460,7 +461,8 @@ void a_null_key_matches_no_value_comparison(Agent& agent, std::pmr::memory_resou
                                                                     session,
                                                                     compare,
                                                                     components::vector::make_null(resource, null_type),
-                                                                    txn_id);
+                                                                    txn_id,
+                                                                    true);
                 REQUIRE_FALSE(answer.has_error());
                 CHECK(answer.value().empty());
             }
@@ -538,7 +540,8 @@ TEST_CASE("services::index::a NULL key is indexed properly") {
     REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn, commit_id_of(txn)).contains_error());
 
     const auto read = [&](compare_type compare, int64_t key) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn);
+        auto answer =
+            ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn, true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -591,7 +594,8 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
                                                                  session,
                                                                  compare_type::eq,
                                                                  make_scalar(&resource, int64_t{42}),
-                                                                 txn1);
+                                                                 txn1,
+                                                                 true);
         INFO("a read over a store whose rebuild refused is a refusal, not an empty answer");
         REQUIRE(after.has_error());
 
@@ -612,7 +616,8 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
                                                             session,
                                                             compare_type::eq,
                                                             make_scalar(&resource, int64_t{42}),
-                                                            uint64_t{0});
+                                                            uint64_t{0},
+                                                            true);
         REQUIRE_FALSE(answer.has_error());
         CHECK(sorted(std::move(answer.value())) == std::vector<int64_t>{4});
     }

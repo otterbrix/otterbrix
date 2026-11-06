@@ -16,6 +16,8 @@ namespace components::logical_plan {
         const std::pmr::vector<expressions::param_storage>& args() const noexcept;
         void add_function_uid(compute::function_uid uid);
         compute::function_uid function_uid() const;
+        void set_scope(const compute::function_scope_t& scope) noexcept { scope_ = scope; }
+        const compute::function_scope_t& scope() const noexcept { return scope_; }
 
     private:
         hash_t hash_impl() const override;
@@ -24,6 +26,7 @@ namespace components::logical_plan {
         function_qualified_name_t name_;
         std::pmr::vector<expressions::param_storage> args_;
         compute::function_uid function_uid_{compute::invalid_function_uid};
+        compute::function_scope_t scope_;
     };
 
     using node_function_ptr = boost::intrusive_ptr<node_function_t>;

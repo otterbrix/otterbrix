@@ -4,6 +4,7 @@
 #include <cassert>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 #include <core/result_wrapper.hpp>
 
@@ -185,6 +186,8 @@ namespace components::table::storage {
 
         std::unique_lock<std::mutex> get_lock() { return std::unique_lock(lock_); }
 
+        bool exchange_queued(std::unique_lock<std::mutex>&, bool queued) { return std::exchange(queued_, queued); }
+
         std::unique_ptr<file_buffer_t>& get_buffer(std::unique_lock<std::mutex>& l);
 
         void change_memory_usage(std::unique_lock<std::mutex>& l, int64_t delta);
@@ -236,6 +239,7 @@ namespace components::table::storage {
         buffer_pool_reservation_t memory_charge_;
         const char* unswizzled_;
         std::atomic<uint64_t> eviction_queue_idx_;
+        bool queued_{false};
     };
 
 } //namespace components::table::storage

@@ -75,7 +75,7 @@ TEST_CASE("integration::cpp::null_arith::projection_propagates_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE na;"));
+    REQUIRE(ok(d, "CREATE SCHEMA na;"));
     seed(d, "na.t");
 
     // The NULL row (id=2) must project NULL for every arithmetic result.
@@ -92,7 +92,7 @@ TEST_CASE("integration::cpp::null_arith::division_by_null_does_not_crash") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE na;"));
+    REQUIRE(ok(d, "CREATE SCHEMA na;"));
     seed(d, "na.t");
 
     // Division by zero is an ERROR, not a NULL
@@ -107,7 +107,7 @@ TEST_CASE("integration::cpp::null_arith::arithmetic_in_where_excludes_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE na;"));
+    REQUIRE(ok(d, "CREATE SCHEMA na;"));
     seed(d, "na.t");
 
     // x=0 -> 0+1=1 TRUE ; x NULL -> NULL+1=NULL, =1 is UNKNOWN (excluded) ; x=5 -> 6=1 FALSE.
@@ -124,7 +124,7 @@ TEST_CASE("integration::cpp::null_arith::update_set_expression_keeps_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE na;"));
+    REQUIRE(ok(d, "CREATE SCHEMA na;"));
     seed(d, "na.t");
 
     // UPDATE t SET x = x + 1 must leave the NULL row NULL (NULL + 1 is NULL), not write a 1.
@@ -138,7 +138,7 @@ TEST_CASE("integration::cpp::null_arith::aggregate_arithmetic_propagates_null") 
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE na;"));
+    REQUIRE(ok(d, "CREATE SCHEMA na;"));
     // group 1: a has values, b all NULL ; group 2: both have values.
     REQUIRE(ok(d, "CREATE TABLE na.g (k INT, a BIGINT, b BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO na.g (k, a, b) VALUES (1, 3, NULL);"));
@@ -157,7 +157,7 @@ TEST_CASE("integration::cpp::null_arith::literal_null_folds_to_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE na;"));
+    REQUIRE(ok(d, "CREATE SCHEMA na;"));
     seed(d, "na.t");
 
     // A constant-folded arithmetic with a NULL literal is NULL, so the comparison is UNKNOWN

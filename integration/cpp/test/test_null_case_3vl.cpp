@@ -49,7 +49,7 @@ TEST_CASE("integration::cpp::case3vl::not_in_when") {
     auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/not_in_when"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (1, 5), (2, NULL), (3, 0), (4, 10);"));
 
@@ -65,7 +65,7 @@ TEST_CASE("integration::cpp::case3vl::projection_null_row0") {
     auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/proj"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     // Row 0 (id=1) is the NULL row, so the first THEN (x) is NULL at row 0.
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (1, NULL), (2, 5), (3, 0);"));
@@ -80,7 +80,7 @@ TEST_CASE("integration::cpp::case3vl::aggregate_case_not") {
     auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/agg"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (1, 5), (2, NULL), (3, 0), (4, 10);"));
 

@@ -11,15 +11,6 @@
 
 namespace services::disk {
 
-    struct resolve_namespace_result_t {
-        bool found{false};
-        components::catalog::oid_t oid{components::catalog::INVALID_OID};
-        std::string name;
-
-        resolve_namespace_result_t() = default;
-        explicit resolve_namespace_result_t(std::pmr::memory_resource* /*resource*/) {}
-    };
-
     // Field order: strings → signature → uint64 → oid_t → bool.
     struct resolve_function_result_t {
         std::string name;

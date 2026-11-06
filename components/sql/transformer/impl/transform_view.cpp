@@ -26,10 +26,6 @@ namespace components::sql::transform {
                                          false,
                                          node.replace,
                                          plan));
-        if (node.replace) {
-            const auto* view = static_cast<const logical_plan::node_create_view_t*>(v.get());
-            register_table(view->target().database.t, view->viewname().t, constraint_resolve_kind::none);
-        }
         register_types(cast_type_names_);
         return v;
     }
@@ -71,7 +67,7 @@ namespace components::sql::transform {
                                                      materialized,
                                                      replace);
         v->append_child(std::move(body));
-        register_namespace(set_target(*v, qn, target_slots::database));
+        register_namespace(set_target(*v, qn, target_slots::schema));
         return logical_plan::node_ptr{std::move(v)};
     }
 } // namespace components::sql::transform

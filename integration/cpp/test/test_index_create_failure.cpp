@@ -17,7 +17,7 @@ TEST_CASE("integration::cpp::test_index_create_failure::unopenable_disk_index_is
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE d;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA d;")->is_success());
     REQUIRE(exec("CREATE TABLE d.t (id bigint, k bigint);")->is_success());
 
     REQUIRE(exec("CREATE INDEX ok_idx ON d.t USING hash (k);")->is_success());

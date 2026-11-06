@@ -91,7 +91,7 @@ namespace {
                 return d->execute_sql(session, sql);
             };
 
-            REQUIRE(exec("CREATE DATABASE t;")->is_success());
+            REQUIRE(exec("CREATE SCHEMA t;")->is_success());
             REQUIRE(exec("CREATE TABLE t.wide (id bigint, payload text);")->is_success());
 
             constexpr int kBatch = 50;

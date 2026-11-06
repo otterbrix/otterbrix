@@ -18,7 +18,7 @@ async fn lib_rs_quick_start() {
     let tmp = tempdir().expect("tempdir");
 
     let db = Database::open(Config::new(tmp.path())).expect("open database");
-    db.execute("CREATE DATABASE app;").expect("create database");
+    db.execute("CREATE SCHEMA app;").expect("create database");
     db.execute("CREATE TABLE app.t();")
         .expect("create collection");
 
@@ -40,7 +40,7 @@ async fn proxy_rs_otterbrix_proxy_example() {
     let tmp = tempdir().expect("tempdir");
 
     let db = Database::open(Config::new(tmp.path())).expect("open database");
-    db.execute("CREATE DATABASE app;").expect("create database");
+    db.execute("CREATE SCHEMA app;").expect("create database");
     db.execute("CREATE TABLE app.t();")
         .expect("create collection");
 

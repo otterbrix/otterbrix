@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 #include <utility>
@@ -57,12 +58,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{resolve_dir()};
                 c.path = resolve_dir();
                 return c;
             }())
@@ -74,7 +76,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(resolve_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // Destroy the manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
@@ -103,22 +105,6 @@ namespace {
         }
     };
 } // namespace
-
-TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
-    fixture fx;
-    auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"));
-    REQUIRE_FALSE(rr.has_error());
-    auto& r = rr.value();
-    REQUIRE(r.found);
-    REQUIRE(r.oid == well_known_oid::public_namespace);
-}
-
-TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
-    fixture fx;
-    auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"));
-    REQUIRE_FALSE(rr.has_error());
-    REQUIRE_FALSE(rr.value().found);
-}
 
 TEST_CASE("services::disk::resolve::table_finds_after_create") {
     fixture fx;
@@ -187,12 +173,15 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         std::vector<components::table::column_definition_t> scols;
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("payload", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  well_known_oid::main_database,
-                  std::move(scols),
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      well_known_oid::main_database,
+                      qualified_name_t{},
+                      std::move(scols),
+                      /*is_computed=*/false)
+                .has_error());
     }
     {
         std::pmr::vector<complex_logical_type> types(&fx.resource);
@@ -214,12 +203,14 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto append_r =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        auto append_r = fx.invoke(&manager_disk_t::storage_append,
+                                  append_ctx,
+                                  table_oid,
+                                  std::pmr::vector<catalog::oid_t>(2, catalog::INVALID_OID, &fx.resource),
+                                  to_batch(&fx.resource, std::move(chunk)),
+                                  false);
         REQUIRE_FALSE(append_r.has_error());
-        auto [start, count] = append_r.value();
-        REQUIRE(count == nrows);
-        (void) start;
+        REQUIRE(append_r.value().count == nrows);
     }
 
     const std::vector<std::int64_t> probe_keys = {10, 20, 30, 99};
@@ -316,12 +307,15 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     {
         std::vector<components::table::column_definition_t> scols;
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  well_known_oid::main_database,
-                  std::move(scols),
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      well_known_oid::main_database,
+                      qualified_name_t{},
+                      std::move(scols),
+                      /*is_computed=*/false)
+                .has_error());
     }
 
     std::pmr::vector<std::uint64_t> bad_cols{&fx.resource};
@@ -367,12 +361,15 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("b", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  well_known_oid::main_database,
-                  std::move(scols),
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      well_known_oid::main_database,
+                      qualified_name_t{},
+                      std::move(scols),
+                      /*is_computed=*/false)
+                .has_error());
     }
     {
         std::pmr::vector<complex_logical_type> types(&fx.resource);
@@ -390,8 +387,12 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto append_r =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        auto append_r = fx.invoke(&manager_disk_t::storage_append,
+                                  append_ctx,
+                                  table_oid,
+                                  std::pmr::vector<catalog::oid_t>(3, catalog::INVALID_OID, &fx.resource),
+                                  to_batch(&fx.resource, std::move(chunk)),
+                                  false);
         REQUIRE_FALSE(append_r.has_error());
     }
 
@@ -456,12 +457,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit reopenable_disk(const std::filesystem::path& path)
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{path};
                 c.path = path;
                 return c;
             }())
@@ -515,7 +517,7 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
 
     {
         reopenable_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         fd.checkpoint(services::wal::id_t{100});
     }
 
@@ -523,7 +525,7 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     one_table_fault_scope_t scope(plan, marker);
 
     reopenable_disk fd2(dir);
-    REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
 
     plan.crashed = true;
     auto poisoned = fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"));
@@ -554,7 +556,7 @@ TEST_CASE("services::disk::resolve::an_unowned_catalog_scan_is_not_no_rows") {
                               components::catalog::oid_t{well_known_oid::pg_class_table});
     INFO("a pg_cast scan that could not be performed must not answer 'no such cast'");
     REQUIRE(cast_oid.has_error());
-    CHECK(cast_oid.error().type == core::error_code_t::missing_table);
+    CHECK(cast_oid.error().type == core::error_code_t::internal_error);
 
     std::filesystem::remove_all(dir);
 }

@@ -58,7 +58,7 @@ TEST_CASE("integration::cpp::test_index_flush_scope::one_row_does_not_rewrite_ev
 
     constexpr int kRows = 100000;
 
-    REQUIRE(exec("CREATE DATABASE f;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA f;")->is_success());
     REQUIRE(exec("CREATE TABLE f.t (id bigint, v bigint);")->is_success());
     fill(d, "t", kRows);
     REQUIRE(exec("CREATE INDEX t_id ON f.t (id);")->is_success());

@@ -61,7 +61,7 @@ TEST_CASE("integration::cpp::null_deep::array_subscript_of_null_cell") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE dp;"));
+    REQUIRE(ok(d, "CREATE SCHEMA dp;"));
     // A declared fixed-size array column. Row 1 and row 3 have arrays; row 2's array cell is
     // NULL as a whole (an explicit NULL), so v[i] has no interior to read.
     REQUIRE(ok(d, "CREATE TABLE dp.t (id bigint, v int[3]);"));

@@ -75,30 +75,24 @@ namespace services::planner::impl {
 
     } // namespace
 
-    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
-                                                          const components::compute::function_registry_t&,
-                                                          const components::logical_plan::node_ptr& node,
-                                                          const components::logical_plan::storage_parameters*) {
-        // create_plan_group is only ever dispatched with a group_t node (create_plan.cpp's
-        // case group_t and the aggregate's group child), so the static_cast is safe.
-        const auto* group_node = static_cast<const components::logical_plan::node_group_t*>(node.get());
-
-        auto group = boost::intrusive_ptr(
-            new components::operators::operator_hash_group_t(context.resource, context.log.clone()));
-        auto* plan_resource = context.resource;
+    components::operators::operator_ptr make_hash_group(std::pmr::memory_resource* resource,
+                                                        log_t log,
+                                                        const components::logical_plan::node_group_t& node) {
+        auto group = boost::intrusive_ptr(new components::operators::operator_hash_group_t(resource, std::move(log)));
+        auto* plan_resource = resource;
 
         // The schema the group reduces over, resolved by validation against the same incoming
         // schema its expressions were resolved against.
-        group->set_input_types(group_node->input_types());
+        group->set_input_types(node.input_types());
 
         // Aggregates the validator marked internal (HAVING helpers) are reduced but never
         // emitted: they sit at the tail of the expression list and get no output entry.
-        const size_t select_end = node->expressions().size() - group_node->internal_aggregate_count;
+        const size_t select_end = node.expressions().size() - node.internal_aggregate_count;
 
         // Pass 1 — the grouping KEYS, and only those. A key comes from GROUP BY (a group_field) and
         // decides what a group IS; it is not an output column. Everything else in the list is a
         // projected column the graph evaluates, so nothing else may become a key here.
-        for (const auto& expr : node->expressions()) {
+        for (const auto& expr : node.expressions()) {
             if (expr->group() != expression_group::scalar) {
                 continue;
             }
@@ -116,8 +110,8 @@ namespace services::planner::impl {
         }
 
         // Pass 2 — the output list, in target-list order.
-        for (size_t i = 0; i < node->expressions().size(); i++) {
-            const auto& expr = node->expressions()[i];
+        for (size_t i = 0; i < node.expressions().size(); i++) {
+            const auto& expr = node.expressions()[i];
             if (expr->group() == expression_group::scalar &&
                 static_cast<const components::expressions::scalar_expression_t*>(expr.get())->type() ==
                     scalar_type::group_field) {
@@ -135,11 +129,22 @@ namespace services::planner::impl {
 
         // A HAVING helper is reduced but never emitted, so it contributes no output — but it IS a
         // reduction, and the group has to perform it for operator_having to read.
-        for (size_t i = select_end; i < node->expressions().size(); i++) {
-            reduction_registrar{group}.visit_in(node->expressions()[i]);
+        for (size_t i = select_end; i < node.expressions().size(); i++) {
+            reduction_registrar{group}.visit_in(node.expressions()[i]);
         }
 
         return group;
+    }
+
+    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
+                                                          const components::compute::function_registry_t&,
+                                                          const components::logical_plan::node_ptr& node,
+                                                          const components::logical_plan::storage_parameters*) {
+        // create_plan_group is only ever dispatched with a group_t node (create_plan.cpp's
+        // case group_t and the aggregate's group child), so the static_cast is safe.
+        return make_hash_group(context.resource,
+                               context.log.clone(),
+                               static_cast<const components::logical_plan::node_group_t&>(*node));
     }
 
 } // namespace services::planner::impl

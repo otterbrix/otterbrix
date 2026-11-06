@@ -50,6 +50,11 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
                      module_arena_ptr released(static_cast<module_arena_t*>(raw), false);
                  }));
 
+    pybind11::enum_<components::session::transaction_status_t>(m, "TransactionStatus")
+        .value("idle", components::session::transaction_status_t::idle)
+        .value("in_transaction", components::session::transaction_status_t::in_transaction)
+        .value("failed", components::session::transaction_status_t::failed);
+
     otterbrix_py_typing_t::initialize(m, module_arena);
     type_creation::initialize(m, module_arena);
     py_expression_t::initialize(m);
@@ -76,15 +81,16 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     auto clean_default_connection = []() { py_connection_t::cleanup(); };
     m.add_object("_clean_default_connection", pybind11::capsule(clean_default_connection));
 
-    pybind11::class_<wrapper_client>(m, "Client")
+    pybind11::class_<wrapper_client, boost::intrusive_ptr<wrapper_client>>(m, "Client")
         .def(pybind11::init([]() { return new wrapper_client(space_or_raise(spaces::get_instance())); }))
         .def(pybind11::init([](const pybind11::str& s) {
             return new wrapper_client(space_or_raise(spaces::get_instance(std::string(s))));
         }))
-        .def("execute", &wrapper_client::execute, pybind11::arg("query"));
+        .def("execute", &wrapper_client::execute, pybind11::arg("query"))
+        .def("close", &wrapper_client::close);
 
     pybind11::class_<wrapper_connection>(m, "Connection")
-        .def(pybind11::init([](wrapper_client* client) { return new wrapper_connection(client); }))
+        .def(pybind11::init([](wrapper_client* client) { return new wrapper_connection(wrapper_client_ptr{client}); }))
         .def("execute", &wrapper_connection::execute, pybind11::arg("query"))
         .def("cursor", &wrapper_connection::cursor)
         .def("close", &wrapper_connection::close)
@@ -111,7 +117,10 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
         .def("fetchmany", &wrapper_cursor::fetchmany, pybind11::arg("size") = 1)
         .def("fetchall", &wrapper_cursor::fetchall)
         .def_property_readonly("description", &wrapper_cursor::description)
-        .def_property_readonly("rowcount", &wrapper_cursor::rowcount);
+        .def_property_readonly("rowcount", &wrapper_cursor::rowcount)
+        .def_property_readonly("created_oid", &wrapper_cursor::created_oid)
+        .def_property_readonly("transaction_status", &wrapper_cursor::transaction_status)
+        .def_property_readonly("error_position", &wrapper_cursor::error_position);
 
     m.def("to_aggregate", &test_to_statement);
 }

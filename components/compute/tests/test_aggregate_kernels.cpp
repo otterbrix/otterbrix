@@ -99,7 +99,7 @@ namespace {
             }
             auto layout = executor.value()->state_layout();
             if (layout.size == 0) {
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"aggregate has no accumulator for these types", &resource});
             }
             aggregate_state_arena_t arena(&resource, layout);
@@ -369,7 +369,7 @@ TEST_CASE("components::compute::aggregate::sum_of_ubigint_refuses_to_wrap") {
                                 fx.typed_chunk<uint64_t>(logical_type::UBIGINT, {UINT64_MAX, uint64_t{1}}),
                                 logical_type::UBIGINT);
     REQUIRE(sum.has_error());
-    REQUIRE(sum.error().type == core::error_code_t::arithmetics_failure);
+    REQUIRE(sum.error().type == core::error_code_t::numeric_value_out_of_range);
 }
 
 #if not defined(NDEBUG)
@@ -396,7 +396,7 @@ TEST_CASE("components::compute::aggregate::errors_name_the_function_that_refused
                                      fx.typed_chunk<int64_t>(logical_type::BIGINT, {INT64_MAX, int64_t{1}}),
                                      logical_type::BIGINT);
     REQUIRE(overflow.has_error());
-    REQUIRE(overflow.error().type == core::error_code_t::arithmetics_failure);
+    REQUIRE(overflow.error().type == core::error_code_t::numeric_value_out_of_range);
     auto [overflow_file, overflow_function] = origin_of(overflow.error());
     CHECK(overflow_file.ends_with("aggregate.cpp"));
     CHECK(overflow_function.find("sum_update") != std::string::npos);
@@ -405,7 +405,7 @@ TEST_CASE("components::compute::aggregate::errors_name_the_function_that_refused
         CAPTURE(name);
         auto unsupported = fx.run_one_group(*fx.get(name), fx.int_chunk({1, 2}), logical_type::BOOLEAN);
         REQUIRE(unsupported.has_error());
-        REQUIRE(unsupported.error().type == core::error_code_t::kernel_error);
+        REQUIRE(unsupported.error().type == core::error_code_t::internal_error);
         CHECK(std::string{unsupported.error().what} == name + " does not accumulate the type it was given");
         auto [unsupported_file, unsupported_function] = origin_of(unsupported.error());
         CHECK(unsupported_file.ends_with("aggregate.cpp"));

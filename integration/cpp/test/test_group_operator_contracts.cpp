@@ -26,7 +26,7 @@ namespace {
     }
 
     // Drive a group operator through its public streaming sink entries (push every
-    // child output chunk, then finalize) — the same path execute_pipeline uses for a
+    // child output chunk, then finalize) — the same path pump_pipeline_ uses for a
     // sink — and publish the finalized chunks as the operator's output_. This is what
     // the executor's streaming drive does; the legacy on_execute() materialized entry
     // (now deleted) folded the same accumulate()/materialize_groups()/

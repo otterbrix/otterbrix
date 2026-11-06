@@ -151,7 +151,7 @@ namespace components::storage {
                 what.append(" column(s) and the table holds ");
                 what.append(std::to_string(table_.column_count()).c_str());
                 what.append(" — it names a column this storage does not have");
-                return core::error_t{core::error_code_t::schema_error, std::move(what)};
+                return core::error_t{core::error_code_t::internal_error, std::move(what)};
             }
 
             // An update is a delete then an append: if the delete refuses, appending would leave

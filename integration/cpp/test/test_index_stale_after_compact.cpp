@@ -75,7 +75,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE sdb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA sdb;")->is_success());
         REQUIRE(exec("CREATE TABLE sdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX k_idx ON sdb.t (k);")->is_success());
 
@@ -196,7 +196,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE adb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA adb;")->is_success());
     REQUIRE(exec("CREATE TABLE adb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX k_idx ON adb.t (k);")->is_success());
     for (int64_t start = 1; start <= kRows; start += 500) {
@@ -269,7 +269,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
     }
     {
         // Loud-refusal contract: while a compacting auto-round's index rebuild is still in
-        // flight the indexed read is REFUSED (stale_index), not answered with the pre-compact
+        // flight the indexed read is REFUSED (write_conflict), not answered with the pre-compact
         // stranger id it used to return. Under this test's back-to-back auto rounds a probe can
         // land in that window, so retry the documented remedy ("retry the statement") until a
         // round has settled — then the answer must be the survivor, NEVER a stranger.

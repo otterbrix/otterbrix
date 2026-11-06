@@ -32,10 +32,10 @@ namespace otterbrix {
         //! A type built by a module factory: `type_` lives on that module's arena; `arena` is never null.
         otterbrix_py_type_t(module_arena_ptr arena, components::types::complex_logical_type type);
 
-        //! Reads a type from a RELATION'S schema onto the ENGINE's arena (base_otterbrix_t::host_t::resource),
+        //! Reads a type from a RELATION'S schema on the ENGINE's arena (base_otterbrix_t::arena()),
         //! since a copied nested type keeps the source's allocator — without this ctor, a STRUCT
-        //! column's child vector outlived the connection that freed it. `space` is never null.
-        otterbrix_py_type_t(boost::intrusive_ptr<otterbrix_t> space, components::types::complex_logical_type type);
+        //! column's child vector outlived the connection that freed it. `engine_arena` is never null.
+        otterbrix_py_type_t(engine_arena_ptr engine_arena, components::types::complex_logical_type type);
 
     public:
         // `arena` is created in integration/python/main.cpp's PYBIND11_MODULE body; objects built
@@ -60,7 +60,7 @@ namespace otterbrix {
         //! (enforced by the ctors). Declared before `type_` so reverse-order destruction frees
         //! them last, after type_'s destructor has deallocated into whichever one it was built on.
         module_arena_ptr arena_;
-        boost::intrusive_ptr<otterbrix_t> space_;
+        engine_arena_ptr engine_arena_;
         components::types::complex_logical_type type_;
     };
 

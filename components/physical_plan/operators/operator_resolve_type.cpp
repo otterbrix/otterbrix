@@ -1,5 +1,6 @@
 #include "operator_resolve_type.hpp"
 
+#include "catalog_name_lookup.hpp"
 #include "catalog_write_helpers.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
@@ -31,71 +32,81 @@ namespace components::operators {
         output_schema_.back().set_alias("type_oid");
     }
 
-    actor_zeta::unique_future<void> operator_resolve_type_t::await_async_and_resume(pipeline::context_t* ctx) {
-        constexpr catalog::oid_t kPgType = catalog::well_known_oid::pg_type_table;
-        constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
-
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
-
-        for (auto& entry : node_->entries()) {
-            // Resolve the entry's namespace first. "public" / "pg_catalog" are
-            // well-known constants and don't need a disk roundtrip; arbitrary names
-            // go through pg_namespace.
-            auto namespace_oid = catalog::INVALID_OID;
-            if (entry.dbname == "public" || entry.dbname.empty()) {
-                namespace_oid = catalog::well_known_oid::public_namespace;
-            } else if (entry.dbname == "pg_catalog") {
-                namespace_oid = catalog::well_known_oid::pg_catalog_namespace;
-            } else if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-                std::pmr::vector<std::uint64_t> ns_keys(resource_);
-                ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
-                auto [_n, nf] = actor_zeta::otterbrix::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::read_chunks_by_key,
-                    exec_ctx,
-                    kPgNamespace,
-                    std::move(ns_keys),
-                    components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
-                    std::pmr::vector<std::uint64_t>{resource_});
-                auto ns_batches_r = co_await std::move(nf);
-                if (ns_batches_r.has_error()) {
-                    // A failed pg_namespace read is not a miss; saying "not found" here hides it.
-                    set_error(ns_batches_r.error());
-                    co_return;
-                }
-                auto& ns_batches = ns_batches_r.value();
-                if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
-                    !ns_batches[0].is_null(0, 0)) {
-                    namespace_oid = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
-                }
-            }
-            if (namespace_oid == catalog::INVALID_OID || ctx->disk_address == actor_zeta::address_t::empty_address()) {
-                continue;
-            }
-
-            // pg_type columns, by the order system_table_schemas.cpp persists them:
-            //   0 oid, 1 typname, 2 typnamespace, 3 typdefspec.
-            std::pmr::vector<std::uint64_t> typ_keys(resource_);
+    namespace {
+        // pg_type columns, by the order system_table_schemas.cpp persists them:
+        //   0 oid, 1 typname, 2 typnamespace, 3 typdefspec.
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
+        read_pg_type(std::pmr::memory_resource* resource,
+                     pipeline::context_t* ctx,
+                     catalog::oid_t namespace_oid,
+                     std::string type_name) {
+            components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+            std::pmr::vector<std::uint64_t> typ_keys(resource);
             typ_keys.emplace_back(catalog::pg_type_col::typname);
             typ_keys.emplace_back(catalog::pg_type_col::typnamespace);
-            auto [_t, tf] = actor_zeta::otterbrix::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::read_chunks_by_key,
-                exec_ctx,
-                kPgType,
-                std::move(typ_keys),
-                components::operators::make_key_chunk(resource_, std::string_view{entry.type_name}, namespace_oid),
-                std::pmr::vector<std::uint64_t>{resource_});
-            auto batches_r = co_await std::move(tf);
-            if (batches_r.has_error()) {
-                set_error(batches_r.error());
-                co_return;
+            auto [_t, tf] =
+                actor_zeta::otterbrix::send(ctx->disk_address,
+                                            &services::disk::manager_disk_t::read_chunks_by_key,
+                                            exec_ctx,
+                                            catalog::well_known_oid::pg_type_table,
+                                            std::move(typ_keys),
+                                            make_key_chunk(resource, std::string_view{type_name}, namespace_oid),
+                                            std::pmr::vector<std::uint64_t>{resource});
+            co_return co_await std::move(tf);
+        }
+
+        bool holds_a_type(const std::pmr::vector<vector::data_chunk_t>& batches) {
+            return !batches.empty() && batches.front().size() != 0 && batches.front().column_count() >= 4;
+        }
+    } // namespace
+
+    actor_zeta::unique_future<void> operator_resolve_type_t::await_async_and_resume(pipeline::context_t* ctx) {
+        for (auto& entry : node_->entries()) {
+            if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
+                break;
             }
-            auto& batches = batches_r.value();
+            if (entry.type_md.has_value()) {
+                continue;
+            }
+            std::pmr::vector<vector::data_chunk_t> batches{resource_};
+            // A bare type name looks in pg_catalog before the place, as a bare relation name does.
+            if (entry.database.empty() && entry.schema.empty()) {
+                auto in_catalog = co_await read_pg_type(resource_,
+                                                        ctx,
+                                                        catalog::well_known_oid::pg_catalog_namespace,
+                                                        entry.type_name);
+                if (in_catalog.has_error()) {
+                    set_error(in_catalog.error());
+                    co_return;
+                }
+                batches = std::move(in_catalog.value());
+            }
+            if (!holds_a_type(batches)) {
+                auto schema =
+                    co_await lookup_schema(resource_,
+                                           ctx,
+                                           catalog::complete_name(ctx->place, {}, entry.database, entry.schema));
+                if (schema.has_error()) {
+                    // A failed pg_namespace read is not a miss; saying "not found" here hides it.
+                    set_error(schema.error());
+                    co_return;
+                }
+                entry.database_oid = schema.value().database_oid;
+                entry.namespace_oid = schema.value().namespace_oid;
+                if (entry.namespace_oid == catalog::INVALID_OID) {
+                    continue;
+                }
+                auto in_schema = co_await read_pg_type(resource_, ctx, entry.namespace_oid, entry.type_name);
+                if (in_schema.has_error()) {
+                    set_error(in_schema.error());
+                    co_return;
+                }
+                batches = std::move(in_schema.value());
+            }
 
             // A miss leaves the entry at INVALID_OID with no type_md — that is how
             // "type is not registered" is reported.
-            if (batches.empty() || batches.front().size() == 0 || batches.front().column_count() < 4) {
+            if (!holds_a_type(batches)) {
                 continue;
             }
             const auto& batch = batches.front();

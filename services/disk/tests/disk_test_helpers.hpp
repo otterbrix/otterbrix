@@ -77,7 +77,8 @@ namespace disk_test_helpers {
     catalog::oid_t test_create_namespace(Fx& fx, const std::string& name) {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t ns_oid = oids[0];
-        auto writes = catalog::build_create_namespace_writes(&fx.resource, name, ns_oid);
+        auto writes =
+            catalog::build_create_namespace_writes(&fx.resource, name, ns_oid, catalog::well_known_oid::main_database);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,

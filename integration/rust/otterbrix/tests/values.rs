@@ -5,7 +5,7 @@ use otterbrix::{Error, SqlParam, SqlParamValue, Value};
 #[test]
 fn extract_string_value() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name) VALUES ('hello');")
@@ -21,7 +21,7 @@ fn extract_string_value() {
 #[test]
 fn extract_integer_value() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (num) VALUES (42);").unwrap();
@@ -35,7 +35,7 @@ fn extract_integer_value() {
 #[test]
 fn extract_uint_value() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
@@ -62,7 +62,7 @@ fn extract_uint_value() {
 #[test]
 fn extract_bool_value() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t (flag boolean);").unwrap();
 
     db.execute("INSERT INTO db.t (flag) VALUES (true);")
@@ -77,7 +77,7 @@ fn extract_bool_value() {
 #[test]
 fn extract_double_value() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t (val double);").unwrap();
 
     db.execute("INSERT INTO db.t (val) VALUES (2.5);").unwrap();
@@ -92,7 +92,7 @@ fn extract_double_value() {
 #[test]
 fn column_names() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Alice', 30);")
@@ -108,7 +108,7 @@ fn column_names() {
 #[test]
 fn get_value_by_name() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (city, pop) VALUES ('Moscow', 12000000);")
@@ -128,7 +128,7 @@ fn get_value_by_name() {
 #[test]
 fn from_value_typed_extraction() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, count) VALUES ('test', 99);")
@@ -144,7 +144,7 @@ fn from_value_typed_extraction() {
 #[test]
 fn from_value_type_mismatch() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name) VALUES ('hello');")
@@ -188,7 +188,7 @@ fn value_display() {
 #[test]
 fn extract_i64_min_and_max() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
@@ -216,7 +216,7 @@ fn extract_i64_min_and_max() {
 #[test]
 fn extract_u64_max() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
@@ -240,7 +240,7 @@ fn extract_u64_max() {
 #[test]
 fn extract_empty_string() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
@@ -260,7 +260,7 @@ fn extract_empty_string() {
 #[test]
 fn extract_double_infinity() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
@@ -288,7 +288,7 @@ fn extract_double_infinity() {
 #[test]
 fn extract_double_nan() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
@@ -308,7 +308,7 @@ fn extract_double_nan() {
 #[test]
 fn extract_utf8_strings() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(

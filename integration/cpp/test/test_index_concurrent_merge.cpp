@@ -111,7 +111,7 @@ TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_o
         auto* d = space.dispatcher();
         auto exec = [&](const std::string& sql) { return d->execute_sql(otterbrix::session_id_t(), sql); };
 
-        REQUIRE(exec("CREATE DATABASE cm;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA cm;")->is_success());
         REQUIRE(exec("CREATE TABLE cm.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON cm.t USING hash (k);")->is_success());
 

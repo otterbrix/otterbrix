@@ -126,7 +126,7 @@ namespace {
     };
 
     void seed(otterbrix::wrapper_dispatcher_t* d, table_state_t& st, int64_t live_rows) {
-        REQUIRE(exec(d, "CREATE DATABASE rdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA rdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE rdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX k_idx ON rdb.t (k);")->is_success());
         insert_range(d, 1, live_rows);

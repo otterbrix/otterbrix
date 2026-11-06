@@ -34,13 +34,12 @@ namespace otterbrix {
 
     class relation_factory_t {
     public:
-        relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space);
-        // A cursor copy (py_connection_t::cursor) shares `space` but must not inherit
-        // scratch_tables_: two objects dropping the same table would refuse the second drop.
-        relation_factory_t(const relation_factory_t& other);
+        explicit relation_factory_t(engine_arena_ptr arena);
+        relation_factory_t(const relation_factory_t& other) = default;
         relation_factory_t& operator=(const relation_factory_t&) = delete;
         virtual ~relation_factory_t();
-        void set_null_space();
+
+        const engine_arena_ptr& arena() const noexcept { return arena_; }
 
         // Chaining operations: each takes the source node + its column schema
         // and returns the new node + its (eagerly recomputed) column schema.
@@ -62,10 +61,9 @@ namespace otterbrix {
         built_relation_t create_df_relation(std::unique_ptr<components::tableref::table_ref_t> tableref);
 
     private:
-        // Wrap a source node in an aggregate node carrying one of
-        // group/match/sort/select/limit children. Allocates the tmp.tN table
-        // exactly as the former make_aggregate_relation did and returns the
-        // composed aggregate node (column schema is computed by the callers).
+        // Wrap a source node in a nameless aggregate node carrying one of
+        // group/match/sort/select/limit children, the shape SQL builds for a subquery in FROM
+        // (column schema is computed by the callers).
         components::logical_plan::node_ptr
         make_aggregate_node(const components::logical_plan::node_ptr& from,
                             components::logical_plan::node_group_ptr group,
@@ -74,13 +72,7 @@ namespace otterbrix {
                             components::logical_plan::node_select_ptr select,
                             components::logical_plan::node_limit_ptr limit = nullptr);
 
-        boost::intrusive_ptr<otterbrix_t> space;
-
-        // Scratch tables created, in order; the destructor's body drops them via
-        // space->dispatcher() before any member is torn down. Plain std::vector, not pmr:
-        // the only arena in reach is space->dispatcher()'s, and a member initializer would
-        // make constructing a factory the first dereference of `space`.
-        std::vector<std::string> scratch_tables_;
+        engine_arena_ptr arena_;
     };
 
 } // namespace otterbrix

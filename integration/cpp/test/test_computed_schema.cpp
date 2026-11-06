@@ -29,7 +29,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA cs_testdb;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -77,7 +77,7 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA cs_testdb;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -126,7 +126,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.mt ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.mt (id, val) VALUES (1, 1), (2, 2);")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.mt (id, val) VALUES (3, 'hello');")->is_success());
@@ -182,7 +182,7 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA cs_testdb;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -226,7 +226,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.j ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.j (a.b, a.c, x) VALUES (1, 2, 9), (10, 20, 90);")->is_success());
 
@@ -308,7 +308,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.qe ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.qe (a.b, x) VALUES (1, 9);")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.qe (a.b) VALUES (5);")->is_success());
@@ -358,7 +358,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.jd ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.jd (a.b, a.c, x) VALUES (1, 2, 9), (10, 20, 90);")->is_success());
 
@@ -382,7 +382,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.je ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.je (a.b, a.c, x) VALUES (1, 2, 9);")->is_success());
 
@@ -404,7 +404,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.t4 ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.t4 (id, val) VALUES (1, 1), (2, 2);")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.t4 (id, val) VALUES (3, 'hello');")->is_success());
@@ -468,7 +468,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.m ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.m (x, v, a.b) VALUES (1, 10, 100);")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.m (x, v) VALUES (2, 'str');")->is_success());
@@ -530,7 +530,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.mm ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.mm (id, v, a.b) VALUES (1, 10, 100);")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.mm (id, v, a.b) VALUES (2, 'sv', 'sb');")->is_success());
@@ -608,7 +608,7 @@ TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete"
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.u ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.u (x) VALUES (5), (7);")->is_success());
 

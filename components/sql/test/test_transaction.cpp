@@ -2,6 +2,7 @@
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -15,7 +16,7 @@ TEST_CASE("components::sql::transaction::spellings_map_to_their_operation") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     const auto operation_of = [&](const char* query) {
-        auto statement = linitial(raw_parser(&arena_resource, query));
+        auto statement = linitial(parse_ok(&arena_resource, query));
         transform::transformer local(&resource, query);
         auto result = local.transform(transform::pg_cell_to_node_cast(statement));
         REQUIRE_FALSE(result.get_error().contains_error());
@@ -39,7 +40,7 @@ TEST_CASE("components::sql::transaction::mode_lists_are_refused") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     const auto refused = [&](const char* query) {
-        auto statement = linitial(raw_parser(&arena_resource, query));
+        auto statement = linitial(parse_ok(&arena_resource, query));
         transform::transformer local(&resource, query);
         return local.transform(transform::pg_cell_to_node_cast(statement)).get_error().contains_error();
     };

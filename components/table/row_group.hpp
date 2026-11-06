@@ -101,8 +101,12 @@ namespace components::table {
         // The same for one column only.
         void snapshot_counts(uint64_t column, append_cut_t& cut);
 
-        uint64_t
-        delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id, uint64_t sub_id);
+        uint64_t delete_rows(data_table_t& table,
+                             int64_t* row_ids,
+                             uint64_t count,
+                             uint64_t transaction_id,
+                             uint64_t sub_id,
+                             uint64_t command_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id);

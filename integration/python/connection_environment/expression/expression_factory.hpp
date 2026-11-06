@@ -64,9 +64,8 @@ namespace otterbrix {
 
     class expression_factory_t {
     public:
-        expression_factory_t(const boost::intrusive_ptr<otterbrix_t>& space);
+        explicit expression_factory_t(engine_arena_ptr arena);
         virtual ~expression_factory_t();
-        void set_null_space();
 
         expression_wrapper_t make_constant(components::vector::vector_t&& value);
 
@@ -113,13 +112,9 @@ namespace otterbrix {
     private:
         core::parameter_id_t add_value(components::vector::vector_t&& value);
 
-        // `space` must be declared before `values` (same rule as relation_factory_t): members
-        // destroy in reverse declaration order, and `values` holds vectors built on
-        // space->dispatcher()->resource(). Declared after it once, and a string constant's
-        // pmr bytes were freed into an already-destroyed resource -- EXC_BAD_ACCESS, 10/10
-        // runs (integer constants store inline and survived, so it looked selective).
-        // Pinned by tests/test_constant_outlives_its_arena.py.
-        boost::intrusive_ptr<otterbrix_t> space;
+        // Declared before `values`, whose vectors are built on it: members destroy in reverse order. Pinned by
+        // tests/test_constant_outlives_its_arena.py.
+        engine_arena_ptr arena_;
         std::unordered_map<core::parameter_id_t, components::vector::vector_t> values;
         uint64_t counter;
     };

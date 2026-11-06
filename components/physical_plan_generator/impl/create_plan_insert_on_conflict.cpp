@@ -18,6 +18,17 @@ namespace services::planner::impl {
             insert_node = insert_node->children().front().get();
         }
         const auto* insert = static_cast<const components::logical_plan::node_insert_t*>(insert_node);
+        VALUE_OR_RETURN(auto address, storage_address_of(context, insert->table_oid()));
+        // A backend that took the statement whole answers ON CONFLICT itself; otterbrix cannot find a backend's
+        // conflicting row.
+        if (address.is_remote()) {
+            std::pmr::string what{"INSERT ... ON CONFLICT into table \"", context.resource};
+            what += full_name_of(context, insert->table_oid());
+            what += "\" of connection \"";
+            what += address.connection();
+            what += "\" is not supported unless its backend takes the statement";
+            return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
+        }
 
         VALUE_OR_RETURN(auto insert_part,
                         create_plan(context,
@@ -37,6 +48,8 @@ namespace services::planner::impl {
             boost::intrusive_ptr(new ops::operator_delete(context.resource,
                                                           context.log.clone(),
                                                           insert->table_oid(),
+                                                          address,
+                                                          full_name_of(context, insert->table_oid()),
                                                           std::pmr::vector<ops::projected_column_t>{context.resource}));
         removal->set_table_has_indexes(insert->table_has_indexes());
 

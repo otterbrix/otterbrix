@@ -8,7 +8,7 @@ public class LifetimeTest
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static CursorWrapper SelectFromAnEngineNobodyHolds(string path) {
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(path));
-        using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE db;")) Assert.IsTrue(created.IsSuccess());
+        using (CursorWrapper created = otterbrix.Execute("CREATE SCHEMA db;")) Assert.IsTrue(created.IsSuccess());
         using (CursorWrapper created = otterbrix.Execute("CREATE TABLE db.t (name string);")) Assert.IsTrue(created.IsSuccess());
         using (CursorWrapper inserted = otterbrix.Execute("INSERT INTO db.t (name) VALUES ('kept');")) Assert.IsTrue(inserted.IsSuccess());
         return otterbrix.Execute("SELECT name FROM db.t;");

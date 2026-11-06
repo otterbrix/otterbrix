@@ -2,8 +2,8 @@
 
 namespace core {
 
-    std::string like_to_regex(const std::string& pattern) {
-        std::string result = "^";
+    std::pmr::string like_to_regex(std::pmr::memory_resource* resource, std::string_view pattern) {
+        std::pmr::string result{"^", resource};
         for (size_t i = 0; i < pattern.size(); ++i) {
             char c = pattern[i];
             if (c == '%') {

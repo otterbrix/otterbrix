@@ -38,7 +38,7 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
 
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(exec(dispatcher, s, "CREATE DATABASE VisDb;")->is_success());
+        REQUIRE(exec(dispatcher, s, "CREATE SCHEMA VisDb;")->is_success());
     }
     {
         auto s = otterbrix::session_id_t();
@@ -110,7 +110,7 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_keeps_rows_the_
 
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(exec(dispatcher, s, "CREATE DATABASE VisDb;")->is_success());
+        REQUIRE(exec(dispatcher, s, "CREATE SCHEMA VisDb;")->is_success());
     }
     {
         auto s = otterbrix::session_id_t();

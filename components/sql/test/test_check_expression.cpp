@@ -2,8 +2,12 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+
+#include <string>
+#include <string_view>
 
 using namespace components::sql::transform;
 using namespace components::expressions;
@@ -101,6 +105,34 @@ TEST_CASE("sql::check_expression::garbage_is_refused") {
     }
 }
 
+// The position counts characters of the CHECK text, not of the statement it is parsed in.
+TEST_CASE("sql::check_expression::parse_error_points_into_the_check_text") {
+    core::pmr::otterbrix_resource resource;
+    struct case_t {
+        const char* text;
+        const char* message;
+        int32_t position;
+    };
+    for (const auto& c : {case_t{"age > > 1", R"_(syntax error at or near ">")_", 7},
+                          case_t{"'жж' > > 1", R"_(syntax error at or near ">")_", 8},
+                          case_t{") nonsense (", R"_(syntax error at or near ")")_", 1},
+                          case_t{"s = U&'\\D800'", R"_(invalid Unicode surrogate pair at or near "'")_", 13}}) {
+        transformer tr(&resource);
+        auto parsed = tr.parse_where_expr(c.text);
+        INFO("CHECK text: " << c.text);
+        REQUIRE(parsed.has_error());
+        CHECK(parsed.error().type == core::error_code_t::sql_parse_error);
+        CHECK(std::string_view{parsed.error().what} ==
+              std::string{"CHECK constraint expression does not parse: "} + c.text + " (" + c.message + ")");
+        CHECK(parsed.error().position == c.position);
+    }
+
+    transformer tr(&resource);
+    auto empty = tr.parse_where_expr("");
+    REQUIRE(empty.has_error());
+    CHECK(empty.error().position == -1);
+}
+
 // The catalog stores the expression the user wrote, taken verbatim out of the statement rather
 // than rebuilt from the parse tree. That is what makes the round trip exact — the stored bytes
 // parse back to the same expression because they are the same bytes.
@@ -111,7 +143,7 @@ TEST_CASE("sql::check_expression::garbage_is_refused") {
 namespace {
     std::string sliced(std::pmr::memory_resource* resource, const std::string& statement) {
         std::pmr::monotonic_buffer_resource arena(resource);
-        auto* parsed = raw_parser(&arena, statement.c_str());
+        auto* parsed = parse_ok(&arena, statement.c_str());
         REQUIRE(parsed != nullptr);
         auto& node = pg_cell_to_node_cast(linitial(parsed));
         // Reach the Constraint node of `ALTER TABLE ... ADD CONSTRAINT ... CHECK (...)`.

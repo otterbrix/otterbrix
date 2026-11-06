@@ -3,6 +3,7 @@ project(test_core)
 add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
+        test_budget_resource.cpp
         test_counting_resource.cpp
         test_resource_tracer.cpp
         test_regex.cpp
@@ -16,7 +17,6 @@ target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         Catch2::Catch2WithMain
         Boost::boost
-        otterbrix::assert
         otterbrix::pmr
         otterbrix::string_buffer
         otterbrix::log

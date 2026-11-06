@@ -27,7 +27,7 @@ namespace {
     }
 } // namespace
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 
 using components::expressions::compare_type;
@@ -56,7 +56,7 @@ TEST_CASE("integration::cpp::test_collection") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();

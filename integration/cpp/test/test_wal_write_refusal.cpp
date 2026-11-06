@@ -72,7 +72,7 @@ TEST_CASE("integration::cpp::test_wal_write_refusal::insert_fails_when_the_wal_p
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE refusal;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA refusal;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE refusal.t (id bigint, payload text);")->is_success());
 
     fault.plan.fail_writes_from = fault.plan.writes_seen + 1;
@@ -95,7 +95,7 @@ TEST_CASE("integration::cpp::test_wal_write_refusal::startup_refuses_a_wal_segme
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE refusal;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA refusal;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE refusal.t (id bigint);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO refusal.t (id) VALUES (1), (2), (3);")->is_success());
     }

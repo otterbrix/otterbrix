@@ -93,7 +93,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     auto stage_error = std::move(stage_future).take_ready();
     INFO("staging into a dropped ordered index must be refused, not buffered where nothing will read it");
     REQUIRE(stage_error.contains_error());
-    REQUIRE(stage_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(stage_error.type == core::error_code_t::internal_error);
 
     auto [commit_sched, commit_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
@@ -108,7 +108,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     auto commit_error = std::move(commit_future).take_ready();
     INFO("and so must the commit that would publish it into a null tree");
     REQUIRE(commit_error.contains_error());
-    REQUIRE(commit_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(commit_error.type == core::error_code_t::internal_error);
 
     auto [stage_del_sched, stage_del_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::stage_deletes>(agent->address(),
@@ -123,7 +123,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     auto stage_del_error = std::move(stage_del_future).take_ready();
     INFO("a delete against a dropped ordered index must be refused for the same reason");
     REQUIRE(stage_del_error.contains_error());
-    REQUIRE(stage_del_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(stage_del_error.type == core::error_code_t::internal_error);
 
     auto [commit_del_sched, commit_del_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::commit_deletes>(agent->address(),
@@ -137,7 +137,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     REQUIRE(commit_del_future.is_ready());
     auto commit_del_error = std::move(commit_del_future).take_ready();
     REQUIRE(commit_del_error.contains_error());
-    REQUIRE(commit_del_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(commit_del_error.type == core::error_code_t::internal_error);
 
     // clear() must also refuse, so a repopulate of a dropped index cannot report success.
     auto [clear_sched, clear_future] =
@@ -149,7 +149,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     REQUIRE(clear_future.is_ready());
     auto clear_error = std::move(clear_future).take_ready();
     REQUIRE(clear_error.contains_error());
-    REQUIRE(clear_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(clear_error.type == core::error_code_t::internal_error);
 
     std::filesystem::remove_all(path);
 }
@@ -193,7 +193,7 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     auto stage_error = std::move(stage_future).take_ready();
     INFO("staging into a dropped hashed index must be refused");
     REQUIRE(stage_error.contains_error());
-    REQUIRE(stage_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(stage_error.type == core::error_code_t::internal_error);
 
     auto [txn_sched, txn_future] = actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
                                                                                                       session,
@@ -207,7 +207,7 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     auto txn_error = std::move(txn_future).take_ready();
     INFO("a committed insert into a dropped hashed index must be refused, not journalled");
     REQUIRE(txn_error.contains_error());
-    REQUIRE(txn_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(txn_error.type == core::error_code_t::internal_error);
 
     auto [bulk_sched, bulk_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
@@ -222,7 +222,7 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     auto bulk_error = std::move(bulk_future).take_ready();
     INFO("and so must a rebuild feed, which takes the other route into the same freed store");
     REQUIRE(bulk_error.contains_error());
-    REQUIRE(bulk_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(bulk_error.type == core::error_code_t::internal_error);
 
     auto [stage_del_sched, stage_del_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::stage_deletes>(agent->address(),
@@ -236,7 +236,7 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     REQUIRE(stage_del_future.is_ready());
     auto stage_del_error = std::move(stage_del_future).take_ready();
     REQUIRE(stage_del_error.contains_error());
-    REQUIRE(stage_del_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(stage_del_error.type == core::error_code_t::internal_error);
 
     auto [remove_sched, remove_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::commit_deletes>(agent->address(),
@@ -251,7 +251,7 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     auto remove_error = std::move(remove_future).take_ready();
     INFO("a delete against a dropped hashed index must be refused for the same reason");
     REQUIRE(remove_error.contains_error());
-    REQUIRE(remove_error.type == core::error_code_t::index_not_exists);
+    REQUIRE(remove_error.type == core::error_code_t::internal_error);
 
     std::filesystem::remove_all(path);
 }

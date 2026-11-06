@@ -29,7 +29,7 @@ namespace {
 
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher) {
         auto session = otterbrix::session_id_t();
-        REQUIRE(run(dispatcher, session, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(run(dispatcher, session, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(run(dispatcher, session, "CREATE TABLE TestDatabase.t (a BIGINT, b BIGINT);")->is_success());
         REQUIRE(run(dispatcher,
                     session,

@@ -30,8 +30,19 @@ namespace components::catalog {
                                                            oid_batch_t& oid_batch,
                                                            char relkind = relkind::regular);
 
-    std::vector<catalog_write_t>
-    build_create_namespace_writes(std::pmr::memory_resource* resource, const std::string& name, oid_t namespace_oid);
+    // A schema of the database `database_oid`: its pg_namespace row and its pg_depend 'n' edge to the database.
+    std::vector<catalog_write_t> build_create_namespace_writes(std::pmr::memory_resource* resource,
+                                                               const std::string& name,
+                                                               oid_t namespace_oid,
+                                                               oid_t database_oid);
+
+    // A database's pg_database row. `connection` is the host's connection the database is a database of, empty for a
+    // database otterbrix stores; a local one also gets its schema public (PostgreSQL 18 creates every database with
+    // one) and its information_schema (one per database, as in PostgreSQL and Trino) from the caller.
+    std::vector<catalog_write_t> build_create_database_writes(std::pmr::memory_resource* resource,
+                                                              const std::string& name,
+                                                              const std::string& connection,
+                                                              oid_t database_oid);
 
     std::vector<catalog_write_t> build_create_sequence_writes(std::pmr::memory_resource* resource,
                                                               const std::string& name,

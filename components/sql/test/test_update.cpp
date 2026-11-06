@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -15,7 +16,7 @@ using namespace components::expressions;
 // to the update consumer to inspect update_t shape.
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, PARAMS, FIELDS)                                                              \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         auto result = ([](auto _w) {                                                                                   \
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \

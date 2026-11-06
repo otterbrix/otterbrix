@@ -57,13 +57,13 @@ namespace components::execution_dag {
     core::error_t execution_node_t::validate() const {
         for (auto slot : input_indices_) {
             if (slot == invalid_slot) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph: node input is not connected", resource()});
             }
         }
         for (auto slot : output_indices_) {
             if (slot == invalid_slot) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph: node output is not connected", resource()});
             }
         }
@@ -95,7 +95,7 @@ namespace components::execution_dag {
             return error;
         }
         if (!cast_) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: cast node has no resolved cast", resource()});
         }
         return core::error_t::no_error();
@@ -114,6 +114,8 @@ namespace components::execution_dag {
             vector::vector_ops::combine_hash(distinct_hashes_, arguments.data[position], count);
         }
         const auto* hash_data = distinct_hashes_.data<uint64_t>();
+        // Arguments that stay CONSTANT after flatten (an NA column) hash into one constant cell.
+        const bool constant_hash = distinct_hashes_.get_vector_type() == vector::vector_type::CONSTANT;
         // Rows kept by this call are not stored yet: they sit at distinct_values_.size() and are read
         // back from the arguments through distinct_rows_.
         const uint64_t pending_chunk = distinct_values_.size();
@@ -121,7 +123,8 @@ namespace components::execution_dag {
         for (uint64_t row = 0; row < count; row++) {
             const uint32_t group = group_ids_[row];
             auto& set = sets.at<value_set_t>(group);
-            const auto range = set.equal_range(hash_data[row]);
+            const uint64_t hash = hash_data[constant_hash ? 0 : row];
+            const auto range = set.equal_range(hash);
             bool seen = false;
             for (auto it = range.first; it != range.second && !seen; ++it) {
                 const auto& ref = it->second;
@@ -132,7 +135,7 @@ namespace components::execution_dag {
             if (seen) {
                 continue;
             }
-            set.emplace(hash_data[row], kept_row_t{pending_chunk, kept});
+            set.emplace(hash, kept_row_t{pending_chunk, kept});
             distinct_rows_.set_index(kept, row);
             distinct_groups_.push_back(group);
             kept++;
@@ -176,7 +179,7 @@ namespace components::execution_dag {
             auto layout = executor_->state_layout();
             if (layout.size == 0) {
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph: aggregate cannot accumulate its argument type", resource()});
             }
             states_.emplace(resource(), layout);
@@ -217,7 +220,7 @@ namespace components::execution_dag {
             const auto& entries = nested->entries();
             if (step >= entries.size()) {
                 return core::error_t(
-                    core::error_code_t::schema_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph: field node step is outside the nested value", resource()});
             }
             nested = entries[step].get();
@@ -250,7 +253,7 @@ namespace components::execution_dag {
             return error;
         }
         if (path_.empty()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: field node has no path", resource()});
         }
         return core::error_t::no_error();
@@ -286,7 +289,7 @@ namespace components::execution_dag {
         const size_t expected = operators::arity_of(op_) == operators::operator_arity::binary ? 2 : 1;
         if (input_indices_.size() != expected) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: operator node operand count does not match its arity", resource()});
         }
         return core::error_t::no_error();
@@ -395,12 +398,12 @@ namespace components::execution_dag {
             return error;
         }
         if (input_indices_.empty()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: case_when node has no condition", resource()});
         }
         // One mask per condition, plus the DEFAULT arm's.
         if (output_indices_.size() != input_indices_.size() + 1) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: case_when node needs one mask per condition "
                                                   "plus a default",
                                                   resource()});
@@ -451,7 +454,7 @@ namespace components::execution_dag {
         }
         if (arm_count_ == 0 || input_indices_.size() != arm_count_ * 2) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: case_then node needs one mask per value", resource()});
         }
         return core::error_t::no_error();
@@ -465,11 +468,11 @@ namespace components::execution_dag {
         if (kind_ == blend_kind::case_when) {
             if (input_indices_.size() < 2) {
                 return core::error_t(
-                    core::error_code_t::schema_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph: case node has no condition and result pair", resource()});
             }
         } else if (input_indices_.empty()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: blend node has no operands", resource()});
         }
         return core::error_t::no_error();
@@ -505,7 +508,7 @@ namespace components::execution_dag {
             }
             if (!states_) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph: the accumulators must be reserved before a chunk", resource()});
             }
             if (!distinct_ || input_indices_.empty()) {
@@ -535,7 +538,7 @@ namespace components::execution_dag {
         assert(chunk.size() == count);
         if (chunk.column_count() != output_indices_.size()) {
             return core::error_t(
-                core::error_code_t::incorrect_function_return_type,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: function returned an unexpected column count", resource()});
         }
         for (size_t position = 0; position < output_indices_.size(); position++) {
@@ -551,11 +554,11 @@ namespace components::execution_dag {
         }
         if (function_ == nullptr) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: function node has no resolved function", resource()});
         }
         if (reduces_ && output_indices_.size() != 1) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: reduction produces exactly one value", resource()});
         }
         return core::error_t::no_error();
@@ -570,7 +573,7 @@ namespace components::execution_dag {
             return core::error_t::no_error();
         }
         if (parameters_ == nullptr) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: parameters are not bound", resource()});
         }
         const auto& value = parameters_->at(id_);
@@ -578,7 +581,7 @@ namespace components::execution_dag {
         // the parameter's buffer with the wrong layout.
         if (output(0).type() != value.type()) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: parameter type differs from its slot's", resource()});
         }
         output(0).reference(value);
@@ -612,7 +615,7 @@ namespace components::execution_dag {
         bool comparison = input_indices_.size() == 2 && vector::operations::is_quantifiable(op_);
         if (output_indices_.size() != 1 || (!match && !comparison)) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: membership node needs a probe, a set and a comparison or flags",
                                  resource()});
         }
@@ -622,9 +625,10 @@ namespace components::execution_dag {
     void membership_node_t::set_parameters(const storage_parameters*) noexcept { prepared_.reset(); }
 
     core::error_t membership_node_t::process(const graph_execution_context&, uint64_t count) {
-        auto test = input_indices_.size() == 3 ? vector::operations::element_test_t{vector::operations::match_flags_of(
-                                                     input(2).get_value<std::string_view>(0))}
-                                               : vector::operations::element_test_t{op_};
+        auto test =
+            input_indices_.size() == 3
+                ? vector::operations::element_test_t{vector::operations::match_flags_of(input(2).get_value<uint8_t>(0))}
+                : vector::operations::element_test_t{op_};
         return vector::operations::apply_quantified(test,
                                                     kind_,
                                                     input(0),
@@ -854,13 +858,13 @@ namespace components::execution_dag {
             }
             for (auto slot : nodes_[index]->input_indices()) {
                 if (slot >= slots_.size()) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::internal_error,
                                          std::pmr::string{"execution graph: input slot misconfigured", resource()});
                 }
             }
             for (auto slot : nodes_[index]->output_indices()) {
                 if (slot >= slots_.size() || slots_[slot].bound || producer[slot] != invalid_node) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::internal_error,
                                          std::pmr::string{"execution graph: output slot misconfigured", resource()});
                 }
                 producer[slot] = node_id_t{index};
@@ -868,13 +872,13 @@ namespace components::execution_dag {
         }
         for (size_t index = 0; index < slots_.size(); index++) {
             if (!slots_[index].typed || (!slots_[index].bound && producer[index] == invalid_node)) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph: intermediate slot misconfigured", resource()});
             }
         }
         for (auto slot : output_slots_) {
             if (slot >= slots_.size()) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph: output slot misconfigured", resource()});
             }
         }
@@ -964,7 +968,7 @@ namespace components::execution_dag {
             }
         }
         if (order_.size() != live_count) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: cycle detected", resource()});
         }
         return core::error_t::no_error();
@@ -994,7 +998,7 @@ namespace components::execution_dag {
 
     core::error_t execution_dag_t::prepare() {
         if (output_slots_.empty()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: no outputs were set", resource()});
         }
         auto error = validate();
@@ -1131,13 +1135,13 @@ namespace components::execution_dag {
 
     core::error_t execution_dag_t::bind_inputs(const vector::data_chunk_t& input) {
         if (!prepared_) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: process() before prepare()", resource()});
         }
         const uint64_t count = input.size();
         if (count > capacity_) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: input chunk exceeds the graph capacity", resource()});
         }
         for (size_t index = 0; index < slots_.size(); index++) {
@@ -1146,13 +1150,13 @@ namespace components::execution_dag {
             }
             if (slots_[index].input_column >= input.column_count()) {
                 return core::error_t(
-                    core::error_code_t::schema_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph: input column is missing from the chunk", resource()});
             }
             const auto& column = input.data[slots_[index].input_column];
             if (column.type() != slots_[index].type) {
                 return core::error_t(
-                    core::error_code_t::schema_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph: input column type does not match its slot", resource()});
             }
             data_storage_[index].reference(column);
@@ -1198,11 +1202,22 @@ namespace components::execution_dag {
         return data_storage_[key_slots_[index]];
     }
 
+    void execution_dag_t::take_key_values(size_t index, vector::vector_t* out) {
+        assert(index < key_slots_.size());
+        const slot_id_t slot = key_slots_[index];
+        if (slots_[slot].bound) {
+            out->reference(data_storage_[slot]);
+            return;
+        }
+        *out = std::move(data_storage_[slot]);
+        data_storage_[slot] = vector::vector_t(resource_, slots_[slot].type, true, false, capacity_);
+    }
+
     core::error_t execution_dag_t::process_groups(core::span<const uint32_t> group_ids,
                                                   const graph_execution_context& context) {
         if (group_ids.size() < bound_rows_) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: one group id per input row is required", resource()});
         }
         for (auto id : reduction_nodes_) {
@@ -1221,7 +1236,7 @@ namespace components::execution_dag {
 
     core::error_t execution_dag_t::reserve_groups(uint64_t group_count) {
         if (!prepared_) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: reserve_groups() before prepare()", resource()});
         }
         for (auto id : reduction_nodes_) {
@@ -1235,7 +1250,7 @@ namespace components::execution_dag {
 
     core::error_t execution_dag_t::emit_groups(const graph_execution_context& context, uint64_t first, uint64_t count) {
         if (!prepared_) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"execution graph: finalize() before prepare()", resource()});
         }
         for (auto id : reduction_nodes_) {
@@ -1261,7 +1276,7 @@ namespace components::execution_dag {
                                                    uint64_t target_row) {
         if (keys.size() != key_slots_.size()) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: one key vector per declared key slot is required", resource()});
         }
         // The key values of these groups replace what the last chunk left in the key slots, so the
@@ -1303,13 +1318,13 @@ namespace components::execution_dag {
     execution_dag_t::copy_outputs(uint64_t rows, vector::data_chunk_t* target, uint64_t target_row) const {
         if (target->column_count() < output_slots_.size()) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: finalize target has fewer columns than the graph outputs",
                                  resource()});
         }
         if (target_row + rows > target->capacity()) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph: finalize target cannot hold the outputs at that row", resource()});
         }
         for (size_t index = 0; index < output_slots_.size(); index++) {

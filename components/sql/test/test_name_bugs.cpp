@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -28,7 +29,7 @@ namespace {
         static core::pmr::otterbrix_resource resource;
         std::pmr::monotonic_buffer_resource arena(&resource);
         transform::transformer transformer(&resource);
-        auto* raw = raw_parser(&arena, sql.c_str());
+        auto* raw = parse_ok(&arena, sql.c_str());
         REQUIRE(raw != nullptr);
         auto result = transformer.transform(transform::pg_cell_to_node_cast(linitial(raw))).finalize();
         transformed_t out;
@@ -91,9 +92,16 @@ TEST_CASE("components::sql::name_bugs::one_part_type_named_pg_catalog_is_just_a_
     REQUIRE(type.type_name() == "pg_catalog");
 }
 
-TEST_CASE("components::sql::name_bugs::type_outside_public_or_too_long_is_refused") {
-    require_refused("CREATE TABLE t (a d.mytype);", core::error_code_t::invalid_parameter);
-    require_refused("CREATE TABLE t (a x.y.mytype);", core::error_code_t::invalid_parameter);
+// A type name follows the rule of a relation name: [database.][schema.]name.
+TEST_CASE("components::sql::name_bugs::a_type_name_takes_up_to_three_parts") {
+    for (const std::string sql : {"CREATE TABLE t (a d.mytype);", "CREATE TABLE t (a x.y.mytype);"}) {
+        const auto transformed = transform_one(sql);
+        INFO(sql << ": " << transformed.what);
+        const auto& type = only_column_type(transformed);
+        REQUIRE(type.type() == types::logical_type::UNKNOWN);
+        REQUIRE(type.type_name() == "mytype");
+    }
+    require_refused("CREATE TABLE t (a w.x.y.mytype);", core::error_code_t::sql_parse_error);
 }
 
 // A REFERENCES target keeps every written slot; the refusal comes after resolve.
@@ -105,16 +113,17 @@ TEST_CASE("components::sql::name_bugs::fk_target_keeps_its_schema_and_uid") {
         INFO(sql << ": " << t.what);
         REQUIRE(t.ok);
         REQUIRE(t.resolves.referenced_tables.size() == 1);
-        CHECK(t.resolves.referenced_tables.front().database.t == "d");
-        CHECK(t.resolves.referenced_tables.front().schema.t == "s");
-        CHECK(t.resolves.referenced_tables.front().collection.t == "p");
+        CHECK(t.resolves.referenced_tables.front().target.database.t == "d");
+        CHECK(t.resolves.referenced_tables.front().target.schema.t == "s");
+        CHECK(t.resolves.referenced_tables.front().target.collection.t == "p");
     }
     auto plain = transform_one("CREATE TABLE c (id BIGINT REFERENCES d.p (id));");
     INFO(plain.what);
     REQUIRE(plain.ok);
     REQUIRE(plain.resolves.referenced_tables.size() == 1);
-    CHECK(plain.resolves.referenced_tables.front().database.t == "d");
-    CHECK(plain.resolves.referenced_tables.front().schema.t.empty());
+    // Two parts are schema.relation.
+    CHECK(plain.resolves.referenced_tables.front().target.schema.t == "d");
+    CHECK(plain.resolves.referenced_tables.front().target.database.t.empty());
 }
 
 TEST_CASE("components::sql::name_bugs::create_table_like_inherits_of_are_refused") {

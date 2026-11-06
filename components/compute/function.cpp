@@ -45,30 +45,33 @@ namespace components::compute {
                        std::string_view name,
                        arity fn_arity,
                        const function_doc& doc,
-                       const function_options* default_options)
+                       const function_options* default_options,
+                       volatility_t volatility)
         : name_(name, resource)
         , arity_(fn_arity)
         , doc_(doc, resource)
-        , default_options_(default_options) {}
+        , default_options_(default_options)
+        , volatility_(volatility) {}
 
     function::function(std::pmr::memory_resource* resource, const function& other)
         : name_(other.name_, resource)
         , arity_(other.arity_)
         , doc_(other.doc_, resource)
-        , default_options_(other.default_options_) {}
+        , default_options_(other.default_options_)
+        , volatility_(other.volatility_) {}
 
     core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
     function::dispatch_exact(std::pmr::memory_resource* resource,
                              const std::pmr::vector<complex_logical_type>& types) const {
         if (!arity_.varargs && arity_.num_args != types.size()) {
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::internal_error,
 
                                  std::pmr::string{"Arity mismatch", resource});
         }
 
         auto* kernel = detail::dispatch_exact_impl(*this, types);
         if (!kernel) {
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::internal_error,
 
                                  std::pmr::string{"No matching kernel", resource});
         }
@@ -99,14 +102,14 @@ namespace components::compute {
         core::error_t check_args(std::pmr::memory_resource* resource,
                                  const std::pmr::vector<types::complex_logical_type>& types) {
             if (types.size() != in_types_.size()) {
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::internal_error,
 
                                      std::pmr::string{"Invalid argument count", resource});
             }
 
             for (size_t i = 0; i < types.size(); ++i) {
                 if (types[i].type() != in_types_[i].type()) {
-                    return core::error_t(core::error_code_t::kernel_error,
+                    return core::error_t(core::error_code_t::internal_error,
 
                                          std::pmr::string{"Type mismatch", resource});
                 }
@@ -128,7 +131,7 @@ namespace components::compute {
             // all batches must have same types
             for (auto it = ++args.begin(); it != args.end(); ++it) {
                 if (types != it->types()) {
-                    return core::error_t(core::error_code_t::kernel_error,
+                    return core::error_t(core::error_code_t::internal_error,
 
                                          std::pmr::string{"Type mismatch", resource});
                 }
@@ -158,7 +161,7 @@ namespace components::compute {
             if (auto st = check_init(); st.contains_error()) {
                 return st;
             }
-            if (auto st = check_args(kernel_ctx_.value().exec_context().resource(), args); st.contains_error()) {
+            if (auto st = check_args(kernel_ctx_->exec_context().resource(), args); st.contains_error()) {
                 return st;
             }
             return executor_->update(args, groups, states);
@@ -197,7 +200,7 @@ namespace components::compute {
             if (!kernel_ctx_) {
                 // NO IMPLICIT INIT: every in-tree caller inits before use, so this is
                 // a caller bug, not papered over with a process-global arena.
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"function executor used before init(): "
                                                       "no execution context was ever supplied",
                                                       in_types_.get_allocator().resource()});
@@ -208,24 +211,24 @@ namespace components::compute {
 
         core::error_t init_kernel(const function_options* options) {
             if (func_.doc().options_required && !options && !func_.default_options()) {
-                std::pmr::string what{"Function ", kernel_ctx_.value().exec_context().resource()};
+                std::pmr::string what{"Function ", kernel_ctx_->exec_context().resource()};
                 what += func_.name();
                 what += " cannot be executed without options";
-                return core::error_t(core::error_code_t::kernel_error, std::move(what));
+                return core::error_t(core::error_code_t::internal_error, std::move(what));
             }
 
             if (!options) {
                 options = func_.default_options();
             }
 
-            if (auto state = kernel_.init(kernel_ctx_.value(), {kernel_, in_types_, options}); !state.has_error()) {
+            if (auto state = kernel_.init(*kernel_ctx_, {kernel_, in_types_, options}); !state.has_error()) {
                 state_ = std::move(state.value());
-                kernel_ctx_.value().set_state(state_.get());
+                kernel_ctx_->set_state(state_.get());
             } else {
                 return state.error();
             }
 
-            return executor_->init(kernel_ctx_.value(), {kernel_, in_types_, options});
+            return executor_->init(*kernel_ctx_, {kernel_, in_types_, options});
         }
 
         std::pmr::vector<complex_logical_type> in_types_;
@@ -259,7 +262,7 @@ namespace components::compute {
         accept_visitor(vis);
 
         if (!vis.result) {
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::internal_error,
 
                                  std::pmr::string{"Unsupported function kind", resource});
         }
@@ -290,7 +293,7 @@ namespace components::compute {
                                                       const function_options* options,
                                                       exec_context_t& ctx) const {
         if (args.empty()) {
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::internal_error,
 
                                  std::pmr::string{"Execution batch cannot be empty!", ctx.resource()});
         }
@@ -318,8 +321,9 @@ namespace components::compute {
                                      std::string_view name,
                                      arity fn_arity,
                                      const function_doc& doc,
-                                     size_t available_kernel_slots)
-        : function_impl<vector_kernel>(resource, name, fn_arity, doc, available_kernel_slots) {}
+                                     size_t available_kernel_slots,
+                                     volatility_t volatility)
+        : function_impl<vector_kernel>(resource, name, fn_arity, doc, available_kernel_slots, volatility) {}
 
     vector_function::vector_function(std::pmr::memory_resource* resource, const vector_function& other)
         : function_impl<vector_kernel>(resource, other) {}
@@ -335,8 +339,9 @@ namespace components::compute {
                                            arity fn_arity,
                                            const function_doc& doc,
                                            size_t available_kernel_slots,
-                                           bool mergeable)
-        : function_impl<aggregate_kernel>(resource, name, fn_arity, doc, available_kernel_slots)
+                                           bool mergeable,
+                                           volatility_t volatility)
+        : function_impl<aggregate_kernel>(resource, name, fn_arity, doc, available_kernel_slots, volatility)
         , mergeable_(mergeable) {}
 
     aggregate_function::aggregate_function(std::pmr::memory_resource* resource, const aggregate_function& other)
@@ -353,8 +358,9 @@ namespace components::compute {
                                      std::string_view name,
                                      arity fn_arity,
                                      const function_doc& doc,
-                                     size_t available_kernel_slots)
-        : function_impl<expand_kernel>(resource, name, fn_arity, doc, available_kernel_slots) {}
+                                     size_t available_kernel_slots,
+                                     volatility_t volatility)
+        : function_impl<expand_kernel>(resource, name, fn_arity, doc, available_kernel_slots, volatility) {}
 
     expand_function::expand_function(std::pmr::memory_resource* resource, const expand_function& other)
         : function_impl<expand_kernel>(resource, other) {}
@@ -367,7 +373,20 @@ namespace components::compute {
 
     function_registry_t::function_registry_t(std::pmr::memory_resource* resource)
         : resource_(resource)
-        , functions_(resource_) {}
+        , functions_(resource_)
+        , schemas_(resource_) {}
+
+    function_registry_t::function_registry_t(const function_registry_t& other, std::pmr::memory_resource* resource)
+        : resource_(resource)
+        , functions_(resource_)
+        , schemas_(other.schemas_.begin(), other.schemas_.end(), other.schemas_.size(), resource_)
+        , current_uid_(other.current_uid_)
+        , builtin_error_(core::error_on(resource_, other.builtin_error_)) {
+        functions_.reserve(other.functions_.size());
+        for (const auto& [uid, function] : other.functions_) {
+            functions_.emplace(uid, function->get_copy(resource_));
+        }
+    }
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (builtin_error_.contains_error()) {
@@ -375,7 +394,7 @@ namespace components::compute {
             return core::error_on(resource_, builtin_error_);
         }
         if (!function) {
-            return core::error_t(core::error_code_t::function_registry_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"Cannot add null function", resource_});
         }
 
@@ -391,7 +410,7 @@ namespace components::compute {
             return core::error_on(resource_, builtin_error_);
         }
         if (!function) {
-            return core::error_t(core::error_code_t::function_registry_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"Cannot add null function", resource_});
         }
         functions_.insert_or_assign(uid, std::move(function));
@@ -412,19 +431,30 @@ namespace components::compute {
         return it->second.get();
     }
 
-    bool function_registry_t::remove_function(function_uid uid) { return functions_.erase(uid) > 0; }
+    bool function_registry_t::remove_function(function_uid uid) {
+        schemas_.erase(uid);
+        return functions_.erase(uid) > 0;
+    }
 
-    bool
-    function_registry_t::remove_function_by_signature(const std::string& name,
-                                                      const std::pmr::vector<types::complex_logical_type>& inputs) {
-        const auto uid = find_overload(name, inputs);
-        return uid != invalid_function_uid && functions_.erase(uid) == 1;
+    void function_registry_t::set_schema(function_uid uid, std::uint32_t schema_oid) { schemas_[uid] = schema_oid; }
+
+    std::uint32_t function_registry_t::schema_of(function_uid uid) const noexcept {
+        const auto it = schemas_.find(uid);
+        return it == schemas_.end() ? 0 : it->second;
+    }
+
+    bool function_registry_t::reaches(const function_scope_t& scope, function_uid uid) const noexcept {
+        if (is_builtin(uid)) {
+            return scope.builtins;
+        }
+        return scope.schema_oid != 0 && schema_of(uid) == scope.schema_oid;
     }
 
     function_uid function_registry_t::find_overload(std::string_view name,
-                                                    const std::pmr::vector<types::complex_logical_type>& inputs) const {
+                                                    const std::pmr::vector<types::complex_logical_type>& inputs,
+                                                    std::uint32_t schema_oid) const {
         for (const auto& [uid, func] : functions_) {
-            if (!func || func->name() != name) {
+            if (is_builtin(uid) || !func || func->name() != name || schema_of(uid) != schema_oid) {
                 continue;
             }
             for (const auto& sig : func->get_signatures()) {
@@ -462,7 +492,7 @@ namespace components::compute {
             return; // already poisoned; the FIRST failure is the one reported
         }
         if (!function) {
-            poison_builtins_(core::error_t(core::error_code_t::function_registry_error,
+            poison_builtins_(core::error_t(core::error_code_t::internal_error,
                                            std::pmr::string{"builtin registration handed a null function", resource_}));
             return;
         }
@@ -474,7 +504,7 @@ namespace components::compute {
             std::pmr::string what{"builtin '", resource_};
             what += std::pmr::string{name, resource_};
             what += "' has no DEFAULT_FUNCTIONS row";
-            poison_builtins_(core::error_t(core::error_code_t::function_registry_error, std::move(what)));
+            poison_builtins_(core::error_t(core::error_code_t::internal_error, std::move(what)));
             return;
         }
         auto added = add_function(std::move(function));
@@ -490,7 +520,7 @@ namespace components::compute {
             what += " instead of ";
             what += std::pmr::string{std::to_string(row->second), resource_};
             what += "; the whole uid table is shifted";
-            poison_builtins_(core::error_t(core::error_code_t::function_registry_error, std::move(what)));
+            poison_builtins_(core::error_t(core::error_code_t::internal_error, std::move(what)));
         }
     }
 

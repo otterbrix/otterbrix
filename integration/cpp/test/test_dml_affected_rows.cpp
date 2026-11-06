@@ -40,7 +40,7 @@ namespace {
 
 TEST_CASE("integration::cpp::dml_affected_rows::plain_writes") {
     fixture_t db("test_dml_affected_rows/plain");
-    db.run("CREATE DATABASE ar;");
+    db.run("CREATE SCHEMA ar;");
     db.run("CREATE TABLE ar.t (id BIGINT, v BIGINT);");
 
     check_written(db.run("INSERT INTO ar.t (id, v) VALUES (1, 10), (2, 20), (3, 30);"), 3);
@@ -68,7 +68,7 @@ TEST_CASE("integration::cpp::dml_affected_rows::plain_writes") {
 
 TEST_CASE("integration::cpp::dml_affected_rows::returning") {
     fixture_t db("test_dml_affected_rows/returning");
-    db.run("CREATE DATABASE ar;");
+    db.run("CREATE SCHEMA ar;");
     db.run("CREATE TABLE ar.t (id BIGINT, v BIGINT);");
 
     auto inserted = db.run("INSERT INTO ar.t (id, v) VALUES (1, 10), (2, 20) RETURNING id;");
@@ -89,7 +89,7 @@ TEST_CASE("integration::cpp::dml_affected_rows::returning") {
 
 TEST_CASE("integration::cpp::dml_affected_rows::writes_under_constraints") {
     fixture_t db("test_dml_affected_rows/constraints");
-    db.run("CREATE DATABASE ar;");
+    db.run("CREATE SCHEMA ar;");
     db.run("CREATE TABLE ar.parent (id BIGINT PRIMARY KEY, v BIGINT);");
     db.run("CREATE TABLE ar.child (id BIGINT, parent_id BIGINT);");
     db.run("ALTER TABLE ar.parent ADD CONSTRAINT v_positive CHECK (v > 0);");
@@ -117,14 +117,14 @@ TEST_CASE("integration::cpp::dml_affected_rows::writes_under_constraints") {
 
 TEST_CASE("integration::cpp::dml_affected_rows::dynamic_schema_insert") {
     fixture_t db("test_dml_affected_rows/dynamic");
-    db.run("CREATE DATABASE ar;");
+    db.run("CREATE SCHEMA ar;");
     db.run("CREATE TABLE ar.d ();");
     check_written(db.run("INSERT INTO ar.d (id, name) VALUES (1, 'a'), (2, 'b');"), 2);
 }
 
 TEST_CASE("integration::cpp::dml_affected_rows::statements_that_write_no_rows") {
     fixture_t db("test_dml_affected_rows/no_rows");
-    CHECK_FALSE(db.run("CREATE DATABASE ar;")->is_write());
+    CHECK_FALSE(db.run("CREATE SCHEMA ar;")->is_write());
     CHECK_FALSE(db.run("CREATE TABLE ar.t (id BIGINT);")->is_write());
     db.run("INSERT INTO ar.t (id) VALUES (1), (2);");
     auto selected = db.run("SELECT id FROM ar.t;");

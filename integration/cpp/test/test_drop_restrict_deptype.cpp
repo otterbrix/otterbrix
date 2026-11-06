@@ -108,12 +108,15 @@ namespace {
         auto* resource = d->resource();
         auto node =
             components::logical_plan::make_node_drop(resource, components::logical_plan::drop_target_kind::collection);
-        node->set_target(qualified_name_t{core::dbname_t{database}, core::relname_t{relname}});
+        node->set_target(qualified_name_t{core::schema_t{database}, core::relname_t{relname}});
         node->set_behavior(components::catalog::drop_behavior_t::restrict_);
         components::logical_plan::execution_plan_t plan{resource,
                                                         node,
                                                         components::logical_plan::make_parameter_node(resource)};
-        components::sql::transform::register_catalog_resolve_table(resource, &plan.catalog_resolves, database, relname);
+        components::sql::transform::register_catalog_resolve_table(
+            resource,
+            &plan.catalog_resolves,
+            qualified_name_t{core::schema_t{database}, core::relname_t{relname}});
         return d->execute_plan(otterbrix::session_id_t(), std::move(plan));
     }
 
@@ -130,11 +133,14 @@ namespace {
         std::vector<components::logical_plan::alter_table_subcommand_t> subs;
         subs.push_back(std::move(sub));
         auto node = components::logical_plan::make_node_alter_table_multi(resource, std::move(subs));
-        node->set_target(qualified_name_t{core::dbname_t{database}, core::relname_t{relname}});
+        node->set_target(qualified_name_t{core::schema_t{database}, core::relname_t{relname}});
         components::logical_plan::execution_plan_t plan{resource,
                                                         components::logical_plan::node_ptr{node},
                                                         components::logical_plan::make_parameter_node(resource)};
-        components::sql::transform::register_catalog_resolve_table(resource, &plan.catalog_resolves, database, relname);
+        components::sql::transform::register_catalog_resolve_table(
+            resource,
+            &plan.catalog_resolves,
+            qualified_name_t{core::schema_t{database}, core::relname_t{relname}});
         return d->execute_plan(otterbrix::session_id_t(), std::move(plan));
     }
 
@@ -149,7 +155,7 @@ TEST_CASE("integration::cpp::drop_restrict::computing_table_is_blocked_by_its_ow
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.docs();");
     run_ok(d, "INSERT INTO dr.docs (id, n) VALUES (1, 42);");
 
@@ -171,7 +177,7 @@ TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index")
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.t (a bigint, b bigint);");
     run_ok(d, "INSERT INTO dr.t (a, b) VALUES (1, 10), (2, 20);");
     run_ok(d, "CREATE INDEX ix_a ON dr.t (a);");
@@ -191,7 +197,7 @@ TEST_CASE("integration::cpp::drop_restrict::column_referenced_by_a_foreign_key_i
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.parent (id bigint PRIMARY KEY);");
     run_ok(d, "CREATE TABLE dr.child (pid bigint, FOREIGN KEY (pid) REFERENCES dr.parent (id));");
 
@@ -215,7 +221,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refus
     catalog_forging_spaces_t space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.t (a bigint, b bigint);");
     run_ok(d, "INSERT INTO dr.t (a, b) VALUES (1, 10);");
 
@@ -257,7 +263,7 @@ TEST_CASE("integration::cpp::drop_restrict::table_referenced_by_a_foreign_key_is
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.parent (id bigint PRIMARY KEY);");
     run_ok(d, "INSERT INTO dr.parent (id) VALUES (1);");
     run_ok(d, "CREATE TABLE dr.child (pid bigint, FOREIGN KEY (pid) REFERENCES dr.parent (id));");
@@ -281,7 +287,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_normal_dependent_behind_an_owned_i
     catalog_forging_spaces_t space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.t (a bigint);");
     run_ok(d, "CREATE INDEX ix_a ON dr.t (a);");
     run_ok(d, "CREATE TABLE dr.other (b bigint);");
@@ -317,7 +323,7 @@ TEST_CASE("integration::cpp::drop_restrict::allowed_restrict_drop_removes_nothin
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.plain (id bigint);");
     run_ok(d, "INSERT INTO dr.plain (id) VALUES (1);");
 
@@ -337,7 +343,7 @@ TEST_CASE("integration::cpp::drop_restrict::cascade_still_drops_the_computing_ta
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE SCHEMA dr;");
     run_ok(d, "CREATE TABLE dr.docs();");
     run_ok(d, "INSERT INTO dr.docs (id, n) VALUES (1, 42);");
 

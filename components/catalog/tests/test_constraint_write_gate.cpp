@@ -61,7 +61,7 @@ namespace {
 TEST_CASE("catalog::constraint_writes::an_unstamped_conkey_column_is_refused") {
     auto writes = build_unique({oid_t{20001}, INVALID_OID});
     REQUIRE(writes.has_error());
-    REQUIRE(writes.error().type == core::error_code_t::invalid_constraint);
+    REQUIRE(writes.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("catalog::constraint_writes::an_unstamped_confkey_column_is_refused") {
@@ -78,7 +78,7 @@ TEST_CASE("catalog::constraint_writes::an_unstamped_confkey_column_is_refused") 
                                                  fk_action::no_action,
                                                  /*check_expr=*/std::string{});
     REQUIRE(writes.has_error());
-    REQUIRE(writes.error().type == core::error_code_t::invalid_constraint);
+    REQUIRE(writes.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("catalog::constraint_writes::every_conkey_column_carries_a_dependency_edge") {
@@ -107,7 +107,7 @@ TEST_CASE("catalog::index_writes::an_unstamped_indkey_column_is_refused") {
                                             {oid_t{20001}, INVALID_OID},
                                             indtype::single);
     REQUIRE(writes.has_error());
-    REQUIRE(writes.error().type == core::error_code_t::invalid_constraint);
+    REQUIRE(writes.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("catalog::index_writes::every_indkey_column_carries_a_dependency_edge") {

@@ -25,7 +25,7 @@ pub enum Value {
     UInt(u64),
     /// Floating-point; covers `float` and `double`.
     Double(f64),
-    /// UTF-8 string. The engine returns owned bytes; this variant always owns its data.
+    /// UTF-8 string. The engine lends the bytes until the value is released; this variant copies them.
     String(String),
 }
 

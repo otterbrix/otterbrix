@@ -14,7 +14,7 @@ TEST_CASE("integration::cpp::concurrency::savepoint::interleaved", "[interleaved
     engine_t engine("savepoints_interleaved");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(first, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
 
@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::concurrency::savepoint::ddl_and_dml", "[interleaved
     engine_t engine("savepoint_ddl_and_dml");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(first, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
 
@@ -195,7 +195,7 @@ TEST_CASE("integration::cpp::concurrency::savepoint::parallel", "[parallel]") {
     constexpr std::size_t sessions = 4;
     {
         session_t setup(engine, "setup");
-        require_ok(setup, "CREATE DATABASE db;");
+        require_ok(setup, "CREATE SCHEMA db;");
         require_ok(setup, "CREATE TABLE db.t (id bigint, v bigint);");
     }
 
@@ -241,7 +241,7 @@ TEST_CASE("integration::cpp::concurrency::savepoint::parallel_ddl_and_dml", "[pa
     constexpr int rounds = 5;
     {
         session_t setup(engine, "setup");
-        require_ok(setup, "CREATE DATABASE db;");
+        require_ok(setup, "CREATE SCHEMA db;");
         require_ok(setup, "CREATE TABLE db.t (id bigint, v bigint);");
     }
 

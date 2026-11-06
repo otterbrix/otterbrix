@@ -196,7 +196,7 @@ TEST_CASE("nested column: an unnamed nested struct is refused by initialize_appe
         REQUIRE_FALSE(table.append_lock(state).has_error());
         auto init = table.initialize_append(state);
         REQUIRE(init.has_error());
-        REQUIRE(init.error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(init.error().type == core::error_code_t::unimplemented_yet);
     }
 
     SECTION("POSITIVE CONTROL: naming the element struct makes the same table appendable") {
@@ -241,7 +241,7 @@ TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the
     const auto fetched = column->fetch(state, 0, non_flat);
     REQUIRE(fetched == 0);
     REQUIRE(state.has_error());
-    REQUIRE(state.scan_error.type == core::error_code_t::invalid_parameter);
+    REQUIRE(state.scan_error.type == core::error_code_t::internal_error);
 
     column_scan_state mode_state;
     mode_state.initialize(complex_logical_type{logical_type::UBIGINT});

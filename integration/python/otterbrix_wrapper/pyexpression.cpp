@@ -28,23 +28,15 @@ namespace otterbrix {
             return std::move(result.value());
         }
     } // namespace
-    // space_/env_ own their own copies (not borrowed from `conn`): the space's arena
-    // (base_otterbrix_t::host_t::resource) must outlive `expr`, even if Python drops `conn` first.
-    // See the member comments in pyexpression.hpp.
+    // arena_/env_ are held, not borrowed from `conn`: the engine arena must outlive `expr`, even if Python drops
+    // `conn` first. See the member comments in pyexpression.hpp.
     py_expression_t::py_expression_t(expression_wrapper_t expr, py_connection_t& conn)
-        : space_(conn.space_ptr())
+        : arena_(conn.arena())
         , env_(conn.shared_from_this())
-        , expr(std::move(expr)) {
-        // Unreachable from the static entry points below (each refuses a closed
-        // connection first), but a null space here means the expression stands on an arena
-        // nobody holds, and nothing above dereferences it before this check runs.
-        if (!space_) {
-            throw std::runtime_error("expression: the connection is closed");
-        }
-    }
+        , expr(std::move(expr)) {}
 
     py_expression_t::py_expression_t(expression_wrapper_t expr, const py_expression_t& source)
-        : space_(source.space_)
+        : arena_(source.arena_)
         , env_(source.env_)
         , expr(std::move(expr)) {}
 
@@ -57,8 +49,6 @@ namespace otterbrix {
 
     expression_factory_t& py_expression_t::factory() const { return *env_; }
 
-    // refuse_if_closed() first, because a closed connection has no space to allocate the key
-    // out of -- the same refusal every other door of this class gives.
     pyexpr_ptr
     py_expression_t::column_expression(const std::string& column_name, py_connection_t& conn, const std::string& side) {
         auto side_val = components::expressions::side_t::undefined;
@@ -69,13 +59,13 @@ namespace otterbrix {
         }
         conn.refuse_if_closed();
         return std::make_shared<py_expression_t>(
-            components::expressions::key_t(conn.space_ptr()->dispatcher()->resource(), column_name, side_val),
+            components::expressions::key_t(&conn.arena()->resource, column_name, side_val),
             conn);
     }
 
     pyexpr_ptr py_expression_t::constant_expression(const py::object& value, py_connection_t& conn) {
         conn.refuse_if_closed();
-        auto val = transform_python_value(conn.space_ptr()->dispatcher()->resource(), value);
+        auto val = transform_python_value(&conn.arena()->resource, value);
         if (val.has_error()) {
             throw std::runtime_error(std::string(val.error().what));
         }
@@ -83,14 +73,11 @@ namespace otterbrix {
     }
 
     pyexpr_ptr py_expression_t::count_expression(py_connection_t& conn) {
-        // The third door, and it was the one left unlocked: make_count_expression() dereferences
-        // expression_factory_t::space, which close() nulls, one frame down.
         conn.refuse_if_closed();
         return std::make_shared<py_expression_t>(conn.make_count_expression(), conn);
     }
 
-    // No open check: convert_to_string touches none of the space, so an expression stays
-    // printable after its connection closes (`space_` keeps the bytes alive).
+    // No open check: an expression stays printable after its connection closes (`arena_` keeps the bytes alive).
     std::string py_expression_t::to_string() const {
         auto result = factory().convert_to_string(expr);
         if (result.has_error()) {
@@ -121,11 +108,9 @@ namespace otterbrix {
     pyexpr_ptr py_expression_t::abs() { return scalar_unary_expression(expressions::scalar_type::abs, *this); }
 
     pyexpr_ptr py_expression_t::negate() {
-        // Live_env() first, so the -1 below allocates from a connection that still
-        // has a space, rather than surfacing a closed connection inside multiply().
         auto& conn = live_env();
         auto value = py::int_(-1);
-        auto val = transform_python_value(conn.space_ptr()->dispatcher()->resource(), value);
+        auto val = transform_python_value(&conn.arena()->resource, value);
         if (val.has_error()) {
             throw std::runtime_error(std::string(val.error().what));
         }

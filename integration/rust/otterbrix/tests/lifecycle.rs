@@ -42,7 +42,7 @@ fn open_with_explicit_log_level() {
         .main_path(format!("{base}/main"))
         .build();
     let db = Database::open(config).expect("open with explicit log level");
-    db.execute("CREATE DATABASE leveldb;").unwrap();
+    db.execute("CREATE SCHEMA leveldb;").unwrap();
     db.execute("CREATE TABLE leveldb.t (n integer);").unwrap();
 }
 
@@ -52,13 +52,20 @@ fn a_second_open_of_the_same_directory_is_refused() {
     let dir = format!("/tmp/otterbrix_safe_locked_{}_{id}", process::id());
     let first = Database::open(Config::new(&dir)).expect("first open");
     match Database::open(Config::new(&dir)) {
-        Err(otterbrix::Error::Engine { code, message }) => {
+        Err(otterbrix::Error::Engine {
+            code,
+            message,
+            transaction_status,
+            position,
+        }) => {
             assert_ne!(code, 0);
+            assert_eq!(transaction_status, None, "a refused start has no session");
+            assert_eq!(position, None, "a refused start has no statement");
             assert!(message.contains("unique directory"), "refusal: {message}");
         }
         other => panic!("a second open must be refused with the engine's reason, got {other:?}"),
     }
     drop(first);
     let reopened = Database::open(Config::new(&dir)).expect("open after the first engine is gone");
-    reopened.execute("CREATE DATABASE relocked;").unwrap();
+    reopened.execute("CREATE SCHEMA relocked;").unwrap();
 }

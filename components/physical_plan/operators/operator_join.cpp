@@ -8,10 +8,23 @@ namespace components::operators {
     operator_join_t::operator_join_t(std::pmr::memory_resource* resource,
                                      log_t log,
                                      type join_type,
-                                     const expressions::expression_ptr& expression)
+                                     const expressions::expression_ptr& expression,
+                                     bool single_match)
         : read_only_operator_t(resource, log, operator_type::join)
         , join_type_(join_type)
-        , expression_(expression) {}
+        , expression_(expression)
+        , single_match_(single_match) {}
+
+    std::pmr::string operator_join_t::explain_label_impl() const {
+        switch (join_type_) {
+            case type::semi:
+                return std::pmr::string{"Nested Loop Semi Join", resource_};
+            case type::anti:
+                return std::pmr::string{"Nested Loop Anti Join", resource_};
+            default:
+                return std::pmr::string{resource_};
+        }
+    }
 
     core::error_t operator_join_t::build_layout_(pipeline::context_t* context,
                                                  const vector::data_chunk_t& probe_front) {
@@ -23,14 +36,18 @@ namespace components::operators {
         assert(!build_chunks.empty());
 
         res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
-        // Nested-loop is never swapped: it evaluates its ON via key.side(), so the
-        // probe is always logical-left and the build always logical-right.
-        join_detail::compute_join_layout(probe_front,
-                                         build_chunks.front(),
-                                         /*swapped=*/false,
-                                         res_types_,
-                                         indices_left_,
-                                         indices_right_);
+        if (join_type_ == type::semi || join_type_ == type::anti) {
+            res_types_ = probe_front.types();
+        } else {
+            // Nested-loop is never swapped: it evaluates its ON via key.side(), so the
+            // probe is always logical-left and the build always logical-right.
+            join_detail::compute_join_layout(probe_front,
+                                             build_chunks.front(),
+                                             /*swapped=*/false,
+                                             res_types_,
+                                             indices_left_,
+                                             indices_right_);
+        }
 
         condition_ = expressions::classify_condition(expression_);
         if (condition_ == expressions::condition_kind::computed) {
@@ -84,6 +101,7 @@ namespace components::operators {
         const auto& build_chunks = right_->output()->chunks();
         const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
         const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
+        const bool keeps_probe = (join_type_ == type::semi || join_type_ == type::anti);
 
         builder_.set_output(&out);
 
@@ -100,9 +118,13 @@ namespace components::operators {
         }
 
         const uint64_t n = probe.size();
+        vector::indexing_vector_t kept(resource_, keeps_probe ? std::max<uint64_t>(n, 1) : uint64_t{0});
+        uint64_t kept_count = 0;
         for (uint64_t li = 0; li < n; ++li) {
             bool matched = false;
-            for (size_t ci = 0; condition_ != expressions::condition_kind::never && ci < build_chunks.size(); ++ci) {
+            for (size_t ci = 0; condition_ != expressions::condition_kind::never && ci < build_chunks.size() &&
+                                !(keeps_probe && matched);
+                 ++ci) {
                 const auto& B = build_chunks[ci];
                 if (B.size() == 0) {
                     continue;
@@ -127,6 +149,15 @@ namespace components::operators {
                 const vector::vector_t* decisions = decided.has_value() ? &decided->data.front() : nullptr;
                 for (uint64_t rj = 0; rj < B.size(); ++rj) {
                     if (decisions == nullptr || (!decisions->is_null(rj) && decisions->get_value<bool>(rj))) {
+                        if (keeps_probe) {
+                            matched = true;
+                            break;
+                        }
+                        if (matched && single_match_) {
+                            set_error(vector::more_than_one_row(resource_));
+                            builder_.gather();
+                            return;
+                        }
                         builder_.emit_matched(probe, li, B, rj);
                         matched = true;
                         if (mark_matched) {
@@ -135,9 +166,22 @@ namespace components::operators {
                     }
                 }
             }
+            if (keeps_probe) {
+                if (matched == (join_type_ == type::semi)) {
+                    kept.set_index(kept_count++, li);
+                }
+                continue;
+            }
             if (!matched && left_outer) {
                 builder_.emit_left_only(probe, li);
             }
+        }
+        if (keeps_probe) {
+            join_detail::emit_probe_rows(resource_, probe, kept, kept_count, out);
+            if (kept_count != 0) {
+                note_emitted();
+            }
+            return;
         }
         builder_.gather();
     }
@@ -198,11 +242,13 @@ namespace components::operators {
         if (!layout_built_ || res_types_.empty()) {
             return core::error_t::no_error();
         }
-        emit_unmatched_build_(out);
-        builder_.set_output(&out);
-        builder_.flush();
-        if (builder_.emitted()) {
-            note_emitted();
+        if (join_type_ != type::semi && join_type_ != type::anti) {
+            emit_unmatched_build_(out);
+            builder_.set_output(&out);
+            builder_.flush();
+            if (builder_.emitted()) {
+                note_emitted();
+            }
         }
         if (!emitted()) {
             vector::data_chunk_t empty(resource_, res_types_, 0);

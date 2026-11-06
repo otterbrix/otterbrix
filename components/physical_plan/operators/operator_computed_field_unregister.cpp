@@ -156,7 +156,7 @@ namespace components::operators {
                 co_return;
             }
             auto rel_id = alter_validators::relation_identity_of(cls_batches_r.value());
-            std::string rel = std::move(rel_id.relname);
+            std::string rel = std::move(rel_id.relname.t);
             if (rel.empty()) {
                 rel = "oid ";
                 rel += std::to_string(table_oid_);

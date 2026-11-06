@@ -2,6 +2,7 @@
 
 #include "catalog_oids.hpp"
 
+#include <components/base/identifier_types.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
@@ -13,9 +14,9 @@ namespace components::catalog {
     // A schema as the session's current place: [connection.]database.schema; the connection is empty for a local
     // database. Short names are completed with it: `t` and `s.t` take its connection and database, `t` its schema.
     struct place_t {
-        std::string connection;
-        std::string database;
-        std::string schema;
+        core::connection_name_t connection;
+        core::dbname_t database;
+        core::schema_t schema;
 
         // The full spelling the session keeps: database.schema, or connection.database.schema.
         std::string to_string() const;

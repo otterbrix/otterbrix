@@ -675,7 +675,7 @@ namespace {
                                                                             std::string_view name) {
         function_doc doc{resource,
                          "The session's current place",
-                         "current_database() / current_schema() -> text; NULL when the place is gone",
+                         "current_database() / current_schema() / current_connection() -> text; NULL when the place is gone",
                          {"place"},
                          false};
         auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
@@ -756,10 +756,12 @@ namespace components::compute {
 
     void register_internal_functions(function_registry_t& r) { r.add_builtin(make_like_match_func(r.resource())); }
 
-    // WARNING: uids must mirror the DEFAULT_FUNCTIONS entries current_database (18) and current_schema (19).
+    // WARNING: uids must mirror the DEFAULT_FUNCTIONS entries current_database (18), current_schema (19) and
+    // current_connection (20).
     void register_place_functions(function_registry_t& r) {
         r.add_builtin(make_place_name_func(r.resource(), current_database_name));
         r.add_builtin(make_place_name_func(r.resource(), current_schema_name));
+        r.add_builtin(make_place_name_func(r.resource(), current_connection_name));
     }
 
 } // namespace components::compute

@@ -158,7 +158,7 @@ namespace components::operators {
             }
             if (target_md->table_oid == catalog::INVALID_OID) {
                 std::string msg = "constraint resolution: table \"";
-                msg += target_md->name;
+                msg += target_md->name.t;
                 msg += "\" resolved to no oid — its constraints cannot be read";
                 set_error(
                     core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
@@ -227,7 +227,7 @@ namespace components::operators {
                     msg += " column(s), fewer than the ";
                     msg += std::to_string(static_cast<std::size_t>(catalog::pg_constraint_col::conexpr) + 1);
                     msg += " this build reads — the constraints of table \"";
-                    msg += target_md->name;
+                    msg += target_md->name.t;
                     msg += "\" cannot be decoded";
                     set_error(
                         core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
@@ -272,7 +272,7 @@ namespace components::operators {
                         catalog::fk_info_t& fk = pending.fk;
                         if (con_chunk.is_null(catalog::pg_constraint_col::oid, ci)) {
                             std::string msg = "foreign key constraint row in pg_constraint on table \"";
-                            msg += target_md->name;
+                            msg += target_md->name.t;
                             msg += "\" has no readable oid — it cannot be identified, enforced or dropped";
                             set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
@@ -363,7 +363,7 @@ namespace components::operators {
                                     con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
                             }
                             msg += "\" on table \"";
-                            msg += target_md->name;
+                            msg += target_md->name.t;
                             msg += "\" has no expression in pg_constraint.conexpr — it cannot be enforced or "
                                    "dismissed";
                             set_error(core::error_t{core::error_code_t::internal_error,
@@ -398,7 +398,7 @@ namespace components::operators {
                                                     : pending.constraint_name;
                             if (pk_seen) {
                                 std::string msg = "multiple primary keys for table \"";
-                                msg += target_md->name;
+                                msg += target_md->name.t;
                                 msg += "\" are not allowed — pg_constraint holds \"";
                                 msg += first_pk_label;
                                 msg += "\" and \"";

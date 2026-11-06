@@ -156,6 +156,46 @@ TEST_CASE("integration::cpp::current_place::a_list_or_too_many_parts_is_refused"
     CHECK(db.ints(session, "SELECT a FROM t;") == std::vector<std::int64_t>{1});
 }
 
+// SET search_path = '' (PostgreSQL's empty search_path): the session has no place. A name of one or two parts is no
+// table and a CREATE without a schema has none to be created in; a full name and pg_catalog's bare names stay.
+TEST_CASE("integration::cpp::current_place::an_empty_place_names_no_schema") {
+    fixture_t db("test_current_place/empty");
+    const auto session = otterbrix::session_id_t();
+    seed(db, session);
+    db.ok(session, "SET search_path = '';");
+    CHECK(current_schema(db, session) == "<null>");
+    db.check_refused(session, "SELECT a FROM t;", code::table_not_exists, "relation \"t\" does not exist");
+    db.check_refused(session,
+                     "SELECT a FROM public.t;",
+                     code::table_not_exists,
+                     "relation \"public.t\" does not exist");
+    db.check_refused(session,
+                     "CREATE TABLE u (a BIGINT);",
+                     code::schema_not_exists,
+                     "no schema has been selected to create in");
+    db.check_refused(session,
+                     "SET search_path = 's';",
+                     code::invalid_parameter,
+                     "search_path takes one place: [[connection.]database.]schema");
+    CHECK(db.ints(session, "SELECT a FROM main.public.t;") == std::vector<std::int64_t>{1});
+    CHECK(db.ints(session, "SELECT count(*) FROM pg_class WHERE relname = 'pg_class';") ==
+          std::vector<std::int64_t>{1});
+    db.ok(session, "SET search_path = 'main.s';");
+    CHECK(current_schema(db, session) == "s");
+}
+
+// ALTER SYSTEM SET search_path = '': a fresh session has no place until it sets one.
+TEST_CASE("integration::cpp::current_place::alter_system_empties_the_place_of_a_fresh_session") {
+    fixture_t db("test_current_place/empty_default");
+    const auto session = otterbrix::session_id_t();
+    seed(db, session);
+    db.ok(session, "ALTER SYSTEM SET search_path = '';");
+    const auto fresh = otterbrix::session_id_t();
+    CHECK(current_schema(db, fresh) == "<null>");
+    db.check_refused(fresh, "SELECT a FROM t;", code::table_not_exists, "relation \"t\" does not exist");
+    CHECK(db.ints(fresh, "SELECT a FROM main.public.t;") == std::vector<std::int64_t>{1});
+}
+
 TEST_CASE("integration::cpp::current_place::rollback_returns_the_place") {
     fixture_t db("test_current_place/r3_16");
     const auto session = otterbrix::session_id_t();
@@ -230,8 +270,8 @@ TEST_CASE("integration::cpp::current_place::pg_catalog_is_one_whichever_database
     db.ok(session, "CREATE DATABASE d5;");
     db.ok(session, "SET search_path = 'd5.public';");
     for (const std::string sql : {"SELECT relname FROM pg_catalog.pg_class WHERE relname = 'pg_class';",
-                                 "SELECT relname FROM pg_class WHERE relname = 'pg_class';",
-                                 "SELECT relname FROM d5.pg_catalog.pg_class WHERE relname = 'pg_class';"}) {
+                                  "SELECT relname FROM pg_class WHERE relname = 'pg_class';",
+                                  "SELECT relname FROM d5.pg_catalog.pg_class WHERE relname = 'pg_class';"}) {
         INFO(sql);
         CHECK(db.strings(session, sql) == std::vector<std::string>{"pg_class"});
     }

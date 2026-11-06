@@ -1990,9 +1990,7 @@ namespace components::sql::transform {
         auto& node = resolves->ensure(resource, logical_plan::resolve_kind::type);
         for (const auto& name : type_names) {
             logical_plan::resolve_entry_t entry;
-            entry.database = name.database.t;
-            entry.schema = name.schema.t;
-            entry.type_name = name.collection.t;
+            entry.written = name;
             node.add(std::move(entry));
         }
     }
@@ -2041,8 +2039,8 @@ namespace components::sql::transform {
             return;
         }
         logical_plan::resolve_entry_t entry;
-        entry.connection = connection;
-        entry.database = database;
+        entry.written.connection = core::connection_name_t{connection};
+        entry.written.database = core::dbname_t{database};
         resolves->ensure(resource, logical_plan::resolve_kind::database).add(std::move(entry));
     }
 
@@ -2053,9 +2051,7 @@ namespace components::sql::transform {
             return;
         }
         logical_plan::resolve_entry_t entry;
-        entry.connection = name.connection.t;
-        entry.database = name.database.t;
-        entry.schema = name.schema.t;
+        entry.written = qualified_name_t{name.connection, name.database, name.schema, core::relname_t{}};
         resolves->ensure(resource, logical_plan::resolve_kind::namespace_).add(std::move(entry));
     }
 
@@ -2083,10 +2079,7 @@ namespace components::sql::transform {
                 return logical_plan::resolve_entry_t::no_target;
             }
             logical_plan::resolve_entry_t table_entry;
-            table_entry.connection = name.connection.t;
-            table_entry.database = name.database.t;
-            table_entry.schema = name.schema.t;
-            table_entry.relname = name.collection.t;
+            table_entry.written = name;
             const auto table_index =
                 resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
             register_constraint_entry(resource, resolves, table_index, with_constraints);
@@ -2107,7 +2100,7 @@ namespace components::sql::transform {
                                                         const std::string& relname,
                                                         constraint_resolve_kind with_constraints) {
         logical_plan::resolve_entry_t target;
-        target.relname = relname;
+        target.written.collection = core::relname_t{relname};
         target.namespace_of = register_table_entry(resource, resolves, owner, constraint_resolve_kind::none);
         const auto target_index = resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(target));
         register_constraint_entry(resource, resolves, target_index, with_constraints);

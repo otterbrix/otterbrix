@@ -150,7 +150,7 @@ namespace {
                                                                                size_t{1},
                                                                                compute::volatility_t::volatile_);
         compute::kernel_signature_t sig(compute::function_type_t::vector,
-                                        {compute::parameter_type::exact(types::logical_type::STRING_LITERAL)},
+                                        {compute::parameter_type::exact(types::logical_type::TEXT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});
         compute::vector_kernel k{std::move(sig), probe_exec_text};
         auto added = fn->add_kernel(resource, std::move(k));

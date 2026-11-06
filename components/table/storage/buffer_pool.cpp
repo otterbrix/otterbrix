@@ -70,8 +70,8 @@ namespace components::table::storage {
         }
         std::lock_guard lock{purge_lock_, std::adopt_lock};
 
-        for (int batch = 0; batch < 2 && dead_nodes_.load(std::memory_order_relaxed) >
-                                             live_nodes_.load(std::memory_order_relaxed);
+        for (int batch = 0;
+             batch < 2 && dead_nodes_.load(std::memory_order_relaxed) > live_nodes_.load(std::memory_order_relaxed);
              ++batch) {
             purge_batch();
         }

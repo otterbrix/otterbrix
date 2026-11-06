@@ -11,7 +11,7 @@ namespace components::casts::kernels {
     // numeric_cast (a per-row static_cast) already yields 0/1 for bool->int and
     // (x != 0) for numeric->bool. Only the text forms need their own kernels below.
 
-    // BOOLEAN -> STRING_LITERAL: "true"/"false" (the ::text form). Infallible, so only
+    // BOOLEAN -> TEXT: "true"/"false" (the ::text form). Infallible, so only
     // the mandatory `cast` body is needed. (set_value copies the literal into the
     // vector's string buffer.)
     inline core::error_t bool_to_string_cast(const vector::vector_t& source,
@@ -76,7 +76,7 @@ namespace components::casts::kernels {
 
     } // namespace detail
 
-    // STRING_LITERAL -> BOOLEAN. Fallible: text that names no boolean has no value.
+    // TEXT -> BOOLEAN. Fallible: text that names no boolean has no value.
     // This `cast` body errors on the first bad row; its `try_cast` companion NULLs it.
     inline core::error_t string_to_bool_cast(const vector::vector_t& source,
                                              vector::vector_t* result,
@@ -97,7 +97,7 @@ namespace components::casts::kernels {
         return core::error_t::no_error();
     }
 
-    // TRY_CAST companion for STRING_LITERAL -> BOOLEAN: a bad row becomes NULL.
+    // TRY_CAST companion for TEXT -> BOOLEAN: a bad row becomes NULL.
     inline void string_to_bool_try_cast(const vector::vector_t& source,
                                         vector::vector_t* result,
                                         const graph_execution_context&,

@@ -72,7 +72,7 @@ namespace {
     }
 
     const std::string decimal_width = "DECIMAL width must be between 1 and 38 and scale must not exceed width";
-    const std::string unknown_cast = "no cast from text to unknown";
+    const std::string unknown_cast = "no cast from unknown to unknown";
 
 } // namespace
 

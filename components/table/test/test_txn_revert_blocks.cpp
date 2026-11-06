@@ -57,7 +57,7 @@ namespace {
     std::unique_ptr<data_table_t> make_table(env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("k", logical_type::BIGINT);
-        columns.emplace_back("v", logical_type::STRING_LITERAL);
+        columns.emplace_back("v", logical_type::TEXT);
         return std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "txn_revert");
     }
 
@@ -279,7 +279,7 @@ TEST_CASE("txn_revert_blocks: a freed tail the root names must not be reissued a
     std::remove(path.c_str());
 }
 
-// 1000-byte strings: 16 rows per STRING segment, so the kept row group's segments past the revert row
+// 1000-byte strings: 16 rows per TEXT segment, so the kept row group's segments past the revert row
 // fill blocks of their own. Nobody frees them, and the packer's open tail among the freed blocks keeps
 // taking the next commit's segments.
 TEST_CASE("txn_revert_blocks: the segments erased inside the kept row group give their blocks back",

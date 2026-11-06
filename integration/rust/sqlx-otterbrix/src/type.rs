@@ -65,7 +65,7 @@ impl OtterbrixTypeInfo {
         OtterbrixTypeInfo(OtterbrixKind::Float)
     }
 
-    /// Constructs the type info for `STRING` / `TEXT` columns.
+    /// Constructs the type info for `TEXT` columns.
     pub(crate) fn text() -> Self {
         OtterbrixTypeInfo(OtterbrixKind::Text)
     }
@@ -89,7 +89,7 @@ impl TypeInfo for OtterbrixTypeInfo {
             OtterbrixKind::Integer => "BIGINT",
             OtterbrixKind::Unsigned => "UBIGINT",
             OtterbrixKind::Float => "DOUBLE",
-            OtterbrixKind::Text => "STRING",
+            OtterbrixKind::Text => "TEXT",
         }
     }
 
@@ -210,7 +210,7 @@ mod tests {
         assert_eq!(OtterbrixTypeInfo::integer().to_string(), "BIGINT");
         assert_eq!(OtterbrixTypeInfo::unsigned().to_string(), "UBIGINT");
         assert_eq!(OtterbrixTypeInfo::float().to_string(), "DOUBLE");
-        assert_eq!(OtterbrixTypeInfo::text().to_string(), "STRING");
+        assert_eq!(OtterbrixTypeInfo::text().to_string(), "TEXT");
         assert_eq!(OtterbrixTypeInfo::bool().to_string(), "BOOLEAN");
         assert_eq!(OtterbrixTypeInfo::null().to_string(), "NULL");
     }

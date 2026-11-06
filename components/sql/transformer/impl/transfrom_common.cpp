@@ -907,10 +907,9 @@ namespace components::sql::transform {
 
                 if (is_like_operator(op_str)) {
                     if (!node->lexpr || !node->rexpr) {
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"operator " + std::string(op_str) +
-                                                                  " is missing its operand",
-                                                              resource_});
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"operator " + std::string(op_str) + " is missing its operand", resource_});
                     }
                     column_ref_t key_left(resource_);
                     if (nodeTag(node->lexpr) == T_ColumnRef) {
@@ -958,9 +957,9 @@ namespace components::sql::transform {
                 }
 
                 if (is_jsonb_nav_operator(op_str) && (!node->lexpr || !node->rexpr)) {
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"operator " + std::string(op_str) + " is missing its operand",
-                                                          resource_});
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"operator " + std::string(op_str) + " is missing its operand", resource_});
                 }
 
                 auto comp_type = get_compare_type(op_str);
@@ -1336,9 +1335,9 @@ namespace components::sql::transform {
                                                   expressions::side_t& side) {
         auto op = std::string_view(strVal(node->name->lst.front().data));
         if (!node->lexpr || !node->rexpr) {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"operator " + std::string(op) + " is missing its operand",
-                                                  resource_});
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"operator " + std::string(op) + " is missing its operand", resource_});
         }
 
         Node* lexpr = node->lexpr;
@@ -1415,9 +1414,9 @@ namespace components::sql::transform {
         std::pmr::vector<std::pmr::string> prefix(resource_);
         expressions::side_t side = expressions::side_t::undefined;
         if (!node->lexpr || !node->rexpr) {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"operator " + std::string(op) + " is missing its operand",
-                                                  resource_});
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"operator " + std::string(op) + " is missing its operand", resource_});
         }
         Node* lexpr = node->lexpr;
         if (nodeTag(lexpr) == T_A_Expr) {

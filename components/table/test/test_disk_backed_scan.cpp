@@ -527,7 +527,7 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
 // buffer-pool-pinned block; fetch_next_batch releases that pin per batch, so a held chunk can outlive it.
 // Under eviction the block reloads at a new address and a borrowed view dangles -- safe here only because
 // the payload is interned into the result vector's string_vector_buffer_t (INT64/gap/DICTIONARY copy bytes instead).
-TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no UAF)", "[step2]") {
+TEST_CASE("disk_backed_scan: streaming TEXT batch survives block eviction (no UAF)", "[step2]") {
     using namespace components::table;
     using namespace components::table::storage;
     using namespace components::types;
@@ -547,7 +547,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
         single_file_block_manager_t bm(big_bm_mgr, big_fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
         std::vector<column_definition_t> columns;
-        columns.emplace_back("value", logical_type::STRING_LITERAL);
+        columns.emplace_back("value", logical_type::TEXT);
         auto table = std::make_unique<data_table_t>(&big_resource, bm, std::move(columns), "disk_backed");
         append_string_data(*table, &big_resource, LARGE_ROW_COUNT);
         REQUIRE(table->calculate_size() == LARGE_ROW_COUNT);
@@ -609,7 +609,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
 
     // The stored string_view is copied out: a dangling view reads garbage here.
     for (uint64_t i = 0; i < held_count; i++) {
-        REQUIRE(held.data[0].type().type() == logical_type::STRING_LITERAL);
+        REQUIRE(held.data[0].type().type() == logical_type::TEXT);
         std::string got{held.data[0].get_value<std::string_view>(i)};
         REQUIRE(got == expected_string(i));
     }

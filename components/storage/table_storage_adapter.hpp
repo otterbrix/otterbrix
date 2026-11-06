@@ -103,7 +103,7 @@ namespace components::storage {
             if (!state.result_outlives_pins) {
                 uint64_t string_cols = 0;
                 for (size_t i = 0; i < output.column_count(); i++) {
-                    if (output.data[i].type().to_physical_type() == types::physical_type::STRING) {
+                    if (output.data[i].type().to_physical_type() == types::physical_type::TEXT) {
                         string_cols++;
                     }
                 }

@@ -208,7 +208,7 @@ namespace components::vector::arrow {
                     case physical_type::UINT128:
                     case physical_type::FLOAT:
                     case physical_type::DOUBLE:
-                    case physical_type::STRING:
+                    case physical_type::TEXT:
                     case physical_type::LIST:
                     case physical_type::STRUCT:
                     case physical_type::UNION:
@@ -223,7 +223,7 @@ namespace components::vector::arrow {
                 assert(false && "initialize_function_pointers: physical_type out of its enumerators");
                 std::abort();
             }
-            case logical_type::STRING_LITERAL:
+            case logical_type::TEXT:
             case logical_type::BLOB:
                 initialize_appender_templated<appender::arrow_string_data_t<>>(append_data);
                 return core::error_t::no_error();
@@ -270,6 +270,7 @@ namespace components::vector::arrow {
             case logical_type::USER:
             case logical_type::TIME_TZ:
             case logical_type::BIT:
+            case logical_type::STRING_LITERAL:
             case logical_type::INTEGER_LITERAL:
             case logical_type::POINTER:
             case logical_type::VALIDITY:

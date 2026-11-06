@@ -1203,8 +1203,7 @@ namespace services::collection::executor {
         co_return refused;
     }
 
-    void executor_t::release_takes_(const components::execution_context_t& ctx,
-                                    std::pmr::vector<held_take_t>& held) {
+    void executor_t::release_takes_(const components::execution_context_t& ctx, std::pmr::vector<held_take_t>& held) {
         for (const auto& take : held) {
             [[maybe_unused]] auto [_r, released] =
                 actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_release_block>(
@@ -1404,7 +1403,6 @@ namespace services::collection::executor {
     executor_t::coerce_argument_(const components::vector::vector_t& value,
                                  const components::types::complex_logical_type& expected,
                                  std::size_t number,
-                                 bool quoted_literal,
                                  const components::casts::cast_registry_t& casts,
                                  const components::graph_execution_context& settings) const {
         if (value.is_null(0)) {
@@ -1414,7 +1412,7 @@ namespace services::collection::executor {
             return components::vector::make_constant_copy(resource(), value, 0);
         }
         // coerce_to_target_type, COERCION_ASSIGNMENT: as an INSERT's VALUES cell.
-        auto conversion = casts.resolve_assignment(value.type(), expected, quoted_literal);
+        auto conversion = casts.resolve(value.type(), expected, components::casts::cast_type::assignment);
         if (!conversion.has_value()) {
             return core::error_t{core::error_code_t::datatype_mismatch,
                                  std::pmr::string{"parameter $" + std::to_string(number) + " of type " +
@@ -1509,7 +1507,6 @@ namespace services::collection::executor {
             auto coerced = coerce_argument_(plan.parameters->parameter(arguments[i].slot),
                                             statement.parameter_types[i],
                                             i + 1,
-                                            arguments[i].quoted_literal,
                                             *registries.casts,
                                             settings);
             if (coerced.has_error()) {
@@ -2321,11 +2318,10 @@ namespace services::collection::executor {
                     const bool exists = place != nullptr && (database ? place->database_oid : place->namespace_oid) !=
                                                                 components::catalog::INVALID_OID;
                     const auto& value = database ? resolves.place.database : resolves.place.schema;
-                    auto bound =
-                        exists ? components::vector::make_scalar(resource, std::string_view{value})
-                               : components::vector::make_null(resource,
-                                                               components::types::complex_logical_type{
-                                                                   components::types::logical_type::STRING_LITERAL});
+                    auto bound = exists ? components::vector::make_scalar(resource, std::string_view{value})
+                                        : components::vector::make_null(resource,
+                                                                        components::types::complex_logical_type{
+                                                                            components::types::logical_type::TEXT});
                     call.args().emplace_back(
                         parameters.add_parameter(std::move(bound), components::vector::parameter_kind::literal));
                 }
@@ -2487,7 +2483,7 @@ namespace services::collection::executor {
                           const std::pmr::vector<components::types::complex_logical_type>& parameters) const {
         std::pmr::vector<components::types::complex_logical_type> columns{resource()};
         if (plan.explain == components::logical_plan::explain_type::describe_explain) {
-            columns.emplace_back(components::types::logical_type::STRING_LITERAL, "QUERY PLAN");
+            columns.emplace_back(components::types::logical_type::TEXT, "QUERY PLAN");
         } else {
             columns = result_columns_(plan, returning);
         }
@@ -3554,13 +3550,17 @@ namespace services::collection::executor {
                             if (!child || child->type() != components::logical_plan::node_type::data_t) {
                                 continue;
                             }
-                            auto* data_node = static_cast<const components::logical_plan::node_data_t*>(child.get());
-                            const auto& chunk = data_node->data_chunk();
-                            registered_cols.reserve(chunk.column_count());
-                            for (size_t i = 0; i < chunk.column_count(); ++i) {
-                                const auto& type = chunk.data[i].type();
-                                assert(type.has_alias());
-                                registered_cols.emplace_back(type.alias(), type);
+                            assert(effective_insert->type() == node_type::insert_t);
+                            const auto& bindings =
+                                static_cast<const components::logical_plan::node_insert_t*>(effective_insert)
+                                    ->column_bindings();
+                            assert(bindings.size() ==
+                                   static_cast<const components::logical_plan::node_data_t*>(child.get())
+                                       ->data_chunk()
+                                       .column_count());
+                            registered_cols.reserve(bindings.size());
+                            for (const auto& binding : bindings) {
+                                registered_cols.emplace_back(std::string(binding.target_name), binding.target_type);
                             }
                             break;
                         }
@@ -3724,8 +3724,7 @@ namespace services::collection::executor {
                                                             resolve_txn,
                                                             context_storage.execution_context.timezone_offset};
         std::pmr::vector<held_take_t> held{resource()};
-        if (auto offered =
-                co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context, held);
+        if (auto offered = co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context, held);
             offered.contains_error()) {
             release_takes_(statement_ctx, held);
             co_return execute_result_t{make_cursor(resource(), std::move(offered))};

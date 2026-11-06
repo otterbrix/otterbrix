@@ -153,7 +153,7 @@ namespace {
                         REQUIRE(back.min_as<int128_t>() == stats.min_as<int128_t>());
                         REQUIRE(back.max_as<int128_t>() == stats.max_as<int128_t>());
                         break;
-                    case logical_type::STRING_LITERAL:
+                    case logical_type::TEXT:
                         REQUIRE(back.min_string() == stats.min_string());
                         REQUIRE(back.max_string() == stats.max_string());
                         break;
@@ -285,7 +285,7 @@ TEST_CASE("statistics golden bytes: decimal_carries_width_scale_with_each_bound"
 
 TEST_CASE("statistics golden bytes: string_is_u32_length_prefixed") {
     core::pmr::otterbrix_resource resource;
-    base_statistics_t stats(&resource, logical_type::STRING_LITERAL, 4);
+    base_statistics_t stats(&resource, logical_type::TEXT, 4);
     stats.set_bounds<std::string_view>("apple", "pear");
     // clang-format off
     const std::vector<uint8_t> expected{
@@ -298,7 +298,7 @@ TEST_CASE("statistics golden bytes: string_is_u32_length_prefixed") {
 
 TEST_CASE("statistics golden bytes: string_empty_min") {
     core::pmr::otterbrix_resource resource;
-    base_statistics_t stats(&resource, logical_type::STRING_LITERAL, 0);
+    base_statistics_t stats(&resource, logical_type::TEXT, 0);
     stats.set_bounds<std::string_view>("", "z");
     // clang-format off
     const std::vector<uint8_t> expected{
@@ -434,8 +434,8 @@ TEST_CASE("statistics golden bytes: bounds_learned_from_a_vector") {
 
 TEST_CASE("statistics golden bytes: string_bounds_learned_from_a_vector") {
     core::pmr::otterbrix_resource resource;
-    base_statistics_t stats(&resource, logical_type::STRING_LITERAL);
-    vector_t vec(&resource, logical_type::STRING_LITERAL, 3);
+    base_statistics_t stats(&resource, logical_type::TEXT);
+    vector_t vec(&resource, logical_type::TEXT, 3);
     vec.data<std::string_view>()[0] = "pear";
     vec.data<std::string_view>()[1] = "apple";
     vec.data<std::string_view>()[2] = "zzz";
@@ -539,14 +539,14 @@ TEST_CASE("statistics merge: UHUGEINT bounds widen across batches") {
     REQUIRE(column.max_as<uint128_t>() == uint128_t{1} << 100);
 }
 
-TEST_CASE("statistics merge: STRING bounds widen across batches and survive a copy") {
+TEST_CASE("statistics merge: TEXT bounds widen across batches and survive a copy") {
     core::pmr::otterbrix_resource resource;
 
-    base_statistics_t column(&resource, logical_type::STRING_LITERAL);
+    base_statistics_t column(&resource, logical_type::TEXT);
     for (const std::string_view value :
          {std::string_view{"pear"}, std::string_view{"apple"}, std::string_view{"zebra"}}) {
-        base_statistics_t batch(&resource, logical_type::STRING_LITERAL);
-        vector_t vec(&resource, logical_type::STRING_LITERAL, 1);
+        base_statistics_t batch(&resource, logical_type::TEXT);
+        vector_t vec(&resource, logical_type::TEXT, 1);
         vec.data<std::string_view>()[0] = value;
         batch.update(vec, 0, 1);
         column.merge(batch);

@@ -177,7 +177,7 @@ def standard_setup_sql(db_name: str, csv_path: Path, *, id_type: str = "INTEGER"
     # B1a: tables are always disk-backed; WITH (storage = ...) is a parse error.
     return (
         f"-- @database {db_name}\n"
-        f"CREATE TABLE kv (id {id_type}, payload STRING);\n"
+        f"CREATE TABLE kv (id {id_type}, payload TEXT);\n"
         f"-- @load_csv {csv_path} kv ,"
     )
 

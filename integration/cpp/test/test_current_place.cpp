@@ -230,8 +230,8 @@ TEST_CASE("integration::cpp::current_place::pg_catalog_is_one_whichever_database
     db.ok(session, "CREATE DATABASE d5;");
     db.ok(session, "SET search_path = 'd5.public';");
     for (const std::string sql : {"SELECT relname FROM pg_catalog.pg_class WHERE relname = 'pg_class';",
-                                 "SELECT relname FROM pg_class WHERE relname = 'pg_class';",
-                                 "SELECT relname FROM d5.pg_catalog.pg_class WHERE relname = 'pg_class';"}) {
+                                  "SELECT relname FROM pg_class WHERE relname = 'pg_class';",
+                                  "SELECT relname FROM d5.pg_catalog.pg_class WHERE relname = 'pg_class';"}) {
         INFO(sql);
         CHECK(db.strings(session, sql) == std::vector<std::string>{"pg_class"});
     }

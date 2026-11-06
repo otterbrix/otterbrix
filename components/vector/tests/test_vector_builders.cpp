@@ -64,7 +64,7 @@ namespace {
                 return value;
             }
         }();
-        const auto expected_type = is_text ? logical_type::STRING_LITERAL : components::types::to_logical_type<T>();
+        const auto expected_type = is_text ? logical_type::TEXT : components::types::to_logical_type<T>();
 
         auto built = make_scalar<T>(&resource, value);
         REQUIRE(built.type().type() == expected_type);
@@ -82,12 +82,12 @@ namespace {
     }
 
     complex_logical_type bigint() { return complex_logical_type{logical_type::BIGINT}; }
-    complex_logical_type varchar() { return complex_logical_type{logical_type::STRING_LITERAL}; }
+    complex_logical_type varchar() { return complex_logical_type{logical_type::TEXT}; }
 
     complex_logical_type point_type(std::pmr::memory_resource* resource) {
         std::pmr::vector<complex_logical_type> fields(resource);
         fields.emplace_back(logical_type::BIGINT, "a");
-        fields.emplace_back(logical_type::STRING_LITERAL, "b");
+        fields.emplace_back(logical_type::TEXT, "b");
         return complex_logical_type::create_struct("point", fields);
     }
 
@@ -170,7 +170,7 @@ TEST_CASE("make_scalar: explicit type keeps alias and uses the type's storage") 
     REQUIRE(ts.get_value<core::date::timestamp_t>(0).value.count() == -99);
 
     // VARCHAR with an alias
-    auto text = complex_logical_type{logical_type::STRING_LITERAL};
+    auto text = complex_logical_type{logical_type::TEXT};
     text.set_alias("name");
     auto str = make_scalar<std::string_view>(&resource, text, "abc");
     REQUIRE(str.type().alias() == "name");
@@ -198,7 +198,7 @@ TEST_CASE("make_null: typed NULL of every type family") {
         complex_logical_type{logical_type::UHUGEINT},
         complex_logical_type{logical_type::FLOAT},
         complex_logical_type{logical_type::DOUBLE},
-        complex_logical_type{logical_type::STRING_LITERAL},
+        complex_logical_type{logical_type::TEXT},
         complex_logical_type{logical_type::DATE},
         complex_logical_type{logical_type::TIMESTAMP},
         complex_logical_type{logical_type::INTERVAL},

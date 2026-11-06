@@ -52,7 +52,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     std::pmr::vector<types::complex_logical_type> types_left(dispatcher->resource());
     std::pmr::vector<types::complex_logical_type> types_right(dispatcher->resource());
 
-    types_left.emplace_back(types::logical_type::STRING_LITERAL, "name");
+    types_left.emplace_back(types::logical_type::TEXT, "name");
     types_left.emplace_back(types::logical_type::BIGINT, "key_1");
     types_left.emplace_back(types::logical_type::BIGINT, "key_2");
 

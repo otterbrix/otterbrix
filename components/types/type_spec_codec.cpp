@@ -103,7 +103,7 @@ namespace components::types {
                 case logical_type::UBIGINT:
                 case logical_type::UHUGEINT:
                 case logical_type::BIT:
-                case logical_type::STRING_LITERAL:
+                case logical_type::TEXT:
                 case logical_type::INTEGER_LITERAL:
                 case logical_type::POINTER:
                 case logical_type::VALIDITY:
@@ -269,6 +269,8 @@ namespace components::types {
                 }
                 case logical_type::NA:
                     return encode_error(resource, "type spec encode: NULL (NA) is not a stored type");
+                case logical_type::STRING_LITERAL:
+                    return encode_error(resource, "type spec encode: a string literal is not a stored type");
                 default:
                     // USER/TABLE/FUNCTION/LAMBDA/INVALID never describe stored data.
                     return encode_error(resource, "type spec encode: type cannot be persisted");
@@ -453,6 +455,8 @@ namespace components::types {
                 }
                 case logical_type::NA:
                     return corrupt(resource, "type spec decode: NULL (NA) is not a stored type");
+                case logical_type::STRING_LITERAL:
+                    return corrupt(resource, "type spec decode: a string literal is not a stored type");
                 default:
                     return corrupt(resource, "type spec decode: unrecognized logical_type byte");
             }

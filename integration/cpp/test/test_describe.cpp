@@ -140,9 +140,9 @@ TEST_CASE("integration::cpp::describe::a parameter takes the type of its context
 
     SECTION("in the select list it is text") {
         auto described = db.described(session, "SELECT $1;");
-        CHECK(parameters_of(described) == std::vector<logical_type>{logical_type::STRING_LITERAL});
+        CHECK(parameters_of(described) == std::vector<logical_type>{logical_type::TEXT});
         REQUIRE(described->type_data().size() == 1);
-        CHECK(described->type_data().front().type() == logical_type::STRING_LITERAL);
+        CHECK(described->type_data().front().type() == logical_type::TEXT);
     }
     SECTION("compared with a column it is the column's type") {
         auto described = db.described(session, "SELECT a FROM s.t WHERE a = $1;");
@@ -153,7 +153,7 @@ TEST_CASE("integration::cpp::describe::a parameter takes the type of its context
         const std::vector<std::pair<std::string, logical_type>> cases{
             {"SELECT CAST($1 AS INTEGER);", logical_type::INTEGER},
             {"SELECT a FROM s.t WHERE a + $1 > 0;", logical_type::BIGINT},
-            {"SELECT upper($1);", logical_type::STRING_LITERAL},
+            {"SELECT upper($1);", logical_type::TEXT},
             {"SELECT coalesce($1, a) AS c FROM s.t;", logical_type::BIGINT},
             {"SELECT a FROM s.t WHERE a = $1 AND b < $1;", logical_type::BIGINT}};
         for (const auto& [sql, type] : cases) {
@@ -293,8 +293,8 @@ TEST_CASE("integration::cpp::describe::the rules a run follows too") {
         auto alone = db.described(session,
                                   "INSERT INTO s.up (id, v) VALUES (5, 1) ON CONFLICT (id) DO UPDATE SET v = 2 "
                                   "RETURNING $1 AS r;");
-        CHECK(parameters_of(alone) == std::vector<logical_type>{logical_type::STRING_LITERAL});
-        CHECK(columns_of(alone) == std::vector<column_t>{{"r", logical_type::STRING_LITERAL}});
+        CHECK(parameters_of(alone) == std::vector<logical_type>{logical_type::TEXT});
+        CHECK(columns_of(alone) == std::vector<column_t>{{"r", logical_type::TEXT}});
     }
     SECTION("RETURNING of an upsert reads the type its SET gave") {
         db.ok(session, "CREATE TABLE s.up (id BIGINT, v INTEGER);");
@@ -390,11 +390,11 @@ TEST_CASE("integration::cpp::describe::a statement that is not a query answers n
     }
     SECTION("EXPLAIN is one text column QUERY PLAN") {
         auto described = db.described(session, "EXPLAIN SELECT a FROM s.t;");
-        CHECK(columns_of(described) == std::vector<column_t>{{"QUERY PLAN", logical_type::STRING_LITERAL}});
+        CHECK(columns_of(described) == std::vector<column_t>{{"QUERY PLAN", logical_type::TEXT}});
     }
     SECTION("EXPLAIN ANALYZE runs nothing") {
         auto described = db.described(session, "EXPLAIN ANALYZE INSERT INTO s.t (a, b) VALUES (9, 9);");
-        CHECK(columns_of(described) == std::vector<column_t>{{"QUERY PLAN", logical_type::STRING_LITERAL}});
+        CHECK(columns_of(described) == std::vector<column_t>{{"QUERY PLAN", logical_type::TEXT}});
         CHECK(db.rows("s.t") == 1);
     }
     SECTION("REFRESH MATERIALIZED VIEW refreshes nothing") {
@@ -505,7 +505,7 @@ TEST_CASE("integration::cpp::describe::a run types an untyped NULL by the same r
     SECTION("in the select list it is a text NULL") {
         auto cursor = db.executed(session, "SELECT $1;", untyped_null(resource));
         REQUIRE(cursor->type_data().size() == 1);
-        CHECK(cursor->type_data().front().type() == logical_type::STRING_LITERAL);
+        CHECK(cursor->type_data().front().type() == logical_type::TEXT);
         REQUIRE(cursor->size() == 1);
         const auto null = cursor->is_null(0, 0);
         REQUIRE_FALSE(null.has_error());

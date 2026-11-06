@@ -36,13 +36,12 @@ static core::error_t double_val_exec(kernel_context&, const vector::data_chunk_t
 
 core::pmr::polymorphic_unique_ptr<vector_function> make_double_val_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "double_val", "multiplies by 2", {"arg"}, false};
-    auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource,
-                                                            "double_val",
-                                                            arity::unary(),
-                                                            doc,
-                                                            size_t{1},
-                                                            components::compute::volatility_t::volatile_);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  "double_val",
+                                                                  arity::unary(),
+                                                                  doc,
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
@@ -63,13 +62,12 @@ static core::error_t gt_threshold_exec(kernel_context&, const vector::data_chunk
 
 core::pmr::polymorphic_unique_ptr<vector_function> make_gt_threshold_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "gt_threshold", "x > y", {"arg1", "arg2"}, false};
-    auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource,
-                                                            "gt_threshold",
-                                                            arity::binary(),
-                                                            doc,
-                                                            size_t{1},
-                                                            components::compute::volatility_t::volatile_);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  "gt_threshold",
+                                                                  arity::binary(),
+                                                                  doc,
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
     kernel_signature_t sig(
         function_type_t::vector,
         {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
@@ -90,13 +88,12 @@ static core::error_t vec_negate_exec(kernel_context&, const vector::data_chunk_t
 
 core::pmr::polymorphic_unique_ptr<vector_function> make_vec_negate_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "vec_negate", "negates column", {"arg"}, false};
-    auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource,
-                                                            "vec_negate",
-                                                            arity::unary(),
-                                                            doc,
-                                                            size_t{1},
-                                                            components::compute::volatility_t::volatile_);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  "vec_negate",
+                                                                  arity::unary(),
+                                                                  doc,
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});

@@ -165,7 +165,7 @@ TEST_CASE("cast_registry: LIST identity recurses into element, ignores length") 
         complex_logical_type::create_list(complex_logical_type{logical_type::INTEGER});
     const complex_logical_type list_of_double =
         complex_logical_type::create_list(complex_logical_type{logical_type::DOUBLE});
-    const complex_logical_type target{logical_type::STRING_LITERAL};
+    const complex_logical_type target{logical_type::TEXT};
 
     REQUIRE_FALSE(registry.add(list_of_int, target, make_entry()).contains_error());
 

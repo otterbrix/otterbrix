@@ -136,8 +136,8 @@ TEST_CASE("binary_codec: read_tagged_value") {
             encode(&resource, components::vector::make_scalar(&resource, std::string_view("hello-codec")));
         size_t pos = 0;
         auto pv = read_tagged_value(encoded.data(), encoded.size(), pos);
-        REQUIRE(pv.type() == physical_type::STRING);
-        auto sv = pv.value<physical_type::STRING>();
+        REQUIRE(pv.type() == physical_type::TEXT);
+        auto sv = pv.value<physical_type::TEXT>();
         REQUIRE(sv == "hello-codec");
         REQUIRE(sv.data() >= encoded.data());
         REQUIRE(sv.data() < encoded.data() + encoded.size());
@@ -214,10 +214,10 @@ TEST_CASE("binary_codec: a corrupt logical tag refuses instead of aborting") {
         CHECK(decoded.has_error());
     }
 
-    SECTION("a STRING length that runs past the end of the record") {
+    SECTION("a TEXT length that runs past the end of the record") {
         // [tag][uint32 length][bytes]; the length is four stored bytes, so a flipped high
         // bit claims gigabytes of a five-byte record.
-        auto buffer = bytes(&resource, {tag(logical_type::STRING_LITERAL), 0xFF, 0xFF, 0xFF, 0xFF, 'a'});
+        auto buffer = bytes(&resource, {tag(logical_type::TEXT), 0xFF, 0xFF, 0xFF, 0xFF, 'a'});
         const auto decoded = services::index::decode_key_bytes(&resource, buffer);
         CHECK(decoded.has_error());
     }
@@ -262,8 +262,8 @@ TEST_CASE("binary_codec: a corrupt logical tag refuses in the view decoder") {
               components::types::physical_type::NA);
     }
 
-    SECTION("a STRING length that runs past the end of the record") {
-        auto buffer = bytes(&resource, {tag(logical_type::STRING_LITERAL), 0xFF, 0xFF, 0xFF, 0xFF, 'a'});
+    SECTION("a TEXT length that runs past the end of the record") {
+        auto buffer = bytes(&resource, {tag(logical_type::TEXT), 0xFF, 0xFF, 0xFF, 0xFF, 'a'});
         size_t pos = 0;
         bool ok = true;
         const auto pv = read_tagged_value(buffer.data(), buffer.size(), pos, &ok);
@@ -313,8 +313,8 @@ TEST_CASE("binary_codec: a corrupt logical tag refuses in the skipper") {
         CHECK(pos <= buffer.size());
     }
 
-    SECTION("a STRING length that runs past the end of the record") {
-        auto buffer = bytes(&resource, {tag(logical_type::STRING_LITERAL), 0xFF, 0xFF, 0xFF, 0xFF, 'a'});
+    SECTION("a TEXT length that runs past the end of the record") {
+        auto buffer = bytes(&resource, {tag(logical_type::TEXT), 0xFF, 0xFF, 0xFF, 0xFF, 'a'});
         size_t pos = 0;
         bool ok = true;
         skip_tagged_value(buffer.data(), buffer.size(), pos, &ok);
@@ -363,7 +363,7 @@ TEST_CASE("binary_codec: a well-formed record leaves ok alone") {
     size_t pos = 0;
     const auto pv = read_tagged_value(encoded.data(), encoded.size(), pos, &ok);
     CHECK(ok);
-    CHECK(pv.type() == components::types::physical_type::STRING);
+    CHECK(pv.type() == components::types::physical_type::TEXT);
 
     // Exactly the services::index::id_of shape: skip the key, then read the row id behind it.
     pos = 0;

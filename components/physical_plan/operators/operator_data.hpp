@@ -65,7 +65,7 @@ namespace components::operators {
     // key for key_col_names[j]. The agent resolves names to storage column indices independently and
     // reads keys by the same positional index ki.
     //
-    // Pass string keys as std::string_view: a bare const char* maps to POINTER, not STRING_LITERAL.
+    // Pass string keys as std::string_view: a bare const char* maps to POINTER, not TEXT.
     template<typename Val, typename... Vals>
     vector::data_chunk_t make_key_chunk(std::pmr::memory_resource* resource, Val&& val, Vals&&... vals) {
         std::pmr::vector<types::complex_logical_type> col_types(resource);

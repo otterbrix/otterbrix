@@ -67,7 +67,7 @@ core::pmr::polymorphic_unique_ptr<aggregate_function> make_concat_func(std::pmr:
                                                                      components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::aggregate,
-                           {parameter_type::exact(types::logical_type::STRING_LITERAL)},
+                           {parameter_type::exact(types::logical_type::TEXT)},
                            {output_type::computed(same_type_resolver(0))});
     aggregate_kernel k{std::move(sig), concat_layout, concat_update, concat_finalize};
 
@@ -185,8 +185,12 @@ core::pmr::polymorphic_unique_ptr<vector_function> make_modulo_func(std::pmr::me
 core::pmr::polymorphic_unique_ptr<vector_function>
 make_named_modulo_func(std::pmr::memory_resource* resource, const std::string& name, volatility_t volatility) {
     function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
-    auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::binary(), doc, size_t{1}, volatility);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  name,
+                                                                  arity::binary(),
+                                                                  doc,
+                                                                  size_t{1},
+                                                                  volatility);
     kernel_signature_t sig(
         function_type_t::vector,
         {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
@@ -442,7 +446,7 @@ TEST_CASE("integration::cpp::test_udfs") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::STRING_LITERAL});
+            auto result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::TEXT});
             REQUIRE_FALSE(result.contains_error());
         }
         // Trying to delete function with non-existent signature

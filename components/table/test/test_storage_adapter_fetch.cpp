@@ -82,7 +82,7 @@ namespace {
         built_table_t out;
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("payload", logical_type::STRING_LITERAL);
+        columns.emplace_back("payload", logical_type::TEXT);
         out.table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "adapter_fetch");
 
         auto types = out.table->copy_types();

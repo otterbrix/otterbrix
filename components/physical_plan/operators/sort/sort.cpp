@@ -67,7 +67,7 @@ namespace components::sort {
                     return compare_typed<float>(va, a, vb, b);
                 case types::physical_type::DOUBLE:
                     return compare_typed<double>(va, a, vb, b);
-                case types::physical_type::STRING:
+                case types::physical_type::TEXT:
                     return compare_typed<std::string_view>(va, a, vb, b);
                 default: {
                     switch (va.type().type()) {

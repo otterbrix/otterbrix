@@ -34,7 +34,7 @@ namespace {
         using namespace components::types;
         std::pmr::vector<complex_logical_type> types(r);
         types.emplace_back(logical_type::BIGINT, "count");
-        types.emplace_back(logical_type::STRING_LITERAL, "count_str");
+        types.emplace_back(logical_type::TEXT, "count_str");
         return types;
     }
 

@@ -68,7 +68,7 @@ namespace services::index {
                 return scalar.template operator()<float>();
             case logical_type::DOUBLE:
                 return scalar.template operator()<double>();
-            case logical_type::STRING_LITERAL: {
+            case logical_type::TEXT: {
                 uint32_t length = 0;
                 if (payload.size() < sizeof(length)) {
                     return refuse("index: a stored string key is shorter than its length prefix");

@@ -68,7 +68,7 @@ namespace components::table {
                 case types::logical_type::FLOAT:
                 case types::logical_type::DOUBLE:
                     return slot::real;
-                case types::logical_type::STRING_LITERAL:
+                case types::logical_type::TEXT:
                     return slot::str;
                 default:
                     return slot::none;
@@ -117,11 +117,11 @@ namespace components::table {
         }
 
         std::string_view min_string() const {
-            assert(has_bounds_ && type_ == types::logical_type::STRING_LITERAL);
+            assert(has_bounds_ && type_ == types::logical_type::TEXT);
             return min_s_;
         }
         std::string_view max_string() const {
-            assert(has_bounds_ && type_ == types::logical_type::STRING_LITERAL);
+            assert(has_bounds_ && type_ == types::logical_type::TEXT);
             return max_s_;
         }
 

@@ -41,7 +41,7 @@ TEST_CASE("catalog::type_spec::scalars_encode_empty") {
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::BIGINT}) == "");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::FLOAT}) == "");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::DOUBLE}) == "");
-    REQUIRE(encode_type_spec(complex_logical_type{logical_type::STRING_LITERAL}) == "");
+    REQUIRE(encode_type_spec(complex_logical_type{logical_type::TEXT}) == "");
     REQUIRE(encode_type_spec(complex_logical_type{logical_type::TIMESTAMP}) == "");
 }
 
@@ -60,11 +60,11 @@ TEST_CASE("catalog::type_spec::empty_spec_scalars_must_have_oid_mapping") {
     // read-back — so builtin_type_to_oid MUST map it, else a persisted column
     // of that type silently rehydrates as UNKNOWN (the BLOB/UUID bug).
     const logical_type empty_spec_scalars[] = {
-        logical_type::BOOLEAN,   logical_type::TINYINT,        logical_type::UTINYINT,  logical_type::SMALLINT,
-        logical_type::USMALLINT, logical_type::INTEGER,        logical_type::UINTEGER,  logical_type::BIGINT,
-        logical_type::UBIGINT,   logical_type::HUGEINT,        logical_type::UHUGEINT,  logical_type::FLOAT,
-        logical_type::DOUBLE,    logical_type::STRING_LITERAL, logical_type::TIMESTAMP, logical_type::TIMESTAMP_TZ,
-        logical_type::DATE,      logical_type::TIME,           logical_type::TIME_TZ,   logical_type::INTERVAL,
+        logical_type::BOOLEAN,   logical_type::TINYINT, logical_type::UTINYINT,  logical_type::SMALLINT,
+        logical_type::USMALLINT, logical_type::INTEGER, logical_type::UINTEGER,  logical_type::BIGINT,
+        logical_type::UBIGINT,   logical_type::HUGEINT, logical_type::UHUGEINT,  logical_type::FLOAT,
+        logical_type::DOUBLE,    logical_type::TEXT,    logical_type::TIMESTAMP, logical_type::TIMESTAMP_TZ,
+        logical_type::DATE,      logical_type::TIME,    logical_type::TIME_TZ,   logical_type::INTERVAL,
         logical_type::BLOB,      logical_type::UUID,
     };
     std::set<oid_t> seen;
@@ -141,7 +141,7 @@ TEST_CASE("catalog::type_spec::array_roundtrip") {
 }
 
 TEST_CASE("catalog::type_spec::map_roundtrip") {
-    auto key = complex_logical_type{logical_type::STRING_LITERAL};
+    auto key = complex_logical_type{logical_type::TEXT};
     auto val = complex_logical_type{logical_type::BIGINT};
     auto t = complex_logical_type::create_map(g_resource, key, val);
     auto spec = encode_type_spec(t);
@@ -150,14 +150,14 @@ TEST_CASE("catalog::type_spec::map_roundtrip") {
     auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::MAP);
     const auto* ext = static_cast<const map_logical_type_extension*>(t2.extension());
-    REQUIRE(ext->key().type() == logical_type::STRING_LITERAL);
+    REQUIRE(ext->key().type() == logical_type::TEXT);
     REQUIRE(ext->value().type() == logical_type::BIGINT);
 }
 
 TEST_CASE("catalog::type_spec::struct_roundtrip") {
     auto f1 = complex_logical_type{logical_type::INTEGER};
     f1.set_alias("x");
-    auto f2 = complex_logical_type{logical_type::STRING_LITERAL};
+    auto f2 = complex_logical_type{logical_type::TEXT};
     f2.set_alias("y");
     std::pmr::vector<complex_logical_type> point_fields(g_resource);
     point_fields.push_back(f1);
@@ -173,13 +173,13 @@ TEST_CASE("catalog::type_spec::struct_roundtrip") {
     REQUIRE(fields[0].alias() == "x");
     REQUIRE(fields[0].type() == logical_type::INTEGER);
     REQUIRE(fields[1].alias() == "y");
-    REQUIRE(fields[1].type() == logical_type::STRING_LITERAL);
+    REQUIRE(fields[1].type() == logical_type::TEXT);
 }
 
 TEST_CASE("catalog::type_spec::union_roundtrip") {
     auto m1 = complex_logical_type{logical_type::INTEGER};
     m1.set_alias("i");
-    auto m2 = complex_logical_type{logical_type::STRING_LITERAL};
+    auto m2 = complex_logical_type{logical_type::TEXT};
     m2.set_alias("s");
     std::pmr::vector<complex_logical_type> union_members(g_resource);
     union_members.push_back(m1);
@@ -257,7 +257,7 @@ TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
 TEST_CASE("catalog::type_spec::struct_field_names_with_delimiters_roundtrip") {
     auto f1 = complex_logical_type{logical_type::INTEGER};
     f1.set_alias("we:ird,na(me)");
-    auto f2 = complex_logical_type{logical_type::STRING_LITERAL};
+    auto f2 = complex_logical_type{logical_type::TEXT};
     f2.set_alias("back\\slash=eq");
     std::pmr::vector<complex_logical_type> fields(g_resource);
     fields.push_back(f1);
@@ -273,13 +273,13 @@ TEST_CASE("catalog::type_spec::struct_field_names_with_delimiters_roundtrip") {
     REQUIRE(out[0].alias() == "we:ird,na(me)");
     REQUIRE(out[0].type() == logical_type::INTEGER);
     REQUIRE(out[1].alias() == "back\\slash=eq");
-    REQUIRE(out[1].type() == logical_type::STRING_LITERAL);
+    REQUIRE(out[1].type() == logical_type::TEXT);
 }
 
 TEST_CASE("catalog::type_spec::union_member_names_with_delimiters_roundtrip") {
     auto m1 = complex_logical_type{logical_type::INTEGER};
     m1.set_alias("i:n,t");
-    auto m2 = complex_logical_type{logical_type::STRING_LITERAL};
+    auto m2 = complex_logical_type{logical_type::TEXT};
     m2.set_alias("s)t(r");
     std::pmr::vector<complex_logical_type> members(g_resource);
     members.push_back(m1);

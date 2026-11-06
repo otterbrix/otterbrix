@@ -61,7 +61,7 @@ namespace otterbrix {
         }
         if (framework_object_detection_t::is_pandas_dataframe(entry)) {
             // pandas >= 2.2 exposes __arrow_c_stream__ for every DataFrame (numpy- or arrow-backed).
-            // Pre-process object columns (MAP / lenient STRING) then ingest through the arrow path.
+            // Pre-process object columns (MAP / lenient TEXT) then ingest through the arrow path.
             return build_arrow_table_ref(prepare_dataframe_for_arrow(entry));
         }
         if (get_arrow_type(entry) != py_arrow_object_type_t::Invalid || has_arrow_c_stream(entry)) {

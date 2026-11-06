@@ -260,7 +260,7 @@ namespace components::table {
                     writer.write<uint8_t>(stats.decimal_scale());
                     writer.write<types::int128_t>(stats.max_as<types::int128_t>());
                     break;
-                case types::logical_type::STRING_LITERAL:
+                case types::logical_type::TEXT:
                     writer.write_string(std::string(stats.min_string()));
                     writer.write_string(std::string(stats.max_string()));
                     break;
@@ -338,7 +338,7 @@ namespace components::table {
                     stats.set_decimal_bounds(min_width, min_scale, min_raw, max_raw);
                     break;
                 }
-                case types::logical_type::STRING_LITERAL: {
+                case types::logical_type::TEXT: {
                     auto lo = reader.read_string();
                     auto hi = reader.read_string();
                     stats.set_bounds<std::string_view>(lo, hi);
@@ -365,7 +365,7 @@ namespace components::table {
                 case types::logical_type::HUGEINT:
                 case types::logical_type::UHUGEINT:
                 case types::logical_type::DECIMAL:
-                case types::logical_type::STRING_LITERAL:
+                case types::logical_type::TEXT:
                     return true;
                 default:
                     return false;
@@ -514,7 +514,7 @@ namespace components::table {
             case types::logical_type::DECIMAL:
                 update_decimal_stats(*this, vec, offset, count);
                 break;
-            case types::logical_type::STRING_LITERAL:
+            case types::logical_type::TEXT:
                 update_string_stats(*this, vec, offset, count);
                 break;
             default:

@@ -1,4 +1,4 @@
-// Write-through re-points a filled segment to a real file block on append; STRING was excluded,
+// Write-through re-points a filled segment to a real file block on append; TEXT was excluded,
 // so its payload stayed pinned and every round re-copied it (measured: 942 of 942 non-evictable).
 // Losing the adopted segment's overflow-block registration corrupts every read of a big string, not a rare race.
 
@@ -75,7 +75,7 @@ namespace {
     std::unique_ptr<data_table_t> make_string_table(wt_env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("payload", logical_type::STRING_LITERAL);
+        columns.emplace_back("payload", logical_type::TEXT);
         return std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "string_wt");
     }
 

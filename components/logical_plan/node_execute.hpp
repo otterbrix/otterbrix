@@ -9,12 +9,10 @@
 
 namespace components::logical_plan {
 
-    // An argument of EXECUTE: the slot of the plan's parameters that holds its value (a host's value, or what the
-    // statement's sub-plan SELECT <argument> computed), and whether it was written as a bare string literal, which
-    // PostgreSQL 18 types as unknown: it takes its parameter's type as a quoted VALUES cell of an INSERT does.
+    // An argument of EXECUTE: the slot of the plan's parameters that holds its value (a host's value, a bare quoted
+    // literal, or what the statement's sub-plan SELECT <argument> computed).
     struct execute_argument_t {
         core::parameter_id_t slot{};
-        bool quoted_literal{false};
     };
 
     // EXECUTE name [(arguments)]: the planner expands the statement the session stored under `name`, as a view's

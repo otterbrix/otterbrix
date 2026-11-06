@@ -39,6 +39,7 @@ using namespace components::expressions;
     }
 
 using components::vector::make_scalar;
+using components::vector::make_string_literal;
 using vec = std::vector<components::vector::vector_t>;
 using fields = std::pmr::vector<expression_ptr>;
 
@@ -77,7 +78,7 @@ TEST_CASE("components::sql::update") {
             set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name';",
                            R"_($update: <oid:0> {$match: {$all_true}})_",
-                           vec({make_scalar(&resource, "new name")}),
+                           vec({make_string_literal(&resource, "new name")}),
                            f);
     }
 
@@ -99,11 +100,12 @@ TEST_CASE("components::sql::update") {
             set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{1}));
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{2}));
-        TEST_SIMPLE_UPDATE(
-            "UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
-            R"_($update: <oid:0> {$match: {$all_true}})_",
-            vec({make_scalar(&resource, 10l), make_scalar(&resource, "new name"), make_scalar(&resource, true)}),
-            f);
+        TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, 10l),
+                                make_string_literal(&resource, "new name"),
+                                make_scalar(&resource, true)}),
+                           f);
     }
 }
 
@@ -126,10 +128,11 @@ TEST_CASE("components::sql::update_where") {
         fields f;
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
-        TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name' WHERE name = 'old_name';",
-                           R"_($update: <oid:0> {$match: {"name": {$eq: #1}}})_",
-                           vec({make_scalar(&resource, "new name"), make_scalar(&resource, "old_name")}),
-                           f);
+        TEST_SIMPLE_UPDATE(
+            "UPDATE TestDatabase.TestCollection SET name = 'new name' WHERE name = 'old_name';",
+            R"_($update: <oid:0> {$match: {"name": {$eq: #1}}})_",
+            vec({make_string_literal(&resource, "new name"), make_string_literal(&resource, "old_name")}),
+            f);
     }
 
     {
@@ -155,10 +158,10 @@ TEST_CASE("components::sql::update_where") {
             "WHERE id > 10 AND name = 'old_name' AND is_doc = false;",
             R"_($update: <oid:0> {$match: {$and: ["id": {$gt: #3}, "name": {$eq: #4}, "is_doc": {$eq: #5}]}})_",
             vec({make_scalar(&resource, 10l),
-                 make_scalar(&resource, "new name"),
+                 make_string_literal(&resource, "new name"),
                  make_scalar(&resource, true),
                  make_scalar(&resource, 10l),
-                 make_scalar(&resource, "old_name"),
+                 make_string_literal(&resource, "old_name"),
                  make_scalar(&resource, false)}),
             f);
     }

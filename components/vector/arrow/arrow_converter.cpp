@@ -138,7 +138,7 @@ namespace components::vector::arrow {
             case logical_type::DOUBLE:
                 child.format = "g";
                 return core::error_t::no_error();
-            case logical_type::STRING_LITERAL:
+            case logical_type::TEXT:
                 child.format = "U";
                 return core::error_t::no_error();
             case logical_type::DECIMAL: {
@@ -237,6 +237,7 @@ namespace components::vector::arrow {
             case logical_type::BLOB:
             case logical_type::UHUGEINT:
             case logical_type::BIT:
+            case logical_type::STRING_LITERAL:
             case logical_type::INTEGER_LITERAL:
             case logical_type::POINTER:
             case logical_type::VALIDITY:

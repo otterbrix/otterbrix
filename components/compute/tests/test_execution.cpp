@@ -502,7 +502,7 @@ TEST_CASE("components::compute::errors") {
         vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
         REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
-        data_chunk_t try_chunk(&resource, {logical_type::STRING_LITERAL});
+        data_chunk_t try_chunk(&resource, {logical_type::TEXT});
         try_chunk.set_value(0, 0, std::string_view{"oops"});
         try_chunk.set_cardinality(1);
 
@@ -591,7 +591,7 @@ namespace {
         for (const auto& arg : args) {
             switch (arg.kind) {
                 case arg_t::kind_t::text:
-                    types.emplace_back(logical_type::STRING_LITERAL);
+                    types.emplace_back(logical_type::TEXT);
                     break;
                 case arg_t::kind_t::integer:
                     types.emplace_back(logical_type::BIGINT);
@@ -1006,8 +1006,19 @@ TEST_CASE("components::compute::string::regexp_replace_counts_characters_not_byt
 TEST_CASE("components::compute::string::regexp_replace_over_invalid_utf8") {
     string_registry_fixture fx;
     REQUIRE(replaced(fx, {a::text("caf\xE9"), a::text("."), a::text("X"), a::text("g")}) == "XXX\xE9");
-    REQUIRE(replaced(fx, {a::text("\xFF" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xFF-a-");
-    REQUIRE(replaced(fx, {a::text("\xE9" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xE9" "a-");
+    REQUIRE(replaced(fx,
+                     {a::text("\xFF"
+                              "a"),
+                      a::text(""),
+                      a::text("-"),
+                      a::text("g")}) == "-\xFF-a-");
+    REQUIRE(replaced(fx,
+                     {a::text("\xE9"
+                              "a"),
+                      a::text(""),
+                      a::text("-"),
+                      a::text("g")}) == "-\xE9"
+                                        "a-");
     auto pattern = refused(fx, {a::text("a"), a::text("\xE9"), a::text("x")});
     REQUIRE(pattern.type == core::error_code_t::invalid_regular_expression);
     REQUIRE(pattern.what == "invalid regular expression: invalid UTF-8");
@@ -1093,8 +1104,8 @@ namespace {
                                  std::string_view pattern,
                                  components::vector::operations::match_flags_t flags) {
         std::pmr::vector<complex_logical_type> types(resource);
-        types.emplace_back(subject.has_value() ? logical_type::STRING_LITERAL : logical_type::NA);
-        types.emplace_back(logical_type::STRING_LITERAL);
+        types.emplace_back(subject.has_value() ? logical_type::TEXT : logical_type::NA);
+        types.emplace_back(logical_type::TEXT);
         types.emplace_back(logical_type::UTINYINT);
         data_chunk_t chunk(resource, types, uint64_t{1});
         if (subject.has_value()) {
@@ -1193,7 +1204,7 @@ TEST_CASE("components::compute::string::one_executor_over_several_chunks") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> in_types(&fx.resource);
-    in_types.emplace_back(logical_type::STRING_LITERAL);
+    in_types.emplace_back(logical_type::TEXT);
     auto executor = fn->make_executor(&fx.resource, in_types, nullptr, fx.ctx);
     REQUIRE_FALSE(executor.has_error());
 
@@ -1224,7 +1235,7 @@ TEST_CASE("components::compute::string::length_over_a_chunk") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{3});
     args.data[0].set_value(0, std::string_view{"a"});
     args.data[0].set_value(1, std::string_view{"bb"});
@@ -1290,7 +1301,7 @@ TEST_CASE("components::compute::string::upper_over_a_chunk") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{5});
     args.data[0].set_value(0, std::string_view{"a"});
     args.data[0].set_value(1, std::string_view{"bbbbbbbbbbbbbbbb"});
@@ -1329,7 +1340,7 @@ TEST_CASE("components::compute::string::upper_null") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{1});
     args.data[0].set_null(0, true);
     args.set_cardinality(1);
@@ -1346,7 +1357,7 @@ TEST_CASE("components::compute::string::length_null_row_within_chunk") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{3});
     args.data[0].set_value(0, std::string_view{"ab"});
     args.data[0].set_null(1, true);

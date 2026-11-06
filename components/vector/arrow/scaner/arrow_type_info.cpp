@@ -32,14 +32,14 @@ namespace components::vector::arrow {
     decimal_bit_width arrow_decimal_info::get_bit_width() const { return bit_width_; }
 
     arrow_string_info::arrow_string_info(arrow_variable_size_type size)
-        : arrow_type_info(arrow_type_info_type::STRING)
+        : arrow_type_info(arrow_type_info_type::TEXT)
         , size_type_(size)
         , fixed_size_(0) {
         assert(size != arrow_variable_size_type::FIXED_SIZE);
     }
 
     arrow_string_info::arrow_string_info(size_t fixed_size)
-        : arrow_type_info(arrow_type_info_type::STRING)
+        : arrow_type_info(arrow_type_info_type::TEXT)
         , size_type_(arrow_variable_size_type::FIXED_SIZE)
         , fixed_size_(fixed_size) {}
 

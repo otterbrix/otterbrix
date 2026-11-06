@@ -21,12 +21,12 @@ namespace {
     constexpr uint64_t kNarrow = 64;
     constexpr uint64_t kWide = 640;
 
-    // STRING, and well past any small-string buffer.
+    // TEXT, and well past any small-string buffer.
     vector::data_chunk_t make_chunk(std::pmr::memory_resource* resource, uint64_t rows) {
         std::pmr::vector<types::complex_logical_type> types{resource};
-        types.emplace_back(types::logical_type::STRING_LITERAL);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
+        types.emplace_back(types::logical_type::TEXT);
+        types.emplace_back(types::logical_type::TEXT);
+        types.emplace_back(types::logical_type::TEXT);
         vector::data_chunk_t chunk(resource, types, rows);
         const std::string value(64, 'x');
         for (uint64_t row = 0; row < rows; row++) {
@@ -46,7 +46,7 @@ namespace {
         for (const auto& column : chunk.data) {
             const auto auxiliary = column.auxiliary();
             REQUIRE(auxiliary);
-            REQUIRE(auxiliary->type() == vector::vector_buffer_type::STRING);
+            REQUIRE(auxiliary->type() == vector::vector_buffer_type::TEXT);
             total += static_cast<const vector::string_vector_buffer_t*>(auxiliary.get())->upstream_allocations();
         }
         return total;

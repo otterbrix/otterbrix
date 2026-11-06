@@ -95,8 +95,7 @@ namespace components::logical_plan {
     // predicates a DML carries. A DEFAULT is a constant by then. A const plan is walked as it is: the calls stay the
     // callers' to change, the nodes are not.
     template<typename Node, typename Visit>
-        requires std::is_same_v<std::remove_const_t<Node>, node_t>
-    void for_each_plan_call(Node* root, Visit& visit) {
+    requires std::is_same_v<std::remove_const_t<Node>, node_t> void for_each_plan_call(Node* root, Visit& visit) {
         if (root == nullptr) {
             return;
         }

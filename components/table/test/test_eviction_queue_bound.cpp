@@ -193,14 +193,12 @@ TEST_CASE("eviction queue: eviction drains the queue and every block is evictabl
     CHECK(env.nodes.peak() <= 2 * N + 1);
 }
 
-TEST_CASE("eviction queue: repeated scans of a table keep the queue within twice its block count",
-          "[eviction_queue]") {
+TEST_CASE("eviction queue: repeated scans of a table keep the queue within twice its block count", "[eviction_queue]") {
     using namespace components::table;
     using namespace components::types;
     using namespace components::vector;
 
-    const std::string path =
-        "/tmp/test_otterbrix_eviction_queue_bound_" + std::to_string(::getpid()) + ".otbx";
+    const std::string path = "/tmp/test_otterbrix_eviction_queue_bound_" + std::to_string(::getpid()) + ".otbx";
     std::remove(path.c_str());
     {
         env_t env;
@@ -281,4 +279,3 @@ TEST_CASE("eviction queue: repeated scans of a table keep the queue within twice
     }
     std::remove(path.c_str());
 }
-

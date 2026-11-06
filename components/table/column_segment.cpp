@@ -1129,11 +1129,10 @@ namespace components::table {
     uint64_t column_segment_t::persisted_size(uint64_t rows) const {
         const auto phys = type.to_physical_type();
         assert(phys != types::physical_type::TEXT);
-        const uint64_t used =
-            phys == types::physical_type::BIT
-                ? (rows + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY *
-                      vector::validity_mask_t::STANDARD_MASK_SIZE
-                : rows * type_size;
+        const uint64_t used = phys == types::physical_type::BIT
+                                  ? (rows + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY *
+                                        vector::validity_mask_t::STANDARD_MASK_SIZE
+                                  : rows * type_size;
         return std::min(used, segment_size_);
     }
 

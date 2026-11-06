@@ -75,7 +75,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");                              \
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");                                \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \

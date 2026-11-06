@@ -806,9 +806,8 @@ namespace components::planner::optimizer {
                         }
                         if (!pushable.empty()) {
                             auto m_name = node_cfn(match_child);
-                            source_agg->append_child(make_node_match(resource,
-                                                                     m_name,
-                                                                     rebuild_conjunction(resource, pushable)));
+                            source_agg->append_child(
+                                make_node_match(resource, m_name, rebuild_conjunction(resource, pushable)));
                             auto residual_expr = rebuild_conjunction(resource, residual);
                             if (!residual_expr) {
                                 return pushdown_filter_impl(resource, source);
@@ -845,9 +844,8 @@ namespace components::planner::optimizer {
                     if ((jt == join_type::inner || jt == join_type::cross) && left_width_known &&
                         !join->expressions().empty()) {
                         const std::pmr::vector<components::types::complex_logical_type> unstamped{resource};
-                        const auto& right_columns = join->children()[1]->has_output_types()
-                                                        ? join->children()[1]->output_types()
-                                                        : unstamped;
+                        const auto& right_columns =
+                            join->children()[1]->has_output_types() ? join->children()[1]->output_types() : unstamped;
                         auto pairs = collect_equi_pairs(resource,
                                                         join->expressions().front(),
                                                         join->children()[0]->output_types(),
@@ -991,9 +989,8 @@ namespace components::planner::optimizer {
                             for (const auto& conj : pushable) {
                                 branch_pushed.push_back(clone_expression(resource, conj));
                             }
-                            auto pushed_match = make_node_match(resource,
-                                                                b_name,
-                                                                rebuild_conjunction(resource, branch_pushed));
+                            auto pushed_match =
+                                make_node_match(resource, b_name, rebuild_conjunction(resource, branch_pushed));
                             if (push_below_projection) {
                                 // Inherit the branch's table_oid so create_plan_match binds to that table.
                                 pushed_match->set_table_oid(branch->table_oid());

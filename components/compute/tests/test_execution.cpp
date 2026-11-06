@@ -1006,8 +1006,19 @@ TEST_CASE("components::compute::string::regexp_replace_counts_characters_not_byt
 TEST_CASE("components::compute::string::regexp_replace_over_invalid_utf8") {
     string_registry_fixture fx;
     REQUIRE(replaced(fx, {a::text("caf\xE9"), a::text("."), a::text("X"), a::text("g")}) == "XXX\xE9");
-    REQUIRE(replaced(fx, {a::text("\xFF" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xFF-a-");
-    REQUIRE(replaced(fx, {a::text("\xE9" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xE9" "a-");
+    REQUIRE(replaced(fx,
+                     {a::text("\xFF"
+                              "a"),
+                      a::text(""),
+                      a::text("-"),
+                      a::text("g")}) == "-\xFF-a-");
+    REQUIRE(replaced(fx,
+                     {a::text("\xE9"
+                              "a"),
+                      a::text(""),
+                      a::text("-"),
+                      a::text("g")}) == "-\xE9"
+                                        "a-");
     auto pattern = refused(fx, {a::text("a"), a::text("\xE9"), a::text("x")});
     REQUIRE(pattern.type == core::error_code_t::invalid_regular_expression);
     REQUIRE(pattern.what == "invalid regular expression: invalid UTF-8");

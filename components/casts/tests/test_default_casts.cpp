@@ -1756,9 +1756,9 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
             return complex_logical_type::create_struct("", vec);
         };
         auto point_fields = [&] {
-            return std::pmr::vector<complex_logical_type>{{field(logical_type::INTEGER, "x"),
-                                                           field(logical_type::INTEGER, "y")},
-                                                          resource};
+            return std::pmr::vector<complex_logical_type>{
+                {field(logical_type::INTEGER, "x"), field(logical_type::INTEGER, "y")},
+                resource};
         };
         const complex_logical_type point = complex_logical_type::create_struct("point_t", point_fields());
         const complex_logical_type row_i32 = row_of({i32, i32});
@@ -3193,10 +3193,8 @@ TEST_CASE("numeric cast kernels: range-checked casts on flat input") {
 
     SECTION("INTEGER -> UINTEGER rejects a negative") {
         const auto& entry = numeric_entry(registry, logical_type::INTEGER, logical_type::UINTEGER);
-        auto source = flat_vector<int32_t>(&arena,
-                                           logical_type::INTEGER,
-                                           {-1, 5, std::numeric_limits<int32_t>::max(), -9},
-                                           {3});
+        auto source =
+            flat_vector<int32_t>(&arena, logical_type::INTEGER, {-1, 5, std::numeric_limits<int32_t>::max(), -9}, {3});
         vector::vector_t cast_result{&arena, complex_logical_type{logical_type::UINTEGER}};
         require_out_of_range(entry.fn.invoke(cast_kind::cast, source, &cast_result, context, 4));
 
@@ -3504,9 +3502,8 @@ TEST_CASE("numeric cast kernels: range-checked casts into a reused result and sp
 
     SECTION("DOUBLE -> FLOAT passes NaN and both infinities through") {
         const double inf = std::numeric_limits<double>::infinity();
-        auto source = flat_vector<double>(&arena,
-                                          logical_type::DOUBLE,
-                                          {std::numeric_limits<double>::quiet_NaN(), inf, -inf});
+        auto source =
+            flat_vector<double>(&arena, logical_type::DOUBLE, {std::numeric_limits<double>::quiet_NaN(), inf, -inf});
         vector::vector_t result{&arena, float_type};
         REQUIRE_FALSE(numeric_entry(registry, logical_type::DOUBLE, logical_type::FLOAT)
                           .fn.invoke(cast_kind::cast, source, &result, context, 3)

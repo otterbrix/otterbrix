@@ -416,8 +416,8 @@ TEST_CASE("integration::cpp::test_null_persistence::all_null_lists_survive_two_c
             REQUIRE(cur->is_success());
             CHECK(cur->size() == 2);
         }
-        REQUIRE(exec("INSERT INTO b.e (id, a, s) VALUES (3, ARRAY[10, 20], NULL), (4, ARRAY[30], NULL);")
-                    ->is_success());
+        REQUIRE(
+            exec("INSERT INTO b.e (id, a, s) VALUES (3, ARRAY[10, 20], NULL), (4, ARRAY[30], NULL);")->is_success());
         REQUIRE(exec("CHECKPOINT;")->is_success());
     }
 

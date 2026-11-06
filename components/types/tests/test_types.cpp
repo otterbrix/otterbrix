@@ -317,8 +317,7 @@ namespace {
         return field;
     }
 
-    complex_logical_type
-    struct_of(std::initializer_list<complex_logical_type> fields, std::string alias = "") {
+    complex_logical_type struct_of(std::initializer_list<complex_logical_type> fields, std::string alias = "") {
         std::pmr::vector<complex_logical_type> vec(fields.begin(), fields.end());
         return complex_logical_type::create_struct("", vec, std::move(alias));
     }

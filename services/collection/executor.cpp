@@ -1203,8 +1203,7 @@ namespace services::collection::executor {
         co_return refused;
     }
 
-    void executor_t::release_takes_(const components::execution_context_t& ctx,
-                                    std::pmr::vector<held_take_t>& held) {
+    void executor_t::release_takes_(const components::execution_context_t& ctx, std::pmr::vector<held_take_t>& held) {
         for (const auto& take : held) {
             [[maybe_unused]] auto [_r, released] =
                 actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_release_block>(
@@ -2319,11 +2318,10 @@ namespace services::collection::executor {
                     const bool exists = place != nullptr && (database ? place->database_oid : place->namespace_oid) !=
                                                                 components::catalog::INVALID_OID;
                     const auto& value = database ? resolves.place.database : resolves.place.schema;
-                    auto bound =
-                        exists ? components::vector::make_scalar(resource, std::string_view{value})
-                               : components::vector::make_null(resource,
-                                                               components::types::complex_logical_type{
-                                                                   components::types::logical_type::TEXT});
+                    auto bound = exists ? components::vector::make_scalar(resource, std::string_view{value})
+                                        : components::vector::make_null(resource,
+                                                                        components::types::complex_logical_type{
+                                                                            components::types::logical_type::TEXT});
                     call.args().emplace_back(
                         parameters.add_parameter(std::move(bound), components::vector::parameter_kind::literal));
                 }
@@ -3726,8 +3724,7 @@ namespace services::collection::executor {
                                                             resolve_txn,
                                                             context_storage.execution_context.timezone_offset};
         std::pmr::vector<held_take_t> held{resource()};
-        if (auto offered =
-                co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context, held);
+        if (auto offered = co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context, held);
             offered.contains_error()) {
             release_takes_(statement_ctx, held);
             co_return execute_result_t{make_cursor(resource(), std::move(offered))};

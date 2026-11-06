@@ -185,8 +185,12 @@ core::pmr::polymorphic_unique_ptr<vector_function> make_modulo_func(std::pmr::me
 core::pmr::polymorphic_unique_ptr<vector_function>
 make_named_modulo_func(std::pmr::memory_resource* resource, const std::string& name, volatility_t volatility) {
     function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
-    auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::binary(), doc, size_t{1}, volatility);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  name,
+                                                                  arity::binary(),
+                                                                  doc,
+                                                                  size_t{1},
+                                                                  volatility);
     kernel_signature_t sig(
         function_type_t::vector,
         {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},

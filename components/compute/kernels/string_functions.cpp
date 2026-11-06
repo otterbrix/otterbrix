@@ -601,10 +601,9 @@ namespace {
         const auto text = parameter_type::exact(logical_type::TEXT);
         const auto integer = parameter_type::exact(logical_type::BIGINT);
         auto add = [&](std::initializer_list<parameter_type> inputs, vector_exec_fn exec) {
-            kernel_signature_t sig(
-                function_type_t::vector,
-                std::pmr::vector<parameter_type>(inputs, resource),
-                std::pmr::vector<output_type>({output_type::fixed(logical_type::TEXT)}, resource));
+            kernel_signature_t sig(function_type_t::vector,
+                                   std::pmr::vector<parameter_type>(inputs, resource),
+                                   std::pmr::vector<output_type>({output_type::fixed(logical_type::TEXT)}, resource));
             vector_kernel k(std::move(sig), exec, init_regexp_replace);
             [[maybe_unused]] const auto added = fn->add_kernel(resource, std::move(k));
             assert(!added.contains_error() && "string kernel must fit the declared slots and arity");

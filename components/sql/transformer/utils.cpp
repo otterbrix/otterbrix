@@ -1399,9 +1399,9 @@ namespace components::sql::transform {
         }
         auto op_str = std::string_view(strVal(node->name->lst.back().data));
         if (!node->rexpr) {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"operator " + std::string(op_str) + " is missing its operand",
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"operator " + std::string(op_str) + " is missing its operand", resource});
         }
 
         auto resolve = [resource](Node* n) -> core::result_wrapper_t<vector::vector_t> {

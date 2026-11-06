@@ -41,22 +41,26 @@ namespace {
     };
 
     template<typename M>
-    constexpr bool any_customization_point_is_public =
-        requires(M& m, memory_tag tag, uint64_t n, bool b) { m.allocate_impl(tag, n, b); } ||
-        requires(M& m, std::shared_ptr<block_handle_t>& h, uint64_t n) { m.reallocate_impl(h, n); } ||
-        requires(M& m, std::shared_ptr<block_handle_t>& h) { m.pin_impl(h); } ||
-        requires(M& m, std::vector<std::shared_ptr<block_handle_t>>& hs) { m.prefetch_impl(hs); } ||
-        requires(M& m, block_handle_t* h) { m.unpin_impl(h); } ||
-        requires(const M& m) { m.block_allocation_size_impl(); } || requires(const M& m) { m.block_size_impl(); } ||
-        requires(M& m, uint64_t n) { m.register_transient_memory_impl(n, n); } ||
-        requires(M& m, memory_tag tag, uint64_t n) { m.register_small_memory_impl(tag, n); } ||
-        requires(M& m, uint64_t n) { m.reserve_memory_impl(n); } ||
-        requires(M& m, uint64_t n) { m.free_reserved_memory_impl(n); } ||
-        requires(const M& m) { m.get_memory_usage_info_impl(); } ||
-        requires(M& m, uint64_t n) { m.set_memory_limit_impl(n); } ||
-        requires(M& m, uint64_t n, std::unique_ptr<file_buffer_t>&& src, file_buffer_type type) {
-            m.construct_manager_buffer_impl(n, std::move(src), type);
-        } || requires(const M& m) { m.buffer_pool_impl(); } || requires(const M& m) { m.resource_impl(); };
+    constexpr bool any_customization_point_is_public = requires(M& m, memory_tag tag, uint64_t n, bool b) {
+        m.allocate_impl(tag, n, b);
+    }
+    || requires(M& m, std::shared_ptr<block_handle_t>& h, uint64_t n) { m.reallocate_impl(h, n); }
+    || requires(M& m, std::shared_ptr<block_handle_t>& h) { m.pin_impl(h); }
+    || requires(M& m, std::vector<std::shared_ptr<block_handle_t>>& hs) { m.prefetch_impl(hs); }
+    || requires(M& m, block_handle_t* h) { m.unpin_impl(h); }
+    || requires(const M& m) { m.block_allocation_size_impl(); }
+    || requires(const M& m) { m.block_size_impl(); }
+    || requires(M& m, uint64_t n) { m.register_transient_memory_impl(n, n); }
+    || requires(M& m, memory_tag tag, uint64_t n) { m.register_small_memory_impl(tag, n); }
+    || requires(M& m, uint64_t n) { m.reserve_memory_impl(n); }
+    || requires(M& m, uint64_t n) { m.free_reserved_memory_impl(n); }
+    || requires(const M& m) { m.get_memory_usage_info_impl(); }
+    || requires(M& m, uint64_t n) { m.set_memory_limit_impl(n); }
+    || requires(M& m, uint64_t n, std::unique_ptr<file_buffer_t>&& src, file_buffer_type type) {
+        m.construct_manager_buffer_impl(n, std::move(src), type);
+    }
+    || requires(const M& m) { m.buffer_pool_impl(); }
+    || requires(const M& m) { m.resource_impl(); };
 
 } // namespace
 

@@ -216,9 +216,7 @@ namespace services::dispatcher {
             return candidate;
         }
 
-        bool is_string_category(const complex_logical_type& type) noexcept {
-            return type.type() == logical_type::TEXT;
-        }
+        bool is_string_category(const complex_logical_type& type) noexcept { return type.type() == logical_type::TEXT; }
 
         // PostgreSQL 18 func_select_candidate (parse_func.c): at each unknown position (an untyped NULL or literal) the
         // string category wins a conflict, and the candidates of another category there drop out. Answers the one

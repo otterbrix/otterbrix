@@ -369,11 +369,11 @@ namespace services::catalog_resolve {
                     return names;
                 }
                 case node_type::create_index_t:
-                    names.secondary = qualified_name_t{
-                        target.connection,
-                        target.database,
-                        target.schema,
-                        core::relname_t{static_cast<const node_create_index_t*>(node)->indexname().t}};
+                    names.secondary =
+                        qualified_name_t{target.connection,
+                                         target.database,
+                                         target.schema,
+                                         core::relname_t{static_cast<const node_create_index_t*>(node)->indexname().t}};
                     return names;
                 case node_type::create_constraint_t:
                     names.secondary = static_cast<const node_create_constraint_t*>(node)->ref();
@@ -509,8 +509,8 @@ namespace services::catalog_resolve {
                             auto* d = static_cast<node_drop_t*>(n);
                             switch (d->kind()) {
                                 case drop_target_kind::database: {
-                                    if (const auto* database = resolves.database_entry(names.table.connection.t,
-                                                                                       names.table.database.t)) {
+                                    if (const auto* database =
+                                            resolves.database_entry(names.table.connection.t, names.table.database.t)) {
                                         d->set_database_oid(database->database_oid);
                                     }
                                     break;

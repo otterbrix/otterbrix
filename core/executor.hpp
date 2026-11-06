@@ -78,10 +78,10 @@ namespace actor_zeta {
         template<auto MethodPtr,
                  typename... Args,
                  typename Interface = typename type_traits::callable_trait<decltype(MethodPtr)>::class_type>
-            requires(detail::is_interface<Interface> && !needs_typed_address<Interface>)
-        [[nodiscard]] inline auto send(actor::address_t target, Args&&... args)
-            -> detail::send_result_t<Interface,
-                                     typename type_traits::callable_trait<decltype(MethodPtr)>::result_type> {
+        requires(detail::is_interface<Interface> && !needs_typed_address<Interface>)
+            [[nodiscard]] inline auto send(actor::address_t target, Args&&... args)
+                -> detail::send_result_t<Interface,
+                                         typename type_traits::callable_trait<decltype(MethodPtr)>::result_type> {
             using result_type = typename type_traits::callable_trait<decltype(MethodPtr)>::result_type;
             static_assert(type_traits::is_unique_future_v<result_type>, "Method must return unique_future<T>");
             static_assert(contract_declares_method<MethodPtr, typename Interface::dispatch_traits::methods>::value,

@@ -48,7 +48,8 @@ namespace otterbrix {
             }
 
             ArrowSchema schema;
-            if (auto err = components::vector::arrow::to_arrow_schema(resource, &schema, schema_types); err.contains_error()) {
+            if (auto err = components::vector::arrow::to_arrow_schema(resource, &schema, schema_types);
+                err.contains_error()) {
                 util::raise_no_cursor_error(std::string(err.what));
             }
             auto schema_obj = schema_import_func(reinterpret_cast<uint64_t>(&schema));

@@ -137,7 +137,8 @@ namespace {
             "remainder",
             arity::binary(),
             function_doc{resource, "short_doc", "full_doc", {"a", "b"}, false},
-            size_t{1}, components::compute::volatility_t::volatile_);
+            size_t{1},
+            components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT),
                                 parameter_type::exact(components::types::logical_type::BIGINT)},

@@ -200,7 +200,8 @@ TEST_CASE("buffer manager: a block-sized buffer is charged its whole allocation,
 
     test_env_t env(uint64_t(1) << 26);
     const uint64_t block_size = env.buffer_manager.block_size();
-    const uint64_t charged = env.buffer_manager.block_allocation_size() + (PAYLOAD_ALIGNMENT - DEFAULT_BLOCK_HEADER_SIZE);
+    const uint64_t charged =
+        env.buffer_manager.block_allocation_size() + (PAYLOAD_ALIGNMENT - DEFAULT_BLOCK_HEADER_SIZE);
 
     const uint64_t before_managed = env.buffer_pool.used_memory();
     std::vector<buffer_handle_t> managed;

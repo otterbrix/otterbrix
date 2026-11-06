@@ -165,16 +165,16 @@ namespace {
         return core::error_t::no_error();
     }
 
-    components::compute::function_ptr make_volatile_udf(std::pmr::memory_resource* resource,
-                                                        const char* name,
-                                                        components::compute::vector_exec_fn exec) {
+    components::compute::function_ptr
+    make_volatile_udf(std::pmr::memory_resource* resource, const char* name, components::compute::vector_exec_fn exec) {
         components::compute::function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
         auto fn = core::pmr::make_polymorphic_unique<components::compute::vector_function>(
             resource,
             name,
             components::compute::arity::unary(),
             doc,
-            size_t{1}, components::compute::volatility_t::volatile_);
+            size_t{1},
+            components::compute::volatility_t::volatile_);
         components::compute::kernel_signature_t sig(
             components::compute::function_type_t::vector,
             {components::compute::parameter_type::exact(components::types::logical_type::BIGINT)},
@@ -275,7 +275,8 @@ TEST_CASE("integration::cpp::clause_answers::order_by_a_grouping_key_the_select_
     seed_ob(dispatcher);
     const std::string from = " FROM ob.c JOIN ob.o ON c.id = o.cid ";
 
-    SECTION("A1 (OtterStax 4.22) a qualified grouping key outside the select list orders the groups and is not returned") {
+    SECTION(
+        "A1 (OtterStax 4.22) a qualified grouping key outside the select list orders the groups and is not returned") {
         auto cur = exec(dispatcher, "SELECT c.name, count(*)" + from + "GROUP BY c.name, o.name ORDER BY o.name;");
         CHECK(strings_at(cur, 0) == names{"c", "b", "a"});
         CHECK(width_of(cur) == 2);
@@ -412,17 +413,17 @@ TEST_CASE("integration::cpp::clause_answers::order_by_an_output_name") {
         const std::vector<std::pair<size_t, components::vector::vector_t>> ten{
             {1, components::vector::make_scalar(dispatcher->resource(), static_cast<int64_t>(10))}};
         auto session = otterbrix::session_id_t();
-        CHECK(column_of(dispatcher->execute_sql_with_params(session,
-                                                            "SELECT a + $1 AS x FROM ob.t ORDER BY x DESC;",
-                                                            ten)) == values{13, 12, 11});
+        CHECK(column_of(
+                  dispatcher->execute_sql_with_params(session, "SELECT a + $1 AS x FROM ob.t ORDER BY x DESC;", ten)) ==
+              values{13, 12, 11});
         CHECK(column_of(dispatcher->execute_sql_with_params(session,
                                                             "SELECT a + $1 AS x FROM ob.t ORDER BY a + $1 DESC;",
                                                             ten)) == values{13, 12, 11});
         const std::vector<std::pair<size_t, components::vector::vector_t>> minus_one{
             {1, components::vector::make_scalar(dispatcher->resource(), static_cast<int64_t>(-1))}};
-        CHECK(column_of(dispatcher->execute_sql_with_params(session,
-                                                            "SELECT a FROM ob.t ORDER BY b * $1;",
-                                                            minus_one)) == values{1, 2, 3});
+        CHECK(
+            column_of(dispatcher->execute_sql_with_params(session, "SELECT a FROM ob.t ORDER BY b * $1;", minus_one)) ==
+            values{1, 2, 3});
     }
 }
 
@@ -504,9 +505,9 @@ TEST_CASE("integration::cpp::clause_answers::order_by_under_distinct") {
     SECTION("D6 a grouped DISTINCT ordered by a shown computation over the groups") {
         CHECK(column_of(exec(dispatcher, "SELECT DISTINCT a + 1, count(*) FROM ob.t GROUP BY a ORDER BY a + 1;")) ==
               values{2, 3, 4});
-        CHECK(column_of(exec(dispatcher,
-                             "SELECT DISTINCT a + 1, count(*) FROM ob.t GROUP BY a ORDER BY a + 1 DESC;")) ==
-              values{4, 3, 2});
+        CHECK(
+            column_of(exec(dispatcher, "SELECT DISTINCT a + 1, count(*) FROM ob.t GROUP BY a ORDER BY a + 1 DESC;")) ==
+            values{4, 3, 2});
     }
     SECTION("D7 a grouped DISTINCT ordered by a computation it does not show") {
         const auto what =
@@ -669,8 +670,8 @@ TEST_CASE("integration::cpp::clause_answers::select_list_is_evaluated_once_and_a
     }
     SECTION("E13 a volatile computation over the groups sorts by the value shown") {
         flip_rows = 0;
-        auto shown = column_of(
-            exec(dispatcher, "SELECT flip(a) AS r, count(*) FROM ob.t GROUP BY a ORDER BY flip(a);"));
+        auto shown =
+            column_of(exec(dispatcher, "SELECT flip(a) AS r, count(*) FROM ob.t GROUP BY a ORDER BY flip(a);"));
         REQUIRE(shown.size() == 3);
         INFO("r: " << shown[0] << ", " << shown[1] << ", " << shown[2]);
         CHECK(std::is_sorted(shown.begin(), shown.end()));
@@ -726,8 +727,8 @@ TEST_CASE("integration::cpp::clause_answers::a_sorted_on_computed_column_survive
     auto* dispatcher = space.dispatcher();
     seed_ob(dispatcher);
     REQUIRE(exec(dispatcher, "CREATE TABLE ob.w (a bigint, b bigint, c bigint);")->is_success());
-    REQUIRE(exec(dispatcher, "INSERT INTO ob.w (a, b, c) VALUES (1, 10, 100), (3, 30, 300), (2, 20, 200);")
-                ->is_success());
+    REQUIRE(
+        exec(dispatcher, "INSERT INTO ob.w (a, b, c) VALUES (1, 10, 100), (3, 30, 300), (2, 20, 200);")->is_success());
 
     SECTION("N1 the first column of a wider table") {
         auto cur = exec(dispatcher, "SELECT a + 1 AS x FROM ob.w ORDER BY x;");
@@ -758,8 +759,7 @@ TEST_CASE("integration::cpp::clause_answers::a_view_keeps_its_own_order_by_const
     auto* dispatcher = space.dispatcher();
     seed_ob(dispatcher);
     REQUIRE(exec(dispatcher, "CREATE VIEW ob.v AS SELECT a FROM ob.t ORDER BY b * -1 LIMIT 3;")->is_success());
-    REQUIRE(exec(dispatcher, "CREATE VIEW ob.w AS SELECT a + 0 AS x FROM ob.t ORDER BY b * -1 LIMIT 3;")
-                ->is_success());
+    REQUIRE(exec(dispatcher, "CREATE VIEW ob.w AS SELECT a + 0 AS x FROM ob.t ORDER BY b * -1 LIMIT 3;")->is_success());
 
     SECTION("V1 guard: the view alone") {
         CHECK(column_of(exec(dispatcher, "SELECT a FROM ob.v;")) == values{1, 2, 3});
@@ -781,8 +781,7 @@ TEST_CASE("integration::cpp::clause_answers::order_by_an_expression_over_groups"
         auto cur = exec(dispatcher, "SELECT count(*) FROM ob.t GROUP BY a ORDER BY a + 1;");
         CHECK(column_of(cur) == values{1, 1, 1});
         CHECK(width_of(cur) == 1);
-        CHECK(column_of(exec(dispatcher, "SELECT sum(b) FROM ob.t GROUP BY a ORDER BY a + 1;")) ==
-              values{30, 20, 10});
+        CHECK(column_of(exec(dispatcher, "SELECT sum(b) FROM ob.t GROUP BY a ORDER BY a + 1;")) == values{30, 20, 10});
     }
     SECTION("G2 the same expression shown") {
         auto cur = exec(dispatcher, "SELECT a + 1, count(*) FROM ob.t GROUP BY a ORDER BY a + 1 DESC;");
@@ -986,8 +985,10 @@ TEST_CASE("integration::cpp::clause_answers::a_hand_built_plan_names_a_parameter
             if (grouped) {
                 plan->append_child(grouped_by_a(group_key_a()));
             }
-            std::vector<expressions::expression_ptr> sort = {expressions::make_sort_expression(
-                resource, expressions::expression_ptr{}, expressions::sort_order::asc)};
+            std::vector<expressions::expression_ptr> sort = {
+                expressions::make_sort_expression(resource,
+                                                  expressions::expression_ptr{},
+                                                  expressions::sort_order::asc)};
             plan->append_child(logical_plan::make_node_sort(resource, std::move(sort)));
             INFO("grouped: " << grouped);
             CHECK(mentions(protocol_violation(run(plan, false)), "ORDER BY key is neither a column nor an expression"));
@@ -1287,8 +1288,7 @@ TEST_CASE("integration::cpp::clause_answers::a_function_over_the_groups_in_the_s
         CHECK(width_of(cur) == 2);
     }
     SECTION("F2 a user-defined function of a grouping key is computed once per group") {
-        CHECK(probe_calls_of(dispatcher, "SELECT probe(k) AS r, count(*) FROM ob.d GROUP BY k ORDER BY r;", cur) ==
-              2);
+        CHECK(probe_calls_of(dispatcher, "SELECT probe(k) AS r, count(*) FROM ob.d GROUP BY k ORDER BY r;", cur) == 2);
         CHECK(column_of(cur) == values{2, 3});
         CHECK(width_of(cur) == 2);
     }

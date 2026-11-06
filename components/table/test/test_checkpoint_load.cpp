@@ -2211,7 +2211,9 @@ TEST_CASE("checkpoint_load: every buffer payload the buffer manager hands out is
     test_env_t env;
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
     REQUIRE(!bm.create_new_database().has_error());
-    const auto aligned = [](const std::byte* p) { return reinterpret_cast<std::uintptr_t>(p) % alignof(int128_t) == 0; };
+    const auto aligned = [](const std::byte* p) {
+        return reinterpret_cast<std::uintptr_t>(p) % alignof(int128_t) == 0;
+    };
 
     auto tiny = env.buffer_manager.register_transient_memory(1024, bm.block_size());
     REQUIRE_FALSE(tiny.has_error());

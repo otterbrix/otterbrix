@@ -503,7 +503,9 @@ namespace {
 
 #define OTTERBRIX_PUBLIC_MEMBER(name)                                                                                  \
     template<typename T>                                                                                               \
-    concept public_##name = requires { &T::name; };
+    concept public_##name = requires {                                                                                 \
+        &T::name;                                                                                                      \
+    };
 
     OTTERBRIX_PUBLIC_MEMBER(has_storage)
     OTTERBRIX_PUBLIC_MEMBER(peek_checkpoint_wal_id_from_disk)

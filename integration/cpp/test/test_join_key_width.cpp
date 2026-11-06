@@ -1,8 +1,8 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <services/disk/agent_disk.hpp>
-#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -231,8 +231,7 @@ TEST_CASE("integration::cpp::join_key_width::cast_key_eager_aggregation") {
     auto* d = space.dispatcher();
     seed_cast_key_tables(d);
 
-    const std::string sql =
-        "SELECT x.id, MIN(x.p3) FROM m.w x JOIN m.b y ON x.k = y.k GROUP BY x.id ORDER BY x.id";
+    const std::string sql = "SELECT x.id, MIN(x.p3) FROM m.w x JOIN m.b y ON x.k = y.k GROUP BY x.id ORDER BY x.id";
     CHECK(table_text(d, sql) == "1,100;2,300;3,301;");
     const auto plan = plan_text(d, sql);
     INFO(plan);
@@ -302,10 +301,8 @@ TEST_CASE("integration::cpp::join_key_width::empty_side_skips_the_other_sides_ke
     const std::string inner_empty_last = "SELECT x.id, y.id FROM m.s y JOIN m.e x ON CAST(y.s AS INT) = x.k";
     const std::string inner_null_first = "SELECT x.id, y.id FROM m.n x JOIN m.s y ON x.k = CAST(y.s AS INT)";
     const std::string inner_null_last = "SELECT x.id, y.id FROM m.s y JOIN m.n x ON CAST(y.s AS INT) = x.k";
-    const std::string left_empty_probe =
-        "SELECT x.id, y.id FROM m.e x LEFT JOIN m.s y ON x.k = CAST(y.s AS INT)";
-    const std::string right_null_build =
-        "SELECT x.id, y.id FROM m.s y RIGHT JOIN m.n x ON CAST(y.s AS INT) = x.k";
+    const std::string left_empty_probe = "SELECT x.id, y.id FROM m.e x LEFT JOIN m.s y ON x.k = CAST(y.s AS INT)";
+    const std::string right_null_build = "SELECT x.id, y.id FROM m.s y RIGHT JOIN m.n x ON CAST(y.s AS INT) = x.k";
 
     // The probe input is listed first under Hash Join: the smaller inner side is the build side either way.
     const auto probe_first = [&](const std::string& sql, const std::string& probe, const std::string& build) {
@@ -346,10 +343,8 @@ TEST_CASE("integration::cpp::join_key_width::computed_build_key_across_chunks") 
                 return "(" + std::to_string(i) + ", " + std::to_string(i * 10) + ", 'K" + std::to_string(i) + "')";
             })->is_success());
 
-    const std::string arithmetic =
-        "SELECT COUNT(y.v), SUM(y.v) FROM m.p x LEFT JOIN m.q y ON x.k = y.k + 0";
-    const std::string lowered =
-        "SELECT COUNT(y.v), SUM(y.v) FROM m.p x LEFT JOIN m.q y ON x.s = lower(y.s)";
+    const std::string arithmetic = "SELECT COUNT(y.v), SUM(y.v) FROM m.p x LEFT JOIN m.q y ON x.k = y.k + 0";
+    const std::string lowered = "SELECT COUNT(y.v), SUM(y.v) FROM m.p x LEFT JOIN m.q y ON x.s = lower(y.s)";
     const std::string expected = std::to_string(rows) + "," + std::to_string(10ull * rows * (rows - 1) / 2) + ";";
     for (const auto* sql : {&arithmetic, &lowered}) {
         INFO(*sql << "\n" << plan_text(d, *sql));
@@ -378,8 +373,7 @@ TEST_CASE("integration::cpp::join_key_width::cast_key_transitive_filter_wide_sid
     auto* d = space.dispatcher();
     seed_cast_key_tables(d);
 
-    const std::string sql =
-        "SELECT x.id, y.id FROM m.b y JOIN m.a x ON y.k = x.k WHERE y.k = 3 ORDER BY x.id, y.id";
+    const std::string sql = "SELECT x.id, y.id FROM m.b y JOIN m.a x ON y.k = x.k WHERE y.k = 3 ORDER BY x.id, y.id";
     CHECK(table_text(d, sql) == "3,12;3,13;");
     const auto plan = plan_text(d, sql);
     INFO(plan);

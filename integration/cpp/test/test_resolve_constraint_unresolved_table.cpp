@@ -31,12 +31,12 @@ namespace {
                             logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::constraint)};
 
         logical_plan::resolve_entry_t table_entry;
-        table_entry.schema = "db";
-        table_entry.relname = "t";
+        table_entry.written.schema = core::schema_t{"db"};
+        table_entry.written.collection = core::relname_t{"t"};
         if (stamp_table_md) {
             logical_plan::resolved_table_metadata_t md;
             md.table_oid = table_oid;
-            md.name = "t";
+            md.name = core::relname_t{"t"};
             table_entry.table_md = std::move(md);
         }
         const auto target = pair.tables->add(std::move(table_entry));

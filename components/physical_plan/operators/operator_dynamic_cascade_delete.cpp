@@ -96,7 +96,7 @@ namespace components::operators {
             if (named.has_error()) {
                 co_return named.error();
             }
-            const bool remote = !named.value().connection.empty();
+            const bool remote = !named.value().connection.t.empty();
             known.emplace(namespace_oid, remote);
             co_return remote;
         }
@@ -226,8 +226,8 @@ namespace components::operators {
                     // A schema is named with its database: an empty one is the place's.
                     const bool placed = target.database.t.empty();
                     return "schema " +
-                           qualified_name_t{core::connection_name_t{placed ? place.connection : target.connection.t},
-                                            core::dbname_t{placed ? place.database : target.database.t},
+                           qualified_name_t{placed ? place.connection : core::connection_name_t{target.connection.t},
+                                            placed ? place.database : core::dbname_t{target.database.t},
                                             target.schema,
                                             {}}
                                .to_string();

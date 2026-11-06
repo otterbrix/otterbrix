@@ -31,7 +31,7 @@ namespace components::operators::alter_validators {
     // relkind picks the refusal's wording; an empty name (no readable row) leaves relkind 0, the
     // ordinary fallback. PURE deliberately: the caller awaits it itself, so an accepted ALTER pays nothing.
     struct relation_identity_t {
-        std::string relname;
+        core::relname_t relname;
         char relkind{0};
     };
     relation_identity_t

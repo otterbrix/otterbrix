@@ -36,16 +36,16 @@ namespace components::catalog {
 
     std::string place_t::to_string() const {
         std::string written;
-        if (database.empty() && schema.empty()) {
+        if (database.t.empty() && schema.t.empty()) {
             return written;
         }
-        if (!connection.empty()) {
-            written += connection;
+        if (!connection.t.empty()) {
+            written += connection.t;
             written += '.';
         }
-        written += database;
+        written += database.t;
         written += '.';
-        written += schema;
+        written += schema.t;
         return written;
     }
 
@@ -85,11 +85,14 @@ namespace components::catalog {
         const auto& part = parts.part;
         switch (parts.count) {
             case 1:
-                return place_t{std::string{}, std::string{main_database}, std::string{part[0]}};
+                return place_t{core::connection_name_t{}, core::dbname_t{std::string{main_database}},
+                               core::schema_t{std::string{part[0]}}};
             case 2:
-                return place_t{std::string{}, std::string{part[0]}, std::string{part[1]}};
+                return place_t{core::connection_name_t{}, core::dbname_t{std::string{part[0]}},
+                               core::schema_t{std::string{part[1]}}};
             default:
-                return place_t{std::string{part[0]}, std::string{part[1]}, std::string{part[2]}};
+                return place_t{core::connection_name_t{std::string{part[0]}}, core::dbname_t{std::string{part[1]}},
+                               core::schema_t{std::string{part[2]}}};
         }
     }
 
@@ -98,18 +101,21 @@ namespace components::catalog {
                           std::string_view database,
                           std::string_view schema) {
         if (database.empty() && schema == "pg_catalog") {
-            return place_t{std::string{}, std::string{main_database}, std::string{schema}};
+            return place_t{core::connection_name_t{}, core::dbname_t{std::string{main_database}},
+                           core::schema_t{std::string{schema}}};
         }
         place_t completed = database.empty() ? place_t{place.connection, place.database, {}}
-                                             : place_t{std::string{connection}, std::string{database}, {}};
-        completed.schema = schema.empty() ? place.schema : std::string{schema};
+                                             : place_t{core::connection_name_t{std::string{connection}},
+                                                       core::dbname_t{std::string{database}},
+                                                       {}};
+        completed.schema = schema.empty() ? place.schema : core::schema_t{std::string{schema}};
         return completed;
     }
 
     place_t complete_place(std::string_view value, const place_t& current) {
         const auto parts = parts_of(value);
         if (parts.count == 1) {
-            return place_t{current.connection, current.database, std::string{parts.part[0]}};
+            return place_t{current.connection, current.database, core::schema_t{std::string{parts.part[0]}}};
         }
         return place_of(value);
     }

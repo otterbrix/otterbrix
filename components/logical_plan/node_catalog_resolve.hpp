@@ -2,6 +2,7 @@
 
 #include "node.hpp"
 
+#include <components/base/collection_full_name.hpp>
 #include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
@@ -42,7 +43,7 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         char relkind{'r'};
-        std::string name;
+        core::relname_t name;
         std::vector<resolved_column_metadata_t> columns;
         // pg_rewrite.ev_action SQL for relkind 'v'/'m'; consumed by dispatcher Phase 1.5 rewrite_views.
         std::string view_sql;
@@ -50,9 +51,9 @@ namespace components::logical_plan {
         std::vector<view_binding_t> view_bindings;
         // The schema the table is in: [connection.]database.schema. A connection's table (its database's
         // pg_database.datconnection is set) keeps its rows on the backend.
-        std::string connection;
-        std::string database;
-        std::string schema;
+        core::connection_name_t connection;
+        core::dbname_t database;
+        core::schema_t schema;
         // The actor that keeps the rows, set by the executor before the statement plans: otterbrix's disk, or the
         // backend of the connection (empty: a connection the host's map no longer has).
         components::table::storage_address_t address;
@@ -62,7 +63,7 @@ namespace components::logical_plan {
     struct resolved_type_metadata_t {
         components::catalog::oid_t type_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
-        std::string name;
+        core::relname_t name;
         components::types::complex_logical_type type;
         std::string typdefspec;
     };
@@ -103,15 +104,11 @@ namespace components::logical_plan {
     struct resolve_entry_t {
         static constexpr std::size_t no_target = static_cast<std::size_t>(-1);
 
-        // [connection.][database.][schema.]relname as written. An empty database is the database (and connection)
-        // of the session's place; an empty schema of a relation or type is main.pg_catalog and then the place's
-        // schema, of a namespace the place's schema. Three parts name the one database of the connection they start
-        // with, or else a local database; four parts a connection's database.
-        std::string connection;
-        std::string database;
-        std::string schema;
-        std::string relname;
-        std::string type_name;
+        // [connection.][database.][schema.]relname as written; a type entry's `written.collection` is its type name.
+        // An empty database is the database (and connection) of the session's place; an empty schema of a relation or
+        // type is main.pg_catalog and then the place's schema, of a namespace the place's schema. Three parts name the
+        // one database of the connection they start with, or else a local database; four parts a connection's database.
+        qualified_name_t written;
         components::catalog::oid_t relation_oid{components::catalog::INVALID_OID};
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.

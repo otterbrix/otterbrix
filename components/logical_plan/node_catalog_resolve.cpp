@@ -7,8 +7,7 @@
 namespace components::logical_plan {
 
     bool resolve_entry_t::operator==(const resolve_entry_t& other) const noexcept {
-        return connection == other.connection && database == other.database && schema == other.schema &&
-               relname == other.relname && type_name == other.type_name && relation_oid == other.relation_oid &&
+        return written == other.written && relation_oid == other.relation_oid &&
                namespace_of == other.namespace_of && direction == other.direction && target == other.target &&
                names_only == other.names_only;
     }
@@ -30,9 +29,7 @@ namespace components::logical_plan {
 
     std::size_t node_catalog_resolve_t::find(const qualified_name_t& written) const noexcept {
         for (std::size_t index = 0; index < entries_.size(); index++) {
-            const auto& entry = entries_[index];
-            if (entry.connection == written.connection.t && entry.database == written.database.t &&
-                entry.schema == written.schema.t && entry.relname == written.collection.t) {
+            if (entries_[index].written == written) {
                 return index;
             }
         }
@@ -56,31 +53,26 @@ namespace components::logical_plan {
             }
             switch (kind_) {
                 case resolve_kind::table:
-                    stream << "$catalog_resolve_table: "
-                           << qualified_name_t{core::connection_name_t{entry.connection},
-                                               core::dbname_t{entry.database},
-                                               core::schema_t{entry.schema},
-                                               core::relname_t{entry.relname}}
-                                  .to_string();
+                    stream << "$catalog_resolve_table: " << entry.written.to_string();
                     if (entry.namespace_oid != components::catalog::INVALID_OID) {
                         stream << " (ns_oid=" << entry.namespace_oid << ")";
                     }
                     break;
-                case resolve_kind::namespace_:
-                    stream << "$catalog_resolve_namespace: "
-                           << qualified_name_t{core::connection_name_t{entry.connection},
-                                               core::dbname_t{entry.database},
-                                               core::schema_t{entry.schema},
-                                               core::relname_t{}}
-                                  .to_string()
-                           << " (oid=" << entry.namespace_oid << ")";
+                case resolve_kind::namespace_: {
+                    auto schema = entry.written;
+                    schema.collection = core::relname_t{};
+                    stream << "$catalog_resolve_namespace: " << schema.to_string() << " (oid=" << entry.namespace_oid
+                           << ")";
                     break;
+                }
                 case resolve_kind::database:
-                    stream << "$catalog_resolve_database: " << entry.database << " (oid=" << entry.database_oid << ")";
+                    stream << "$catalog_resolve_database: " << entry.written.database.t
+                           << " (oid=" << entry.database_oid << ")";
                     break;
                 case resolve_kind::type:
-                    stream << "$catalog_resolve_type: database: " << entry.database << ", schema: " << entry.schema
-                           << ", type_name: " << entry.type_name << ", type_oid: " << entry.type_oid;
+                    stream << "$catalog_resolve_type: database: " << entry.written.database.t
+                           << ", schema: " << entry.written.schema.t << ", type_name: " << entry.written.collection.t
+                           << ", type_oid: " << entry.type_oid;
                     break;
                 case resolve_kind::constraint:
                     stream << "$catalog_resolve_constraint: "
@@ -136,7 +128,7 @@ namespace components::logical_plan {
             return nullptr;
         }
         for (const auto& entry : this->database->entries()) {
-            if (entry.connection == connection && entry.database == database) {
+            if (entry.written.connection.t == connection && entry.written.database.t == database) {
                 return &entry;
             }
         }
@@ -148,8 +140,8 @@ namespace components::logical_plan {
             return nullptr;
         }
         for (const auto& entry : namespaces->entries()) {
-            if (entry.connection == written.connection.t && entry.database == written.database.t &&
-                entry.schema == written.schema.t) {
+            if (entry.written.connection == written.connection && entry.written.database == written.database &&
+                entry.written.schema == written.schema) {
                 return &entry;
             }
         }
@@ -169,8 +161,8 @@ namespace components::logical_plan {
             return nullptr;
         }
         for (const auto& entry : types->entries()) {
-            if (entry.database == written.database.t && entry.schema == written.schema.t &&
-                entry.type_name == written.collection.t) {
+            if (entry.written.database == written.database && entry.written.schema == written.schema &&
+                entry.written.collection == written.collection) {
                 return &entry;
             }
         }

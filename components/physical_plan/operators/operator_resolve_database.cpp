@@ -38,7 +38,10 @@ namespace components::operators {
                     continue;
                 }
                 // A miss leaves the entry at INVALID_OID — that is how "database does not exist" is reported.
-                auto found = co_await lookup_database_oid(resource_, ctx, entry.connection, entry.database);
+                auto found = co_await lookup_database_oid(resource_,
+                                                          ctx,
+                                                          entry.written.connection,
+                                                          entry.written.database);
                 if (found.has_error()) {
                     // A failed pg_database read is not a miss; saying "not found" here hides it.
                     set_error(found.error());

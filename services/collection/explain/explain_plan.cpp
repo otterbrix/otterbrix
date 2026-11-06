@@ -15,11 +15,11 @@ namespace services::collection {
         // a foreign table.
         std::pmr::string relation_name(const components::logical_plan::resolved_table_metadata_t& md,
                                        std::pmr::memory_resource* mr) {
-            if (md.connection.empty()) {
-                return make_pmr_string(md.name, mr);
+            if (md.connection.t.empty()) {
+                return make_pmr_string(md.name.t, mr);
             }
-            std::pmr::string name{md.connection, mr};
-            for (const auto* part : {&md.database, &md.schema, &md.name}) {
+            std::pmr::string name{md.connection.t, mr};
+            for (const auto* part : {&md.database.t, &md.schema.t, &md.name.t}) {
                 name += '.';
                 name += *part;
             }

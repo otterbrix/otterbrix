@@ -38,13 +38,13 @@ namespace {
                                                         const std::string& view_sql) {
         logical_plan::catalog_resolves_t resolves;
         logical_plan::resolve_entry_t entry;
-        entry.schema = dbname;
-        entry.relname = relname;
+        entry.written.schema = core::schema_t{dbname};
+        entry.written.collection = core::relname_t{relname};
         logical_plan::resolved_table_metadata_t md;
         md.table_oid = 4242;
         md.namespace_oid = 7;
         md.relkind = relkind;
-        md.name = relname;
+        md.name = core::relname_t{relname};
         md.view_sql = view_sql;
         entry.table_md = std::move(md);
         resolves.ensure(res(), logical_plan::resolve_kind::table).add(std::move(entry));
@@ -230,8 +230,8 @@ namespace {
     logical_plan::catalog_resolves_t body_naming(const std::string& relname) {
         logical_plan::catalog_resolves_t body;
         logical_plan::resolve_entry_t entry;
-        entry.schema = "db";
-        entry.relname = relname;
+        entry.written.schema = core::schema_t{"db"};
+        entry.written.collection = core::relname_t{relname};
         body.ensure(res(), logical_plan::resolve_kind::table).add(std::move(entry));
         return body;
     }

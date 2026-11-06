@@ -70,7 +70,7 @@ namespace components::operators {
         namespace_of_database(std::pmr::memory_resource* resource,
                               pipeline::context_t* ctx,
                               catalog::oid_t database_oid,
-                              std::string schema) {
+                              core::schema_t schema) {
             std::pmr::vector<std::uint64_t> keys(resource);
             keys.emplace_back(catalog::pg_namespace_col::nspname);
             keys.emplace_back(catalog::pg_namespace_col::nspdatabase);
@@ -78,7 +78,7 @@ namespace components::operators {
                                         ctx,
                                         catalog::well_known_oid::pg_namespace_table,
                                         std::move(keys),
-                                        make_key_chunk(resource, std::string_view{schema}, database_oid));
+                                        make_key_chunk(resource, std::string_view{schema.t}, database_oid));
         }
     } // namespace
 
@@ -86,20 +86,23 @@ namespace components::operators {
         actor_zeta::unique_future<core::result_wrapper_t<catalog::oid_t>>
         database_of(std::pmr::memory_resource* resource,
                     pipeline::context_t* ctx,
-                    std::string connection,
-                    std::string name) {
+                    core::connection_name_t connection,
+                    core::dbname_t name) {
             std::pmr::vector<std::uint64_t> keys(resource);
             keys.emplace_back(catalog::pg_database_col::datname);
             keys.emplace_back(catalog::pg_database_col::datconnection);
-            co_return co_await read_oid(resource,
-                                        ctx,
-                                        catalog::well_known_oid::pg_database_table,
-                                        std::move(keys),
-                                        make_key_chunk(resource, std::string_view{name}, std::string_view{connection}));
+            co_return co_await read_oid(
+                resource,
+                ctx,
+                catalog::well_known_oid::pg_database_table,
+                std::move(keys),
+                make_key_chunk(resource, std::string_view{name.t}, std::string_view{connection.t}));
         }
 
         actor_zeta::unique_future<core::result_wrapper_t<chunks_vector_t>>
-        databases_of_connection(std::pmr::memory_resource* resource, pipeline::context_t* ctx, std::string connection) {
+        databases_of_connection(std::pmr::memory_resource* resource,
+                                pipeline::context_t* ctx,
+                                core::connection_name_t connection) {
             std::pmr::vector<std::uint64_t> keys(resource);
             keys.emplace_back(catalog::pg_database_col::datconnection);
             std::pmr::vector<std::uint64_t> projected(resource);
@@ -108,15 +111,15 @@ namespace components::operators {
             co_return co_await read_keyed(ctx,
                                           catalog::well_known_oid::pg_database_table,
                                           std::move(keys),
-                                          make_key_chunk(resource, std::string_view{connection}),
+                                          make_key_chunk(resource, std::string_view{connection.t}),
                                           std::move(projected));
         }
 
         // The first row's datname (column 1) of databases_of_connection.
-        std::string first_datname(const chunks_vector_t& batches) {
+        core::dbname_t first_datname(const chunks_vector_t& batches) {
             for (const auto& chunk : batches) {
                 if (chunk.size() != 0) {
-                    return std::string{chunk.get_value<std::string_view>(1, 0)};
+                    return core::dbname_t{std::string{chunk.get_value<std::string_view>(1, 0)}};
                 }
             }
             return {};
@@ -130,26 +133,28 @@ namespace components::operators {
     actor_zeta::unique_future<core::result_wrapper_t<found_database_t>>
     lookup_database(std::pmr::memory_resource* resource,
                     pipeline::context_t* ctx,
-                    std::string connection,
-                    std::string name) {
-        if (!connection.empty()) {
+                    core::connection_name_t connection,
+                    core::dbname_t name) {
+        if (!connection.t.empty()) {
             auto oid = co_await database_of(resource, ctx, connection, name);
             if (oid.has_error()) {
                 co_return oid.error();
             }
             co_return found_database_t{oid.value(), std::move(connection), std::move(name)};
         }
-        if (name.empty()) {
+        if (name.t.empty()) {
             co_return found_database_t{};
         }
-        if (name == catalog::well_known_oid::main_database_name) {
+        if (name.t == catalog::well_known_oid::main_database_name) {
             co_return found_database_t{catalog::well_known_oid::main_database, {}, std::move(name)};
         }
-        auto of_connection = co_await databases_of_connection(resource, ctx, name);
+        // Before it is a database's name, a bare name is a connection's.
+        core::connection_name_t as_connection{std::string{name.t}};
+        auto of_connection = co_await databases_of_connection(resource, ctx, as_connection);
         if (of_connection.has_error()) {
             co_return of_connection.error();
         }
-        auto local = co_await database_of(resource, ctx, std::string{}, name);
+        auto local = co_await database_of(resource, ctx, core::connection_name_t{}, name);
         if (local.has_error()) {
             co_return local.error();
         }
@@ -158,19 +163,22 @@ namespace components::operators {
             co_return found_database_t{local.value(), {}, std::move(name)};
         }
         if (local.value() != catalog::INVALID_OID) {
-            co_return ambiguous(resource, "database \"" + name + "\" is ambiguous: a connection and a local database");
+            co_return ambiguous(resource,
+                                "database \"" + name.t + "\" is ambiguous: a connection and a local database");
         }
         if (databases > 1) {
-            co_return ambiguous(resource, "connection \"" + name + "\" has more than one database");
+            co_return ambiguous(resource, "connection \"" + name.t + "\" has more than one database");
         }
-        co_return found_database_t{first_oid(of_connection.value()), name, first_datname(of_connection.value())};
+        co_return found_database_t{first_oid(of_connection.value()),
+                                   std::move(as_connection),
+                                   first_datname(of_connection.value())};
     }
 
     actor_zeta::unique_future<core::result_wrapper_t<catalog::oid_t>>
     lookup_database_oid(std::pmr::memory_resource* resource,
                         pipeline::context_t* ctx,
-                        std::string connection,
-                        std::string name) {
+                        core::connection_name_t connection,
+                        core::dbname_t name) {
         auto found = co_await lookup_database(resource, ctx, std::move(connection), std::move(name));
         if (found.has_error()) {
             co_return found.error();
@@ -191,16 +199,16 @@ namespace components::operators {
         }
         found.connection = std::move(database.value().connection);
         found.database = std::move(database.value().name);
-        if (found.connection.empty() && name.schema == "pg_catalog") {
+        if (found.connection.t.empty() && name.schema.t == "pg_catalog") {
             found.namespace_oid = catalog::well_known_oid::pg_catalog_namespace;
             co_return found;
         }
         // main's schemas made at bootstrap have fixed oids.
-        if (found.database_oid == catalog::well_known_oid::main_database && name.schema == "public") {
+        if (found.database_oid == catalog::well_known_oid::main_database && name.schema.t == "public") {
             found.namespace_oid = catalog::well_known_oid::public_namespace;
             co_return found;
         }
-        if (found.database_oid == catalog::well_known_oid::main_database && name.schema == "information_schema") {
+        if (found.database_oid == catalog::well_known_oid::main_database && name.schema.t == "information_schema") {
             found.namespace_oid = catalog::well_known_oid::information_schema_namespace;
             co_return found;
         }
@@ -216,7 +224,7 @@ namespace components::operators {
     lookup_relation_oid(std::pmr::memory_resource* resource,
                         pipeline::context_t* ctx,
                         catalog::oid_t namespace_oid,
-                        std::string relname) {
+                        core::relname_t relname) {
         std::pmr::vector<std::uint64_t> keys(resource);
         keys.emplace_back(catalog::pg_class_col::relname);
         keys.emplace_back(catalog::pg_class_col::relnamespace);
@@ -225,7 +233,7 @@ namespace components::operators {
             ctx,
             catalog::well_known_oid::pg_class_table,
             std::move(keys),
-            make_key_chunk(resource, std::string_view{relname}, static_cast<std::uint32_t>(namespace_oid)));
+            make_key_chunk(resource, std::string_view{relname.t}, static_cast<std::uint32_t>(namespace_oid)));
     }
 
     namespace {

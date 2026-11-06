@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/place.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -15,15 +16,15 @@ namespace components::operators {
     struct found_schema_t {
         catalog::oid_t database_oid{catalog::INVALID_OID};
         catalog::oid_t namespace_oid{catalog::INVALID_OID};
-        std::string connection;
-        std::string database;
+        core::connection_name_t connection;
+        core::dbname_t database;
     };
 
     // A database and its own connection and name; INVALID_OID when there is none.
     struct found_database_t {
         catalog::oid_t oid{catalog::INVALID_OID};
-        std::string connection;
-        std::string name;
+        core::connection_name_t connection;
+        core::dbname_t name;
     };
 
     // A database is its pg_database row, keyed by (datconnection, datname): a connection's database is otterbrix's
@@ -47,15 +48,15 @@ namespace components::operators {
     actor_zeta::unique_future<core::result_wrapper_t<found_database_t>>
     lookup_database(std::pmr::memory_resource* resource,
                     pipeline::context_t* ctx,
-                    std::string connection,
-                    std::string name);
+                    core::connection_name_t connection,
+                    core::dbname_t name);
 
     // lookup_database's oid.
     actor_zeta::unique_future<core::result_wrapper_t<catalog::oid_t>>
     lookup_database_oid(std::pmr::memory_resource* resource,
                         pipeline::context_t* ctx,
-                        std::string connection,
-                        std::string name);
+                        core::connection_name_t connection,
+                        core::dbname_t name);
 
     // The connection, database and schema names of the schema `namespace_oid`: its pg_namespace row and its
     // database's pg_database row.
@@ -67,6 +68,6 @@ namespace components::operators {
     lookup_relation_oid(std::pmr::memory_resource* resource,
                         pipeline::context_t* ctx,
                         catalog::oid_t namespace_oid,
-                        std::string relname);
+                        core::relname_t relname);
 
 } // namespace components::operators

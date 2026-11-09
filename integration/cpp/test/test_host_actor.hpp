@@ -660,7 +660,7 @@ namespace host_actor {
                 reply.rows.insert = std::pmr::vector<components::vector::data_chunk_t>{resource_};
                 std::pmr::vector<complex_logical_type> types{resource_};
                 types.emplace_back(logical_type::BIGINT);
-                types.emplace_back(logical_type::STRING_LITERAL);
+                types.emplace_back(logical_type::TEXT);
                 const std::size_t count = std::max<std::size_t>(parameters_rows_, 1);
                 components::vector::data_chunk_t rows(resource_, types, count);
                 for (std::size_t i = 0; i < count; ++i) {
@@ -1265,9 +1265,8 @@ namespace host_actor {
         }
 
         template<typename ReturnType, typename... Args>
-            requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>)
-        [[nodiscard]] ReturnType
-        enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args) {
+        requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
+            enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args) {
             using R = typename actor_zeta::type_traits::is_unique_future<ReturnType>::value_type;
             auto [msg, future] =
                 actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
@@ -1809,7 +1808,7 @@ namespace host_actor {
             switch (cells.type().type()) {
                 case logical_type::INTEGER:
                     return static_cast<int64_t>(cells.get_value<int32_t>(row));
-                case logical_type::STRING_LITERAL: {
+                case logical_type::TEXT: {
                     const auto text = cells.get_value<std::string_view>(row);
                     return text.size() > 1 && text.front() == 's' ? std::stoll(std::string{text.substr(1)}) : 0;
                 }
@@ -1851,7 +1850,7 @@ namespace host_actor {
                         continue;
                     }
                     switch (types[out].type()) {
-                        case logical_type::STRING_LITERAL:
+                        case logical_type::TEXT:
                             chunk.set_value(out, i, std::string_view{"s" + std::to_string(*cell)});
                             break;
                         case logical_type::INTEGER:

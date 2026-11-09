@@ -621,9 +621,9 @@ namespace components::table {
         base_statistics_t seg_stats =
             has_stats ? segment->segment_statistics() : base_statistics_t(resource_, type_.type());
 
-        // STRING isn't a raw prefix copy: its dictionary grows down from the end of the allocation, so
+        // TEXT isn't a raw prefix copy: its dictionary grows down from the end of the allocation, so
         // it re-serializes through the checkpoint's own pipeline instead, byte-identical to a checkpoint copy.
-        if (phys == types::physical_type::STRING) {
+        if (phys == types::physical_type::TEXT) {
             std::pmr::vector<std::byte> rewritten(alloc_segment_size, std::byte{0}, resource_);
             {
                 auto pinned = block_manager_.buffer_manager.pin(segment->block);

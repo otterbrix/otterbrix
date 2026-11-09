@@ -47,7 +47,7 @@ namespace {
     std::unique_ptr<data_table_t> make_two_col_table(walker_env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("name", logical_type::STRING_LITERAL);
+        columns.emplace_back("name", logical_type::TEXT);
         return std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "walker_table");
     }
 

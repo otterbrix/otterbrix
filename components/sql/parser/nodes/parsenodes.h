@@ -2630,8 +2630,8 @@ typedef struct SecLabelStmt {
 * This is used to request the planner to create a plan that's updatable with
 * CURRENT OF. It can be passed to SPI_prepare_cursor.
 */
-#define CURSOR_OPT_UPDATABLE 0x0200         /* updateable with CURRENT OF, if possible */
-#define CURSOR_OPT_ASENSITIVE 0x0800        /* ASENSITIVE */
+#define CURSOR_OPT_UPDATABLE 0x0200  /* updateable with CURRENT OF, if possible */
+#define CURSOR_OPT_ASENSITIVE 0x0800 /* ASENSITIVE */
 
 typedef struct DeclareCursorStmt {
     NodeTag type;

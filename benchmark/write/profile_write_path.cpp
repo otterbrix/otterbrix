@@ -246,7 +246,7 @@ namespace {
         chunk.set_cardinality(count);
 
         auto node = components::sql::transform::name_catalog_target(
-            core::dbname_t{"wp"},
+            core::schema_t{"wp"},
             core::relname_t{"t"},
             components::logical_plan::make_node_insert(resource, std::move(chunk)));
 

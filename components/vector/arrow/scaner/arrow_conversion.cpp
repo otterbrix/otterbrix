@@ -225,7 +225,7 @@ namespace components::vector::arrow::scaner {
             case types::physical_type::DOUBLE:
                 flatten_run_ends<RUN_END_TYPE, double>(result, run_end_encoding, compressed_size, scan_offset, size);
                 break;
-            case types::physical_type::STRING: {
+            case types::physical_type::TEXT: {
                 result.set_auxiliary(values.auxiliary());
                 flatten_run_ends<RUN_END_TYPE, std::string_view>(result,
                                                                  run_end_encoding,
@@ -1012,7 +1012,7 @@ namespace components::vector::arrow::scaner {
             }
             case types::logical_type::BLOB:
             case types::logical_type::BIT:
-            case types::logical_type::STRING_LITERAL: {
+            case types::logical_type::TEXT: {
                 auto& string_info = arrow_type.get_type_info<arrow_string_info>();
                 auto size_type = string_info.get_size_type();
                 switch (size_type) {

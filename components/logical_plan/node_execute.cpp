@@ -24,7 +24,6 @@ namespace components::logical_plan {
         boost::hash_combine(hash_value, name_);
         for (const auto& argument : arguments_) {
             boost::hash_combine(hash_value, static_cast<uint64_t>(argument.slot));
-            boost::hash_combine(hash_value, argument.quoted_literal);
         }
         return hash_value;
     }
@@ -51,7 +50,7 @@ namespace components::logical_plan {
         std::pmr::vector<execute_argument_t> arguments{resource};
         arguments.reserve(slots.size());
         for (const auto slot : slots) {
-            arguments.push_back(execute_argument_t{slot, false});
+            arguments.push_back(execute_argument_t{slot});
         }
         return make_node_execute(resource, std::move(name), std::move(arguments), core::error_t::no_error());
     }

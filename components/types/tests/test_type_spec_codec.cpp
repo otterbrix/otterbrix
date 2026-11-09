@@ -55,12 +55,12 @@ TEST_CASE("types::type_spec_codec::every_plain_scalar_roundtrips") {
     auto resource = core::pmr::otterbrix_resource();
 
     const logical_type scalars[] = {
-        logical_type::ANY,      logical_type::BOOLEAN,   logical_type::TINYINT,        logical_type::SMALLINT,
-        logical_type::INTEGER,  logical_type::BIGINT,    logical_type::HUGEINT,        logical_type::DATE,
-        logical_type::TIME,     logical_type::TIME_TZ,   logical_type::TIMESTAMP,      logical_type::TIMESTAMP_TZ,
-        logical_type::INTERVAL, logical_type::FLOAT,     logical_type::DOUBLE,         logical_type::BLOB,
-        logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER,       logical_type::UBIGINT,
-        logical_type::UHUGEINT, logical_type::BIT,       logical_type::STRING_LITERAL, logical_type::INTEGER_LITERAL,
+        logical_type::ANY,      logical_type::BOOLEAN,   logical_type::TINYINT,   logical_type::SMALLINT,
+        logical_type::INTEGER,  logical_type::BIGINT,    logical_type::HUGEINT,   logical_type::DATE,
+        logical_type::TIME,     logical_type::TIME_TZ,   logical_type::TIMESTAMP, logical_type::TIMESTAMP_TZ,
+        logical_type::INTERVAL, logical_type::FLOAT,     logical_type::DOUBLE,    logical_type::BLOB,
+        logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER,  logical_type::UBIGINT,
+        logical_type::UHUGEINT, logical_type::BIT,       logical_type::TEXT,      logical_type::INTEGER_LITERAL,
         logical_type::POINTER,  logical_type::VALIDITY,  logical_type::UUID,
     };
     for (auto t : scalars) {
@@ -147,13 +147,12 @@ TEST_CASE("types::type_spec_codec::array_roundtrips_size_and_child") {
     REQUIRE(ext->internal_type().type() == logical_type::DOUBLE);
 
     // Array of lists of strings — composite child.
-    auto nested =
-        complex_logical_type::create_array(complex_logical_type::create_list(logical_type::STRING_LITERAL), 7);
+    auto nested = complex_logical_type::create_array(complex_logical_type::create_list(logical_type::TEXT), 7);
     auto nested_back = roundtrip(&resource, nested);
     const auto* nested_ext = nested_back.extension_as<array_logical_type_extension>();
     REQUIRE(nested_ext->size() == 7);
     REQUIRE(nested_ext->internal_type().type() == logical_type::LIST);
-    REQUIRE(nested_ext->internal_type().child_type().type() == logical_type::STRING_LITERAL);
+    REQUIRE(nested_ext->internal_type().child_type().type() == logical_type::TEXT);
 }
 
 TEST_CASE("types::type_spec_codec::struct_roundtrips_fields_and_names") {
@@ -161,7 +160,7 @@ TEST_CASE("types::type_spec_codec::struct_roundtrips_fields_and_names") {
 
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::INTEGER, "a");
-    fields.emplace_back(logical_type::STRING_LITERAL, "b");
+    fields.emplace_back(logical_type::TEXT, "b");
     fields.push_back(make_decimal(9, 3, "c"));
     auto strct = complex_logical_type::create_struct("point", fields);
 
@@ -193,12 +192,12 @@ TEST_CASE("types::type_spec_codec::map_roundtrips_key_and_value") {
     auto resource = core::pmr::otterbrix_resource();
 
     auto map = complex_logical_type::create_map(&resource,
-                                                complex_logical_type{logical_type::STRING_LITERAL},
+                                                complex_logical_type{logical_type::TEXT},
                                                 complex_logical_type{logical_type::BIGINT});
     auto back = roundtrip(&resource, map);
     const auto* ext = back.extension_as<map_logical_type_extension>();
     REQUIRE(ext != nullptr);
-    REQUIRE(ext->key().type() == logical_type::STRING_LITERAL);
+    REQUIRE(ext->key().type() == logical_type::TEXT);
     REQUIRE(ext->value().type() == logical_type::BIGINT);
 
     // Composite value + non-default ids via the explicit extension constructor.
@@ -223,7 +222,7 @@ TEST_CASE("types::type_spec_codec::union_roundtrips_members_and_hidden_tag") {
 
     std::pmr::vector<complex_logical_type> members(&resource);
     members.emplace_back(logical_type::INTEGER, "num");
-    members.emplace_back(logical_type::STRING_LITERAL, "text");
+    members.emplace_back(logical_type::TEXT, "text");
     auto uni = complex_logical_type::create_union(std::move(members));
 
     auto back = roundtrip(&resource, uni);
@@ -524,4 +523,28 @@ TEST_CASE("types::type_spec_codec::NA_is_not_a_stored_type") {
     REQUIRE(decoded.has_error());
     CHECK(decoded.error().type == core::error_code_t::data_corruption);
     CHECK(std::string{decoded.error().what}.find("NULL (NA) is not a stored type") != std::string::npos);
+}
+
+TEST_CASE("types::type_spec_codec::string_literal_is_not_a_stored_type") {
+    auto resource = core::pmr::otterbrix_resource();
+    const complex_logical_type literal{logical_type::STRING_LITERAL};
+
+    std::pmr::vector<std::byte> spec(&resource);
+    REQUIRE(encode_type_spec(literal, spec).has_error());
+
+    spec.clear();
+    REQUIRE(encode_type_spec(complex_logical_type::create_list(literal), spec).has_error());
+
+    std::pmr::vector<std::byte> stale(&resource);
+    stale.push_back(static_cast<std::byte>(static_cast<uint8_t>(logical_type::STRING_LITERAL)));
+    stale.push_back(std::byte{0});
+    auto decoded = decode_type_spec(&resource, stale.data(), stale.size());
+    REQUIRE(decoded.has_error());
+    CHECK(decoded.error().type == core::error_code_t::data_corruption);
+
+    spec.clear();
+    REQUIRE_FALSE(encode_type_spec(complex_logical_type{logical_type::TEXT}, spec).has_error());
+    auto string_back = decode_type_spec(&resource, spec.data(), spec.size());
+    REQUIRE_FALSE(string_back.has_error());
+    REQUIRE(string_back.value().type() == logical_type::TEXT);
 }

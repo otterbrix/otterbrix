@@ -67,6 +67,8 @@ namespace otterbrix {
                     return "UHUGEINT";
                 case logical_type::BIT:
                     return "BIT";
+                case logical_type::TEXT:
+                    return "TEXT";
                 case logical_type::STRING_LITERAL:
                     return "STRING_LITERAL";
                 case logical_type::INTEGER_LITERAL:
@@ -208,7 +210,7 @@ namespace otterbrix {
             UNION,     // typing.union_type
             COMPOSITE, // list|dict types
             STRUCT,    // dictionary
-            STRING,    // string value
+            TEXT,      // string value
         };
     }
 
@@ -217,7 +219,7 @@ namespace otterbrix {
             return python_type_object_t::BASE;
         }
         if (py::isinstance<py::str>(type_object)) {
-            return python_type_object_t::STRING;
+            return python_type_object_t::TEXT;
         }
         if (py::isinstance<py_generic_alias_t>(type_object)) {
             return python_type_object_t::COMPOSITE;
@@ -283,7 +285,7 @@ namespace otterbrix {
                                                                   std::pmr::memory_resource* resource) {
         py::module_ builtins = py::module_::import("builtins");
         if (obj.is(builtins.attr("str"))) {
-            return complex_logical_type(logical_type::STRING_LITERAL);
+            return complex_logical_type(logical_type::TEXT);
         }
         if (obj.is(builtins.attr("int"))) {
             return complex_logical_type(logical_type::BIGINT);
@@ -457,7 +459,7 @@ namespace otterbrix {
             case python_type_object_t::UNION: {
                 return from_union_type(object, resource);
             }
-            case python_type_object_t::STRING: {
+            case python_type_object_t::TEXT: {
                 auto string_value = std::string(py::str(object));
                 return from_string(string_value, resource);
             }
@@ -576,7 +578,7 @@ namespace otterbrix {
         if (type_.type() == logical_type::TIMESTAMP) {
             return "timestamp";
         }
-        if (type_.type() == logical_type::STRING_LITERAL) {
+        if (type_.type() == logical_type::TEXT) {
             return "varchar";
         }
         auto name = logical_type_name(type_.type());

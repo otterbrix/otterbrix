@@ -507,7 +507,7 @@ namespace components::vector::vector_ops {
                 // case types::physical_type::INTERVAL:
                 // templated_loop_hash<HAS_RINDEXING, interval_t>(input, result, rindexing, count);
                 // break;
-                case types::physical_type::STRING:
+                case types::physical_type::TEXT:
                     templated_loop_hash<HAS_RINDEXING, std::string_view>(input, result, rindexing, count);
                     return;
                 case types::physical_type::STRUCT:
@@ -668,7 +668,7 @@ namespace components::vector::vector_ops {
                 // case types::physical_type::INTERVAL:
                 // templated_loop_combine_hash<HAS_RINDEXING, interval_t>(input, hashes, rindexing, count);
                 // break;
-                case types::physical_type::STRING:
+                case types::physical_type::TEXT:
                     templated_loop_combine_hash<HAS_RINDEXING, std::string_view>(input, hashes, rindexing, count);
                     return;
                 case types::physical_type::STRUCT:
@@ -734,6 +734,7 @@ namespace components::vector::vector_ops {
             case types::logical_type::UBIGINT:
             case types::logical_type::UHUGEINT:
             case types::logical_type::BIT:
+            case types::logical_type::TEXT:
             case types::logical_type::STRING_LITERAL:
             case types::logical_type::INTEGER_LITERAL:
             case types::logical_type::POINTER:
@@ -796,6 +797,7 @@ namespace components::vector::vector_ops {
             case types::logical_type::UBIGINT:
             case types::logical_type::UHUGEINT:
             case types::logical_type::BIT:
+            case types::logical_type::TEXT:
             case types::logical_type::STRING_LITERAL:
             case types::logical_type::INTEGER_LITERAL:
             case types::logical_type::POINTER:
@@ -927,7 +929,7 @@ namespace components::vector::vector_ops {
                                              target_offset,
                                              copy_count);
                 return;
-            case types::physical_type::STRING: {
+            case types::physical_type::TEXT: {
                 auto ldata = source_ptr->data<std::string_view>();
                 auto tdata = target.data<std::string_view>();
                 for (uint64_t i = 0; i < copy_count; i++) {
@@ -1348,7 +1350,7 @@ namespace components::vector::vector_ops {
     }
 
     namespace {
-        // Minus STRING (cast_vector handles that); anything else must be refused HERE — an invariant abort.
+        // Minus TEXT (cast_vector handles that); anything else must be refused HERE — an invariant abort.
         bool is_simple_numeric_physical_type(types::physical_type type) {
             switch (type) {
                 case types::physical_type::BOOL:
@@ -1396,7 +1398,7 @@ namespace components::vector::vector_ops {
 
         // String pairs are separated out BEFORE the switch — its string leg is `assert(false)` with no else,
         // so under NDEBUG it would answer with an UNINITIALISED vector as if it were valid.
-        if (source_physical == types::physical_type::STRING && target_physical == types::physical_type::STRING) {
+        if (source_physical == types::physical_type::TEXT && target_physical == types::physical_type::TEXT) {
             vector_t target(resource, target_type, count);
             auto sdata = source.data<std::string_view>();
             auto& smask = source.validity();
@@ -1410,7 +1412,7 @@ namespace components::vector::vector_ops {
             }
             return target;
         }
-        if (source_physical == types::physical_type::STRING || target_physical == types::physical_type::STRING) {
+        if (source_physical == types::physical_type::TEXT || target_physical == types::physical_type::TEXT) {
             return cast_vector_error(resource, "string casts are not supported", source.type(), target_type);
         }
         if (!is_simple_numeric_physical_type(source_physical) || !is_simple_numeric_physical_type(target_physical)) {
@@ -1522,7 +1524,7 @@ namespace components::vector::vector_ops {
                                                            const vector_t& src,
                                                            uint64_t count) {
         // Refuses the type up front — both callbacks' string leg was `assert(false)`, UNINITIALIZED under NDEBUG.
-        if (src.type().to_physical_type() == types::physical_type::STRING) {
+        if (src.type().to_physical_type() == types::physical_type::TEXT) {
             std::pmr::string msg{"apply_unary_vector_op: string operand has no numeric reading", resource};
             return core::error_t{core::error_code_t::internal_error, std::move(msg)};
         }
@@ -1685,7 +1687,7 @@ namespace components::vector::vector_ops {
             case types::physical_type::UINT128:
             case types::physical_type::FLOAT:
             case types::physical_type::DOUBLE:
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 return true;
             case types::physical_type::STRUCT:
                 for (const auto& field : type.child_types()) {
@@ -1753,7 +1755,7 @@ namespace components::vector::vector_ops {
             case types::physical_type::DOUBLE:
                 impl::templated_loop_hash32<double>(input, result_data, count, seed, scalar);
                 return;
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 impl::templated_loop_hash32<std::string_view>(input, result_data, count, seed, scalar);
                 return;
             case types::physical_type::NA:

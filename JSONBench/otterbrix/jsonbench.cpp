@@ -183,7 +183,7 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
                     }
                     break;
                 }
-                case LT::STRING_LITERAL: {
+                case LT::TEXT: {
                     auto cell = cur->get<std::string_view>(c, r);
                     if (cell.has_error()) {
                         std::cout << "ERROR";

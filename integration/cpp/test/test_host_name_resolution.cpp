@@ -155,9 +155,7 @@ TEST_CASE("integration::cpp::host_names::join_a_storage_table_with_a_local_table
 // The registered columns (pg_attribute) drive validation and the types of the result.
 TEST_CASE("integration::cpp::host_names::registered_columns_drive_validation_and_types") {
     HOST_TEST_BOILERPLATE("test_host_names/declared")
-    register_table(host,
-                   "orders",
-                   {{"id", types::logical_type::BIGINT}, {"label", types::logical_type::STRING_LITERAL}});
+    register_table(host, "orders", {{"id", types::logical_type::BIGINT}, {"label", types::logical_type::TEXT}});
     host.backend().set_rows(orders, {{1, 100}, {2, 200}, {3, 300}});
 
     REQUIRE(run(dispatcher, "SELECT nope FROM m2.shop.public.orders;")->is_error());
@@ -166,7 +164,7 @@ TEST_CASE("integration::cpp::host_names::registered_columns_drive_validation_and
     INFO(error_of(labels));
     REQUIRE(labels->is_success());
     REQUIRE(labels->size() == 1);
-    REQUIRE(labels->chunks().front().data[0].type().type() == types::logical_type::STRING_LITERAL);
+    REQUIRE(labels->chunks().front().data[0].type().type() == types::logical_type::TEXT);
     auto cell0 = labels->get<std::string_view>(0, 0);
     REQUIRE_FALSE(cell0.has_error());
     REQUIRE(cell0.value() == "s200");

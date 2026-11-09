@@ -204,11 +204,11 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT d.name FROM TestDatabase.Departments d "
-            "WHERE EXISTS ("
-            "  SELECT 1 FROM TestDatabase.Employees e "
-            "  WHERE e.dept_id = d.id AND e.salary > 85000"
-            ");");
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 85000"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         auto sub1 = cur->get<std::string_view>(0, 0);
@@ -220,11 +220,11 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT d.name FROM TestDatabase.Departments d "
-            "WHERE NOT EXISTS ("
-            "  SELECT 1 FROM TestDatabase.Employees e "
-            "  WHERE e.dept_id = d.id AND e.salary > 50000"
-            ");");
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE NOT EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 50000"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         auto sub2 = cur->get<std::string_view>(0, 0);
@@ -236,11 +236,11 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT e1.name FROM TestDatabase.Employees e1 "
-            "WHERE e1.salary > ("
-            "  SELECT AVG(e2.salary) FROM TestDatabase.Employees e2 "
-            "  WHERE e2.dept_id = e1.dept_id"
-            ");");
+                                           "SELECT e1.name FROM TestDatabase.Employees e1 "
+                                           "WHERE e1.salary > ("
+                                           "  SELECT AVG(e2.salary) FROM TestDatabase.Employees e2 "
+                                           "  WHERE e2.dept_id = e1.dept_id"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -392,7 +392,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     INFO("scalar correlated subquery in SELECT list");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
+        auto cur = dispatcher->execute_sql(
+            session,
             "SELECT e.name, "
             "  (SELECT d.name FROM TestDatabase.Departments d WHERE d.id = e.dept_id) AS dept_name "
             "FROM TestDatabase.Employees e "
@@ -410,7 +411,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     INFO("aggregate correlated subquery in SELECT list");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
+        auto cur = dispatcher->execute_sql(
+            session,
             "SELECT d.name, "
             "  (SELECT COUNT(*) FROM TestDatabase.Employees e WHERE e.dept_id = d.id) AS headcount "
             "FROM TestDatabase.Departments d "
@@ -427,7 +429,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     INFO("subquery in SELECT list returning maximum of outer group");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
+        auto cur = dispatcher->execute_sql(
+            session,
             "SELECT e.name, "
             "  (SELECT MAX(e2.salary) FROM TestDatabase.Employees e2 WHERE e2.dept_id = e.dept_id) AS dept_max "
             "FROM TestDatabase.Employees e "
@@ -630,19 +633,19 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE salary = ("
-            "  SELECT MAX(salary) FROM TestDatabase.Employees "
-            "  WHERE dept_id IN ("
-            "    SELECT id FROM TestDatabase.Departments d "
-            "    WHERE EXISTS ("
-            "      SELECT 1 FROM TestDatabase.Employees e "
-            "      WHERE e.dept_id = d.id AND e.salary < ("
-            "        SELECT AVG(salary) FROM TestDatabase.Employees"
-            "      )"
-            "    )"
-            "  )"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary = ("
+                                           "  SELECT MAX(salary) FROM TestDatabase.Employees "
+                                           "  WHERE dept_id IN ("
+                                           "    SELECT id FROM TestDatabase.Departments d "
+                                           "    WHERE EXISTS ("
+                                           "      SELECT 1 FROM TestDatabase.Employees e "
+                                           "      WHERE e.dept_id = d.id AND e.salary < ("
+                                           "        SELECT AVG(salary) FROM TestDatabase.Employees"
+                                           "      )"
+                                           "    )"
+                                           "  )"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         auto sub8 = cur->get<std::string_view>(0, 0);
@@ -653,7 +656,8 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
     INFO("4-level nested: top earner in each of the best departments");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
+        auto cur = dispatcher->execute_sql(
+            session,
             "SELECT e.name FROM TestDatabase.Employees e "
             "WHERE e.dept_id IN ("
             "  SELECT id FROM TestDatabase.Departments WHERE budget > ("

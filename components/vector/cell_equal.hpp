@@ -154,7 +154,7 @@ namespace components::vector {
                 return cells_equal_typed<float>(a, ra, b, rb);
             case types::physical_type::DOUBLE:
                 return cells_equal_typed<double>(a, ra, b, rb);
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 return cells_equal_typed<std::string_view>(a, ra, b, rb);
             default:
                 switch (a.type().type()) {

@@ -82,10 +82,18 @@ namespace components::sql::transform {
             auto* arena = node.params->lst.get_allocator().resource();
             for (const auto& cell : node.params->lst) {
                 auto* argument = pg_ptr_cast<Node>(cell.data);
+                // A bare quoted literal stays untyped: it takes its parameter's type on assignment.
+                if (is_quoted_literal(argument)) {
+                    const auto slot = plan->parameters->add_parameter(
+                        vector::make_string_literal(resource_, strVal(&pg_ptr_cast<A_Const>(argument)->val)),
+                        vector::parameter_kind::literal);
+                    arguments.push_back(logical_plan::execute_argument_t{slot});
+                    continue;
+                }
                 const auto slot =
                     plan->parameters->add_parameter(vector::make_null(resource_, sub_query_placeholder(EXPR_SUBLINK)),
                                                     vector::parameter_kind::execution);
-                arguments.push_back(logical_plan::execute_argument_t{slot, is_quoted_literal(argument)});
+                arguments.push_back(logical_plan::execute_argument_t{slot});
                 if (refusal.contains_error()) {
                     continue;
                 }

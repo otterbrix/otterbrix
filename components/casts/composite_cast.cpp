@@ -294,7 +294,7 @@ namespace components::casts {
                                                                          uint64_t count) -> core::error_t {
                     const uint64_t child_count = child_element_count(source, count);
                     vector::vector_t rendered{result->resource(),
-                                              types::complex_logical_type{types::logical_type::STRING_LITERAL},
+                                              types::complex_logical_type{types::logical_type::TEXT},
                                               child_count == 0 ? uint64_t{1} : child_count};
                     core::error_t error = element(kind, source.entry(), &rendered, context, child_count);
                     if (error.contains_error()) {
@@ -366,7 +366,7 @@ namespace components::casts {
             }
             return list_to_array_cast(std::move(*element));
         }
-        if ((source_is_list || source_is_array) && target.type() == types::logical_type::STRING_LITERAL) {
+        if ((source_is_list || source_is_array) && target.type() == types::logical_type::TEXT) {
             std::optional<cast_t> element = registry.resolve(source.child_type(), target, allowed);
             if (!element.has_value()) {
                 return std::nullopt;

@@ -68,6 +68,43 @@ namespace {
                                                 components::compute::function_type_t::expand);
     }
 
+    core::error_t no_exec(components::compute::kernel_context&,
+                          const components::vector::data_chunk_t&,
+                          components::vector::vector_t&) {
+        return core::error_t::no_error();
+    }
+
+    // A two-argument function "pick" with one overload per entry of `overloads`.
+    core::result_wrapper_t<resolved_function_t>
+    resolve_overloaded(std::initializer_list<std::pair<logical_type, logical_type>> overloads,
+                       std::initializer_list<logical_type> types) {
+        using namespace components::compute;
+        function_registry_t registry(resource());
+        auto function = core::pmr::make_polymorphic_unique<vector_function>(resource(),
+                                                                            "pick",
+                                                                            arity::binary(),
+                                                                            function_doc{resource()},
+                                                                            overloads.size(),
+                                                                            volatility_t::immutable);
+        for (const auto& [first, second] : overloads) {
+            kernel_signature_t signature(function_type_t::vector,
+                                         {parameter_type::exact(first), parameter_type::exact(second)},
+                                         {output_type::fixed(logical_type::BOOLEAN)});
+            REQUIRE_FALSE(
+                function->add_kernel(resource(), vector_kernel(std::move(signature), no_exec)).contains_error());
+        }
+        REQUIRE_FALSE(registry.add_function(std::move(function)).has_error());
+        auto arguments = args(types);
+        return resolve_function(resource(),
+                                casts(),
+                                registry,
+                                function_qualified_name_t{core::function_name_t{"pick"}},
+                                arguments,
+                                any_kind(),
+                                components::compute::function_scope_t{},
+                                {});
+    }
+
     core::result_wrapper_t<resolved_function_t> resolve(std::string_view name,
                                                         std::initializer_list<logical_type> types) {
         auto arguments = args(types);
@@ -84,18 +121,18 @@ namespace {
 } // namespace
 
 TEST_CASE("dispatcher::resolve_function: an exact fit needs no casts") {
-    auto resolved = resolve("substring", {logical_type::STRING_LITERAL, logical_type::BIGINT});
+    auto resolved = resolve("substring", {logical_type::TEXT, logical_type::BIGINT});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE(resolved.value().arguments.size() == 2);
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
     REQUIRE_FALSE(resolved.value().arguments[1].cast);
-    REQUIRE(resolved.value().result.type() == logical_type::STRING_LITERAL);
+    REQUIRE(resolved.value().result.type() == logical_type::TEXT);
 }
 
 // The parameter is BIGINT, so an INTEGER argument has to be converted -- under the old
 // matcher model it merely "matched" and the kernel widened it per row instead.
 TEST_CASE("dispatcher::resolve_function: a narrower argument gets a cast to the parameter") {
-    auto resolved = resolve("substring", {logical_type::STRING_LITERAL, logical_type::INTEGER});
+    auto resolved = resolve("substring", {logical_type::TEXT, logical_type::INTEGER});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
     REQUIRE(resolved.value().arguments[1].cast);
@@ -106,19 +143,18 @@ TEST_CASE("dispatcher::resolve_function: an untyped NULL fits any parameter with
     auto resolved = resolve("substring", {logical_type::NA, logical_type::BIGINT});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
-    REQUIRE(resolved.value().arguments[0].target.type() == logical_type::STRING_LITERAL);
+    REQUIRE(resolved.value().arguments[0].target.type() == logical_type::TEXT);
 }
 
 TEST_CASE("dispatcher::resolve_function: arity picks between overloads of one name") {
-    auto two = resolve("substring", {logical_type::STRING_LITERAL, logical_type::BIGINT});
-    auto three = resolve("substring", {logical_type::STRING_LITERAL, logical_type::BIGINT, logical_type::BIGINT});
+    auto two = resolve("substring", {logical_type::TEXT, logical_type::BIGINT});
+    auto three = resolve("substring", {logical_type::TEXT, logical_type::BIGINT, logical_type::BIGINT});
     REQUIRE_FALSE(two.has_error());
     REQUIRE_FALSE(three.has_error());
     REQUIRE(three.value().arguments.size() == 3);
 
     auto four =
-        resolve("substring",
-                {logical_type::STRING_LITERAL, logical_type::BIGINT, logical_type::BIGINT, logical_type::BIGINT});
+        resolve("substring", {logical_type::TEXT, logical_type::BIGINT, logical_type::BIGINT, logical_type::BIGINT});
     REQUIRE(four.has_error());
 }
 
@@ -130,10 +166,10 @@ TEST_CASE("dispatcher::resolve_function: an unconstrained variable adopts the ar
     REQUIRE_FALSE(integer.value().arguments[0].cast);
     REQUIRE(integer.value().result.type() == logical_type::INTEGER);
 
-    auto text = resolve("max", {logical_type::STRING_LITERAL});
+    auto text = resolve("max", {logical_type::TEXT});
     REQUIRE_FALSE(text.has_error());
     REQUIRE_FALSE(text.value().arguments[0].cast);
-    REQUIRE(text.value().result.type() == logical_type::STRING_LITERAL);
+    REQUIRE(text.value().result.type() == logical_type::TEXT);
 
     // Even a type no cast reaches works, because nothing has to be converted.
     auto date = resolve("min", {logical_type::DATE});
@@ -155,12 +191,12 @@ TEST_CASE("dispatcher::resolve_function: a restricted variable admits its domain
 
 TEST_CASE("dispatcher::resolve_function: the function decides its own return type") {
     // length returns BIGINT regardless of its argument.
-    auto resolved = resolve("length", {logical_type::STRING_LITERAL});
+    auto resolved = resolve("length", {logical_type::TEXT});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE(resolved.value().result.type() == logical_type::BIGINT);
 
     // count returns UBIGINT, and has a zero-argument overload for COUNT(*).
-    auto counted = resolve("count", {logical_type::STRING_LITERAL});
+    auto counted = resolve("count", {logical_type::TEXT});
     REQUIRE_FALSE(counted.has_error());
     REQUIRE(counted.value().result.type() == logical_type::UBIGINT);
 
@@ -222,7 +258,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
     const auto aggregate_only = components::compute::create_mask(components::compute::function_type_t::aggregate);
 
     auto integer = args({logical_type::BIGINT});
-    auto text = args({logical_type::STRING_LITERAL});
+    auto text = args({logical_type::TEXT});
 
     auto sum_in_where = resolve_function(resource(),
                                          casts(),
@@ -311,25 +347,64 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
         REQUIRE(unsigned_arg.value().result.type() == type);
     }
 
-    REQUIRE(resolve("abs", {logical_type::STRING_LITERAL}).has_error());
+    REQUIRE(resolve("abs", {logical_type::TEXT}).has_error());
+}
+
+// An untyped literal fits exactly only a STRING_LITERAL parameter; which other type its text is meant as is a guess,
+// so it never ranks overloads -- the typed arguments do; a tie left goes to the text overload, else is ambiguous.
+TEST_CASE("dispatcher::resolve_function: an untyped literal does not choose between overloads") {
+    constexpr auto integer = logical_type::INTEGER;
+    constexpr auto literal = logical_type::STRING_LITERAL;
+
+    SECTION("numeric targets") {
+        REQUIRE(
+            resolve_overloaded({{integer, integer}, {integer, logical_type::FLOAT}}, {integer, literal}).has_error());
+    }
+
+    SECTION("a tie goes to the text target") {
+        auto resolved = resolve_overloaded({{integer, integer}, {integer, logical_type::TEXT}}, {integer, literal});
+        REQUIRE_FALSE(resolved.has_error());
+        REQUIRE(resolved.value().arguments[1].target.type() == logical_type::TEXT);
+    }
+
+    SECTION("a literal parameter takes it as written") {
+        auto resolved = resolve_overloaded({{integer, integer}, {integer, literal}}, {integer, literal});
+        REQUIRE_FALSE(resolved.has_error());
+        REQUIRE(resolved.value().arguments[1].target.type() == literal);
+        REQUIRE_FALSE(resolved.value().arguments[1].cast);
+    }
+
+    SECTION("a single overload converts it") {
+        auto resolved = resolve_overloaded({{integer, logical_type::FLOAT}}, {integer, literal});
+        REQUIRE_FALSE(resolved.has_error());
+        REQUIRE(resolved.value().arguments[1].target.type() == logical_type::FLOAT);
+        REQUIRE(resolved.value().arguments[1].cast);
+    }
+
+    SECTION("the typed arguments decide") {
+        auto resolved =
+            resolve_overloaded({{logical_type::DOUBLE, logical_type::DOUBLE}, {integer, integer}}, {integer, literal});
+        REQUIRE_FALSE(resolved.has_error());
+        REQUIRE(resolved.value().arguments[0].target.type() == integer);
+        REQUIRE(resolved.value().arguments[1].target.type() == integer);
+    }
 }
 
 // PostgreSQL 18 func_select_candidate: at an unknown-typed position the string category wins a tie, so
 // regexp_replace(s, p, r, NULL) is the flags form, not the start form.
 TEST_CASE("dispatcher::resolve_function: an untyped NULL breaks a tie toward the string overload") {
-    auto resolved = resolve(
-        "regexp_replace",
-        {logical_type::STRING_LITERAL, logical_type::STRING_LITERAL, logical_type::STRING_LITERAL, logical_type::NA});
+    auto resolved =
+        resolve("regexp_replace", {logical_type::TEXT, logical_type::TEXT, logical_type::TEXT, logical_type::NA});
     INFO((resolved.has_error() ? std::string{resolved.error().what} : std::string{}));
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE(resolved.value().arguments.size() == 4);
-    REQUIRE(resolved.value().arguments[3].target.type() == logical_type::STRING_LITERAL);
-    REQUIRE(resolved.value().result.type() == logical_type::STRING_LITERAL);
+    REQUIRE(resolved.value().arguments[3].target.type() == logical_type::TEXT);
+    REQUIRE(resolved.value().result.type() == logical_type::TEXT);
 
-    auto like = resolve("regexp_like", {logical_type::STRING_LITERAL, logical_type::STRING_LITERAL, logical_type::NA});
+    auto like = resolve("regexp_like", {logical_type::TEXT, logical_type::TEXT, logical_type::NA});
     INFO((like.has_error() ? std::string{like.error().what} : std::string{}));
     REQUIRE_FALSE(like.has_error());
-    REQUIRE(like.value().arguments[2].target.type() == logical_type::STRING_LITERAL);
+    REQUIRE(like.value().arguments[2].target.type() == logical_type::TEXT);
 }
 
 TEST_CASE("dispatcher::resolve_function: an internal builtin resolves only for a call that pins it") {
@@ -338,9 +413,7 @@ TEST_CASE("dispatcher::resolve_function: an internal builtin resolves only for a
                                    [](const auto& entry) { return entry.first == "like_match"; });
     REQUIRE(row != components::compute::DEFAULT_FUNCTIONS.end());
 
-    const std::initializer_list<logical_type> mode_call{logical_type::STRING_LITERAL,
-                                                        logical_type::STRING_LITERAL,
-                                                        logical_type::UTINYINT};
+    const std::initializer_list<logical_type> mode_call{logical_type::TEXT, logical_type::TEXT, logical_type::UTINYINT};
     auto unpinned = resolve("like_match", mode_call);
     REQUIRE(unpinned.has_error());
     REQUIRE(unpinned.error().type == core::error_code_t::unrecognized_function);

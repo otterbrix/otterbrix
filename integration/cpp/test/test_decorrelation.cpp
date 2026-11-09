@@ -40,7 +40,7 @@ namespace {
                     const auto& cell = chunk.data[column];
                     if (cell.is_null(row)) {
                         cells.emplace_back("null");
-                    } else if (cell.type().type() == components::types::logical_type::STRING_LITERAL) {
+                    } else if (cell.type().type() == components::types::logical_type::TEXT) {
                         cells.emplace_back(cell.get_value<std::string_view>(row));
                     } else if (cell.type().type() == components::types::logical_type::UBIGINT) {
                         cells.push_back(std::to_string(cell.get_value<std::uint64_t>(row)));

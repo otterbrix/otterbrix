@@ -1102,9 +1102,9 @@ namespace services::dispatcher {
             if (result.applied_setting_scope == components::catalog::setting_scope_t::system) {
                 for (const auto& assignment : result.applied_settings) {
                     if (auto applied = components::catalog::set_setting(default_settings_,
-                                                                         assignment.id,
-                                                                         assignment.value,
-                                                                         resource());
+                                                                        assignment.id,
+                                                                        assignment.value,
+                                                                        resource());
                         applied.contains_error()) {
                         std::fprintf(stderr,
                                      "dispatcher: ALTER SYSTEM reported a value its setting refuses: %s\n",

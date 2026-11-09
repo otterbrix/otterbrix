@@ -170,7 +170,7 @@ namespace {
 
     enum class shape_t
     {
-        STRING,
+        TEXT,
         LIST,
         STRUCT,
         ARRAY
@@ -178,8 +178,8 @@ namespace {
 
     const char* shape_name(shape_t shape) {
         switch (shape) {
-            case shape_t::STRING:
-                return "string";
+            case shape_t::TEXT:
+                return "text";
             case shape_t::LIST:
                 return "list";
             case shape_t::STRUCT:
@@ -192,19 +192,19 @@ namespace {
 
     complex_logical_type column_type(env_t& env, shape_t shape) {
         switch (shape) {
-            case shape_t::STRING:
-                return complex_logical_type{logical_type::STRING_LITERAL};
+            case shape_t::TEXT:
+                return complex_logical_type{logical_type::TEXT};
             case shape_t::LIST:
-                return complex_logical_type::create_list(logical_type::STRING_LITERAL);
+                return complex_logical_type::create_list(logical_type::TEXT);
             case shape_t::STRUCT: {
                 std::pmr::vector<complex_logical_type> fields(&env.resource);
-                fields.emplace_back(logical_type::STRING_LITERAL, "s");
+                fields.emplace_back(logical_type::TEXT, "s");
                 return complex_logical_type::create_struct("rec", fields, "rec_t");
             }
             case shape_t::ARRAY:
-                return complex_logical_type::create_array(logical_type::STRING_LITERAL, 1);
+                return complex_logical_type::create_array(logical_type::TEXT, 1);
         }
-        return complex_logical_type{logical_type::STRING_LITERAL};
+        return complex_logical_type{logical_type::TEXT};
     }
 
     data_chunk_t one_row(env_t& env, data_table_t& table, shape_t shape, const std::string& payload, int64_t k) {
@@ -213,7 +213,7 @@ namespace {
         chunk.set_cardinality(1);
         chunk.set_value(0, 0, k);
         switch (shape) {
-            case shape_t::STRING:
+            case shape_t::TEXT:
                 chunk.set_value(1, 0, std::string_view{payload});
                 break;
             case shape_t::LIST:
@@ -230,7 +230,7 @@ namespace {
 
     std::string cell_string(const vector_t& cell, shape_t shape) {
         switch (shape) {
-            case shape_t::STRING:
+            case shape_t::TEXT:
                 return std::string{cell.get_value<std::string_view>(0)};
             case shape_t::LIST:
             case shape_t::ARRAY: {
@@ -338,28 +338,28 @@ namespace {
 
 } // namespace
 
-TEST_CASE("append_count: STRING, refused append then checkpoint", "[append_count][string]") {
-    run_shape(shape_t::STRING, false);
+TEST_CASE("append_count: TEXT, refused append then checkpoint", "[append_count][string]") {
+    run_shape(shape_t::TEXT, false);
 }
-TEST_CASE("append_count: STRING, refused append then a good row", "[append_count][string]") {
-    run_shape(shape_t::STRING, true);
+TEST_CASE("append_count: TEXT, refused append then a good row", "[append_count][string]") {
+    run_shape(shape_t::TEXT, true);
 }
-TEST_CASE("append_count: LIST<STRING>, refused append then checkpoint", "[append_count][list]") {
+TEST_CASE("append_count: LIST<TEXT>, refused append then checkpoint", "[append_count][list]") {
     run_shape(shape_t::LIST, false);
 }
-TEST_CASE("append_count: LIST<STRING>, refused append then a good row", "[append_count][list]") {
+TEST_CASE("append_count: LIST<TEXT>, refused append then a good row", "[append_count][list]") {
     run_shape(shape_t::LIST, true);
 }
-TEST_CASE("append_count: STRUCT<STRING>, refused append then checkpoint", "[append_count][struct]") {
+TEST_CASE("append_count: STRUCT<TEXT>, refused append then checkpoint", "[append_count][struct]") {
     run_shape(shape_t::STRUCT, false);
 }
-TEST_CASE("append_count: STRUCT<STRING>, refused append then a good row", "[append_count][struct]") {
+TEST_CASE("append_count: STRUCT<TEXT>, refused append then a good row", "[append_count][struct]") {
     run_shape(shape_t::STRUCT, true);
 }
-TEST_CASE("append_count: ARRAY<STRING>, refused append then checkpoint", "[append_count][array]") {
+TEST_CASE("append_count: ARRAY<TEXT>, refused append then checkpoint", "[append_count][array]") {
     run_shape(shape_t::ARRAY, false);
 }
-TEST_CASE("append_count: ARRAY<STRING>, refused append then a good row", "[append_count][array]") {
+TEST_CASE("append_count: ARRAY<TEXT>, refused append then a good row", "[append_count][array]") {
     run_shape(shape_t::ARRAY, true);
 }
 
@@ -391,7 +391,7 @@ namespace {
 
 } // namespace
 
-TEST_CASE("append_count: STRING, a chunk spanning three segments refused at its tail",
+TEST_CASE("append_count: TEXT, a chunk spanning three segments refused at its tail",
           "[append_count][string][boundary]") {
     const std::string path = db_path("boundary");
     std::remove(path.c_str());
@@ -399,10 +399,10 @@ TEST_CASE("append_count: STRING, a chunk spanning three segments refused at its 
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
-        auto table = make_table(env, bm, shape_t::STRING);
-        // 1000-byte strings fill a STRING segment in ~32 rows, so 70 of them span three segments.
+        auto table = make_table(env, bm, shape_t::TEXT);
+        // 1000-byte strings fill a TEXT segment in ~32 rows, so 70 of them span three segments.
         const uint64_t segment_size =
-            std::min<uint64_t>(bm.block_size(), DEFAULT_VECTOR_CAPACITY * column_type(env, shape_t::STRING).size());
+            std::min<uint64_t>(bm.block_size(), DEFAULT_VECTOR_CAPACITY * column_type(env, shape_t::TEXT).size());
         const uint64_t small_rows = 70;
         {
             std::vector<std::string> payloads(small_rows, std::string(1000, 'y'));
@@ -447,16 +447,16 @@ TEST_CASE("append_count: STRING, a chunk spanning three segments refused at its 
                 string_rows += info.segment_count;
             }
         }
-        INFO("STRING column: " << string_segments << " segment(s), " << string_rows << " row(s), count "
-                               << column_of(*table, 1).count());
+        INFO("TEXT column: " << string_segments << " segment(s), " << string_rows << " row(s), count "
+                             << column_of(*table, 1).count());
         CHECK(column_of(*table, 1).count() == 0);
         CHECK(string_rows == 0);
 
-        good_append(env, *table, shape_t::STRING, "ok");
+        good_append(env, *table, shape_t::TEXT, "ok");
         std::vector<row_t> cells;
         REQUIRE(scan_rows(*table, env, &cells) == 1);
         CHECK(cells[0].k == GOOD_K);
-        CHECK(cell_string(cells[0].v, shape_t::STRING) == "ok");
+        CHECK(cell_string(cells[0].v, shape_t::TEXT) == "ok");
 
         checkpoint_production(bm, *table);
         auto pointers = read_pointers(env, bm);
@@ -477,12 +477,12 @@ TEST_CASE("append_count: STRING, a chunk spanning three segments refused at its 
         std::vector<row_t> cells;
         REQUIRE(scan_rows(*loaded.value(), env, &cells) == 1);
         CHECK(cells[0].k == GOOD_K);
-        CHECK(cell_string(cells[0].v, shape_t::STRING) == "ok");
+        CHECK(cell_string(cells[0].v, shape_t::TEXT) == "ok");
     }
     std::remove(path.c_str());
 }
 
-TEST_CASE("append_count: STRING, a chunk crossing a row-group boundary refused in the next row group",
+TEST_CASE("append_count: TEXT, a chunk crossing a row-group boundary refused in the next row group",
           "[append_count][string][row_group]") {
     const std::string path = db_path("row_group");
     std::remove(path.c_str());
@@ -501,7 +501,7 @@ TEST_CASE("append_count: STRING, a chunk crossing a row-group boundary refused i
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
-        auto table = make_table(env, bm, shape_t::STRING);
+        auto table = make_table(env, bm, shape_t::TEXT);
         REQUIRE(table->row_group()->row_group_size() == DEFAULT_VECTOR_CAPACITY);
         {
             auto chunk = string_chunk(*table, std::vector<std::string>(kept_rows, "kept"), 0);
@@ -528,14 +528,14 @@ TEST_CASE("append_count: STRING, a chunk crossing a row-group boundary refused i
         {
             std::vector<row_t> cells;
             REQUIRE(scan_rows(*table, env, &cells) == kept_rows);
-            CHECK(cell_string(cells.back().v, shape_t::STRING) == "kept");
+            CHECK(cell_string(cells.back().v, shape_t::TEXT) == "kept");
         }
 
-        good_append(env, *table, shape_t::STRING, "ok");
+        good_append(env, *table, shape_t::TEXT, "ok");
         std::vector<row_t> cells;
         REQUIRE(scan_rows(*table, env, &cells) == kept_rows + 1);
         CHECK(cells.back().k == GOOD_K);
-        CHECK(cell_string(cells.back().v, shape_t::STRING) == "ok");
+        CHECK(cell_string(cells.back().v, shape_t::TEXT) == "ok");
 
         checkpoint_production(bm, *table);
         auto pointers = read_pointers(env, bm);
@@ -558,7 +558,7 @@ TEST_CASE("append_count: STRING, a chunk crossing a row-group boundary refused i
         std::vector<row_t> cells;
         REQUIRE(scan_rows(*loaded.value(), env, &cells) == kept_rows + 1);
         CHECK(cells.back().k == GOOD_K);
-        CHECK(cell_string(cells.back().v, shape_t::STRING) == "ok");
+        CHECK(cell_string(cells.back().v, shape_t::TEXT) == "ok");
     }
     std::remove(path.c_str());
 }

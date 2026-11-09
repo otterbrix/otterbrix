@@ -94,7 +94,7 @@ namespace services::collection {
         render_node(mr, root, 0, analyze, lines, initplan_no);
 
         std::pmr::vector<components::types::complex_logical_type> types(mr);
-        types.emplace_back(components::types::logical_type::STRING_LITERAL, "QUERY PLAN");
+        types.emplace_back(components::types::logical_type::TEXT, "QUERY PLAN");
 
         // Emit <=DEFAULT_VECTOR_CAPACITY (1024)-row chunks: a single data_chunk_t caps at 1024.
         std::pmr::vector<components::vector::data_chunk_t> chunks(mr);

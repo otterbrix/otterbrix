@@ -2482,13 +2482,12 @@ namespace { namespace cast_key {
 TEST_CASE("optimizer::hash_join::cast_key_operand_is_hashed") {
     auto resource = core::pmr::otterbrix_resource();
     for (auto type : {join_type::inner, join_type::left, join_type::right, join_type::full}) {
-        auto join = cast_key::join_over(
-            &resource,
-            type,
-            make_compare_expression(&resource,
-                                    compare_type::eq,
-                                    cast_key::widened_k(&resource),
-                                    pruned_key(&resource, "k2", 1, side_t::right)));
+        auto join = cast_key::join_over(&resource,
+                                        type,
+                                        make_compare_expression(&resource,
+                                                                compare_type::eq,
+                                                                cast_key::widened_k(&resource),
+                                                                pruned_key(&resource, "k2", 1, side_t::right)));
         auto out = components::planner::optimizer::rewrite_hash_joins(&resource, join);
         REQUIRE(out == join);
         CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
@@ -2497,13 +2496,12 @@ TEST_CASE("optimizer::hash_join::cast_key_operand_is_hashed") {
 
 TEST_CASE("optimizer::hash_join::on_is_normalised_left_operand_first") {
     auto resource = core::pmr::otterbrix_resource();
-    auto join = cast_key::join_over(
-        &resource,
-        join_type::inner,
-        make_compare_expression(&resource,
-                                compare_type::eq,
-                                pruned_key(&resource, "k2", 1, side_t::right),
-                                cast_key::widened_k(&resource)));
+    auto join = cast_key::join_over(&resource,
+                                    join_type::inner,
+                                    make_compare_expression(&resource,
+                                                            compare_type::eq,
+                                                            pruned_key(&resource, "k2", 1, side_t::right),
+                                                            cast_key::widened_k(&resource)));
     components::planner::optimizer::rewrite_hash_joins(&resource, join);
     REQUIRE(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
     auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
@@ -2514,13 +2512,12 @@ TEST_CASE("optimizer::hash_join::on_is_normalised_left_operand_first") {
 
 TEST_CASE("optimizer::hash_join::keys_from_one_side_stay_nested") {
     auto resource = core::pmr::otterbrix_resource();
-    auto join = cast_key::join_over(
-        &resource,
-        join_type::inner,
-        make_compare_expression(&resource,
-                                compare_type::eq,
-                                cast_key::widened_k(&resource),
-                                pruned_key(&resource, "a", 0, side_t::left)));
+    auto join = cast_key::join_over(&resource,
+                                    join_type::inner,
+                                    make_compare_expression(&resource,
+                                                            compare_type::eq,
+                                                            cast_key::widened_k(&resource),
+                                                            pruned_key(&resource, "a", 0, side_t::left)));
     components::planner::optimizer::rewrite_hash_joins(&resource, join);
     CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::nested);
 }
@@ -2539,8 +2536,8 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_on_narrow_key_becomes_inner
         auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, &resource);
         return make_node_raw_data(&resource, std::move(chunk));
     };
-    auto scan_a = make_scan({{"ak", components::types::logical_type::INTEGER},
-                             {"ap", components::types::logical_type::BIGINT}});
+    auto scan_a =
+        make_scan({{"ak", components::types::logical_type::INTEGER}, {"ap", components::types::logical_type::BIGINT}});
     auto scan_b = make_scan({{"bk", components::types::logical_type::BIGINT}});
 
     auto join = make_node_join(&resource, join_type::cross);
@@ -2645,12 +2642,12 @@ namespace { namespace one_sided {
 // Any operand that reads one side only is a join key, as in PostgreSQL; its columns are re-stamped side-local.
 TEST_CASE("optimizer::promote_cross_join::function_of_one_side_is_a_join_key") {
     auto resource = core::pmr::otterbrix_resource();
-    auto from = one_sided::promote(
-        &resource,
-        make_compare_expression(&resource,
-                                compare_type::eq,
-                                param_storage{key(&resource, "bk")},
-                                param_storage{one_sided::abs_of(&resource, key(&resource, "ak"))}));
+    auto from =
+        one_sided::promote(&resource,
+                           make_compare_expression(&resource,
+                                                   compare_type::eq,
+                                                   param_storage{key(&resource, "bk")},
+                                                   param_storage{one_sided::abs_of(&resource, key(&resource, "ak"))}));
     REQUIRE(from->type() == node_type::join_t);
     auto* join = static_cast<node_join_t*>(from.get());
     CHECK(join->type() == join_type::inner);
@@ -2688,12 +2685,10 @@ TEST_CASE("optimizer::promote_cross_join::operand_over_both_sides_is_not_a_join_
 namespace { namespace cast_key {
     // ON cast(k) = k2 over [a, k] x [b, k2]; the WHERE is in merged coordinates.
     node_ptr filtered_join(std::pmr::memory_resource* r, node_ptr& join, const expression_ptr& where) {
-        join = join_over(r,
-                         join_type::inner,
-                         make_compare_expression(r,
-                                                 compare_type::eq,
-                                                 widened_k(r),
-                                                 pruned_key(r, "k2", 1, side_t::right)));
+        join = join_over(
+            r,
+            join_type::inner,
+            make_compare_expression(r, compare_type::eq, widened_k(r), pruned_key(r, "k2", 1, side_t::right)));
         auto outer = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
         outer->append_child(join);
         outer->append_child(make_node_match(r, qualified_name_t{pdb(), prel()}, where));
@@ -2776,10 +2771,9 @@ TEST_CASE("optimizer::pushdown_filter::bare_key_propagates_through_widening_cast
                                     components::vector::parameter_kind::literal);
     for (auto op : {compare_type::eq, compare_type::lt}) {
         node_ptr join;
-        auto outer = cast_key::filtered_join(
-            &resource,
-            join,
-            make_compare_expression(&resource, op, pruned_key(&resource, "k", 1), p5));
+        auto outer = cast_key::filtered_join(&resource,
+                                             join,
+                                             make_compare_expression(&resource, op, pruned_key(&resource, "k", 1), p5));
 
         node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
         REQUIRE(out == join);
@@ -2822,12 +2816,10 @@ TEST_CASE("optimizer::pushdown_filter::bare_key_does_not_propagate_through_narro
         pruned_key(&resource, "k2", 1, side_t::right)));
     auto outer = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
     outer->append_child(join);
-    outer->append_child(make_node_match(&resource,
-                                        qualified_name_t{pdb(), prel()},
-                                        make_compare_expression(&resource,
-                                                                compare_type::eq,
-                                                                pruned_key(&resource, "k", 1),
-                                                                p5)));
+    outer->append_child(
+        make_node_match(&resource,
+                        qualified_name_t{pdb(), prel()},
+                        make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k", 1), p5)));
     const node_ptr right = join->children()[1];
 
     node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
@@ -2895,7 +2887,7 @@ TEST_CASE("optimizer::quantified_match_with_a_non_utinyint_mode_is_not_folded") 
                                        components::vector::parameter_kind::literal);
     std::vector<components::vector::vector_t> elements;
     elements.push_back(components::vector::make_scalar(&resource, std::string_view{"abc"}));
-    const components::types::complex_logical_type text{components::types::logical_type::STRING_LITERAL};
+    const components::types::complex_logical_type text{components::types::logical_type::TEXT};
     auto set = params->add_parameter(components::vector::make_list(&resource, text, elements),
                                      components::vector::parameter_kind::literal);
     auto mode = params->add_parameter(components::vector::make_scalar(&resource, std::string_view{"l"}),
@@ -2917,7 +2909,7 @@ TEST_CASE("optimizer::quantified_match_with_a_utinyint_mode_is_folded") {
                                        components::vector::parameter_kind::literal);
     std::vector<components::vector::vector_t> elements;
     elements.push_back(components::vector::make_scalar(&resource, std::string_view{"a_c"}));
-    const components::types::complex_logical_type text{components::types::logical_type::STRING_LITERAL};
+    const components::types::complex_logical_type text{components::types::logical_type::TEXT};
     auto set = params->add_parameter(components::vector::make_list(&resource, text, elements),
                                      components::vector::parameter_kind::literal);
     auto mode = params->add_parameter(components::vector::make_scalar(&resource, uint8_t{1}),

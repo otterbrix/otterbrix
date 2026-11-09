@@ -78,7 +78,7 @@ namespace components::types {
         double value_(std::integral_constant<physical_type, physical_type::DOUBLE>) const noexcept;
         int128_t value_(std::integral_constant<physical_type, physical_type::INT128>) const noexcept;
         uint128_t value_(std::integral_constant<physical_type, physical_type::UINT128>) const noexcept;
-        std::string_view value_(std::integral_constant<physical_type, physical_type::STRING>) const noexcept;
+        std::string_view value_(std::integral_constant<physical_type, physical_type::TEXT>) const noexcept;
 
         template<typename T>
         static constexpr physical_type get_type_() {

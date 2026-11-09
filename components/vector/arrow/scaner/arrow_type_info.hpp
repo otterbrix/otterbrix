@@ -16,7 +16,7 @@ namespace components::vector::arrow {
         LIST,
         STRUCT,
         DATE_TIME,
-        STRING,
+        TEXT,
         ARRAY,
         DECIMAL
     };
@@ -106,7 +106,7 @@ namespace components::vector::arrow {
 
     class arrow_string_info : public arrow_type_info {
     public:
-        static constexpr arrow_type_info_type TYPE = arrow_type_info_type::STRING;
+        static constexpr arrow_type_info_type TYPE = arrow_type_info_type::TEXT;
 
         explicit arrow_string_info(arrow_variable_size_type size);
         explicit arrow_string_info(size_t fixed_size);

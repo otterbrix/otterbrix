@@ -64,8 +64,8 @@ namespace {
             REQUIRE(cell4.value() == 50);
             auto cell5 = cur->get<double>(5, 0);
             REQUIRE_FALSE(cell5.has_error());
-            REQUIRE(cell5.value() == Catch::Approx(30.0));      // 150 / 5
-            REQUIRE(services::disk::disk_block_rows() > 0);     // was-actually-pushed proof
+            REQUIRE(cell5.value() == Catch::Approx(30.0));  // 150 / 5
+            REQUIRE(services::disk::disk_block_rows() > 0); // was-actually-pushed proof
         }
 
         INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)");

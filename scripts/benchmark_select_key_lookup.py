@@ -56,7 +56,7 @@ def run_key_lookup_benchmark(
         print(f"Dataset: rows={rows}, payload_bytes={payload_bytes}, file={csv_path} ({human_size(csv_path)})")
 
         db_name = make_bench_db_name()
-        id_type = "STRING" if key_bytes > 0 else "INTEGER"
+        id_type = "TEXT" if key_bytes > 0 else "INTEGER"
         key_value = choose_lookup_key(rows, seed, key_bytes)
         query_sql = lookup_sql(db_name, key_value, key_is_string=key_bytes > 0)
         scenario_dirs = write_standard_lookup_scenarios(

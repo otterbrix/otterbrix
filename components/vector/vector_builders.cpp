@@ -16,6 +16,10 @@ namespace components::vector {
         }
     } // namespace detail
 
+    vector_t make_string_literal(std::pmr::memory_resource* resource, std::string_view text) {
+        return make_scalar(resource, types::complex_logical_type{types::logical_type::STRING_LITERAL}, text);
+    }
+
     vector_t make_constant_copy(std::pmr::memory_resource* resource, const vector_t& source, uint64_t row) {
         auto result = make_null(resource, source.type());
         uint64_t position = row;

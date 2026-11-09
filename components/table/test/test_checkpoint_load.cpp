@@ -175,7 +175,7 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
     cleanup_test_file();
 }
 
-TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
+TEST_CASE("checkpoint_load: three columns INT64 + TEXT + DOUBLE") {
     using namespace components::table;
     using namespace components::table::storage;
     using namespace components::types;
@@ -193,7 +193,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("name", logical_type::STRING_LITERAL);
+        columns.emplace_back("name", logical_type::TEXT);
         columns.emplace_back("score", logical_type::DOUBLE);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "multi_col");
 
@@ -1142,7 +1142,7 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
 
     std::pmr::vector<complex_logical_type> fields(&env.resource);
     fields.emplace_back(logical_type::BIGINT, "num");
-    fields.emplace_back(logical_type::STRING_LITERAL, "name");
+    fields.emplace_back(logical_type::TEXT, "name");
     auto struct_type = complex_logical_type::create_struct("pair", fields);
 
     meta_block_pointer_t table_pointer;
@@ -1233,7 +1233,7 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("v", logical_type::BIGINT);
-        columns.emplace_back("s", logical_type::STRING_LITERAL);
+        columns.emplace_back("s", logical_type::TEXT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "null_table");
 
         auto types = table->copy_types();
@@ -1749,7 +1749,7 @@ TEST_CASE("checkpoint_load: a LIST of NULLs persists no empty child segment and 
     using namespace components::vector;
     constexpr uint64_t NULL_ROWS = 3;
 
-    for (const auto element : {logical_type::BIGINT, logical_type::STRING_LITERAL}) {
+    for (const auto element : {logical_type::BIGINT, logical_type::TEXT}) {
         INFO("element type " << static_cast<int>(element));
         cleanup_test_file();
         test_env_t env;
@@ -1925,7 +1925,7 @@ TEST_CASE("checkpoint_load: the file holds no byte the engine never wrote") {
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
         columns.emplace_back("l", complex_logical_type::create_list(logical_type::BIGINT));
-        columns.emplace_back("s", logical_type::STRING_LITERAL);
+        columns.emplace_back("s", logical_type::TEXT);
         columns.emplace_back("n", complex_logical_type::create_list(logical_type::BIGINT));
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "poisoned");
         {
@@ -2211,7 +2211,9 @@ TEST_CASE("checkpoint_load: every buffer payload the buffer manager hands out is
     test_env_t env;
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
     REQUIRE(!bm.create_new_database().has_error());
-    const auto aligned = [](const std::byte* p) { return reinterpret_cast<std::uintptr_t>(p) % alignof(int128_t) == 0; };
+    const auto aligned = [](const std::byte* p) {
+        return reinterpret_cast<std::uintptr_t>(p) % alignof(int128_t) == 0;
+    };
 
     auto tiny = env.buffer_manager.register_transient_memory(1024, bm.block_size());
     REQUIRE_FALSE(tiny.has_error());

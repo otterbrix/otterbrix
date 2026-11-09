@@ -19,6 +19,7 @@ namespace components::catalog {
                 }
                 break;
             case logical_type::NA:
+            case logical_type::STRING_LITERAL:
                 return "unknown";
             case logical_type::LIST:
             case logical_type::ARRAY:

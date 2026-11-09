@@ -540,8 +540,7 @@ namespace {
         REQUIRE(run("CREATE TABLE m.f (a BIGINT, b BIGINT, v BIGINT);")->is_success());
         REQUIRE(run("INSERT INTO m.d1 (id, n, small) VALUES (1, 100, 7), (2, 200, 1);")->is_success());
         REQUIRE(run("INSERT INTO m.d2 (id, n) VALUES (1, 1000), (2, 2000);")->is_success());
-        REQUIRE(
-            run("INSERT INTO m.f (a, b, v) VALUES (1, 1, 10), (2, 2, 20), (1, 2, 30), (2, 1, 40);")->is_success());
+        REQUIRE(run("INSERT INTO m.f (a, b, v) VALUES (1, 1, 10), (2, 2, 20), (1, 2, 30), (2, 1, 40);")->is_success());
 
         const std::string sql = select + " FROM m.d1, m.d2, m.f WHERE f.a = d1.id AND f.b = d2.id" + tail + ";";
         auto cur = run(sql);

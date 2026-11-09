@@ -66,8 +66,8 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
     constexpr size_t rows = 300;
 
     std::vector<column_definition_t> columns;
-    columns.emplace_back("a", complex_logical_type(logical_type::STRING_LITERAL));
-    columns.emplace_back("b", complex_logical_type(logical_type::STRING_LITERAL));
+    columns.emplace_back("a", complex_logical_type(logical_type::TEXT));
+    columns.emplace_back("b", complex_logical_type(logical_type::TEXT));
     auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "t");
 
     auto types = table->copy_types();

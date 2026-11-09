@@ -58,7 +58,7 @@ namespace components::vector {
             std::memcpy(buffer.data() + at, source, length);
         }
 
-        // 0 marks a variable-width or composite type (STRING, ARRAY, etc.).
+        // 0 marks a variable-width or composite type (TEXT, ARRAY, etc.).
         size_t fixed_type_size(types::physical_type physical_type) {
             switch (physical_type) {
                 case types::physical_type::BOOL:
@@ -86,7 +86,7 @@ namespace components::vector {
         }
 
         bool is_variable_type(types::physical_type physical_type) {
-            return physical_type == types::physical_type::STRING;
+            return physical_type == types::physical_type::TEXT;
         }
 
         // 0 means the extension is missing: a type claiming ARRAY but unable to say how wide it is.

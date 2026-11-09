@@ -28,8 +28,8 @@ namespace {
     make_chunk(std::pmr::memory_resource* resource, uint64_t rows, uint64_t width = 64, uint64_t capacity = 0) {
         std::pmr::vector<types::complex_logical_type> types{resource};
         types.emplace_back(types::logical_type::BIGINT);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
+        types.emplace_back(types::logical_type::TEXT);
+        types.emplace_back(types::logical_type::TEXT);
         vector::data_chunk_t chunk(resource, types, capacity == 0 ? rows : capacity);
         const std::string value(width, 'x');
         for (uint64_t row = 0; row < rows; row++) {

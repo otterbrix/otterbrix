@@ -153,7 +153,7 @@ namespace services::dispatcher::validation {
             --entry->untyped_uses;
         }
         entry->text_output = true;
-        return complex_logical_type{logical_type::STRING_LITERAL};
+        return complex_logical_type{logical_type::TEXT};
     }
 
     bool parameter_types_t::is_output(const components::logical_plan::node_t* node) const noexcept {
@@ -167,8 +167,8 @@ namespace services::dispatcher::validation {
                 continue;
             }
             if (entry.type.type() == logical_type::NA) {
-                entry.type = complex_logical_type{logical_type::STRING_LITERAL};
-            } else if (entry.type.type() != logical_type::STRING_LITERAL &&
+                entry.type = complex_logical_type{logical_type::TEXT};
+            } else if (entry.type.type() != logical_type::TEXT &&
                        (clashing == nullptr || entry.number < clashing->number)) {
                 clashing = &entry;
             }

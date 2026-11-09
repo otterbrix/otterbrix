@@ -120,7 +120,7 @@ namespace {
         switch (type) {
             case logical_type::BIGINT:
                 return std::to_string(value_of(cursor->get<std::int64_t>(column, row)));
-            case logical_type::STRING_LITERAL:
+            case logical_type::TEXT:
                 return std::string{value_of(cursor->get<std::string_view>(column, row))};
             case logical_type::DECIMAL:
                 return std::to_string(value_of(cursor->get<std::int64_t>(column, row)));
@@ -830,7 +830,7 @@ TEST_CASE("integration::cpp::streaming_cursor::describe_of_a_cursor_statement") 
     REQUIRE(fetch->is_success());
     REQUIRE(fetch->type_data().size() == 2);
     CHECK(fetch->type_data()[0].alias() == "a");
-    CHECK(fetch->type_data()[1].type() == logical_type::STRING_LITERAL);
+    CHECK(fetch->type_data()[1].type() == logical_type::TEXT);
     CHECK(fetch->size() == 0);
     for (const std::string sql : {"FETCH 10 FROM nope;", "DECLARE d CURSOR FOR SELECT a FROM s.big;", "CLOSE c;"}) {
         INFO(sql);

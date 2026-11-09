@@ -386,8 +386,8 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
 // anything else is refused while the graph is built, before a row reads the mode.
 TEST_CASE("expressions::graph_builder::a match mode that is not UTINYINT is refused") {
     std::pmr::vector<complex_logical_type> types(resource());
-    types.emplace_back(logical_type::STRING_LITERAL);
-    types.emplace_back(complex_logical_type::create_list(complex_logical_type{logical_type::STRING_LITERAL}));
+    types.emplace_back(logical_type::TEXT);
+    types.emplace_back(complex_logical_type::create_list(complex_logical_type{logical_type::TEXT}));
     storage_parameters parameters(resource());
     REQUIRE(parameters.add(components::vector::make_scalar(resource(), std::string_view{"l"}),
                            parameter_kind::literal) == core::parameter_id_t{0});

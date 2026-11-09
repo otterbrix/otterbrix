@@ -22,7 +22,7 @@ namespace components::table::storage {
         block_pointer_t block_pointer;
         compression::compression_type compression{compression::compression_type::UNCOMPRESSED};
         uint64_t segment_size{0};
-        // Disk blocks holding this segment's BIG-STRING overflow payload: the segment's own
+        // Disk blocks holding this segment's BIG-TEXT overflow payload: the segment's own
         // dictionary carries only the marker, so without this list the payload is unreachable
         // after a reload and unreclaimable by data_table_t::compact. Empty for a segment with no
         // big strings.

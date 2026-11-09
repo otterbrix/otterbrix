@@ -702,7 +702,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
                 case logical_type::BIGINT:
                     a_bigint = static_cast<int>(c);
                     break;
-                case logical_type::STRING_LITERAL:
+                case logical_type::TEXT:
                     a_string = static_cast<int>(c);
                     break;
                 case logical_type::BOOLEAN:
@@ -857,7 +857,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
                 case logical_type::BIGINT:
                     a_bigint = static_cast<int>(c);
                     break;
-                case logical_type::STRING_LITERAL:
+                case logical_type::TEXT:
                     a_string = static_cast<int>(c);
                     break;
                 case logical_type::BOOLEAN:

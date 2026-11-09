@@ -55,7 +55,7 @@ TEST_CASE("components::table::column") {
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BOOLEAN, "flag");
     fields.emplace_back(logical_type::INTEGER, "number");
-    fields.emplace_back(logical_type::STRING_LITERAL, "name");
+    fields.emplace_back(logical_type::TEXT, "name");
     fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
     complex_logical_type struct_type = complex_logical_type::create_struct("struct", fields, "test_struct");
     INFO("fixed size");
@@ -111,9 +111,9 @@ TEST_CASE("components::table::column") {
         std::remove(db_path.c_str());
         auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
         REQUIRE_FALSE(block_manager.create_new_database().has_error());
-        auto column = column_data_t::create_column(&resource, block_manager, 0, 0, logical_type::STRING_LITERAL);
+        auto column = column_data_t::create_column(&resource, block_manager, 0, 0, logical_type::TEXT);
         {
-            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
+            vector_t v(&resource, logical_type::TEXT, test_size);
             for (size_t i = 0; i < test_size; i++) {
                 std::string value{generate_string(i)};
                 v.set_value(i, std::string_view{value});
@@ -127,25 +127,25 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
-            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
+            vector_t v(&resource, logical_type::TEXT, test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                REQUIRE(v.type().type() == logical_type::STRING_LITERAL);
+                REQUIRE(v.type().type() == logical_type::TEXT);
                 std::string result{v.get_value<std::string_view>(i)};
                 REQUIRE(result == generate_string(i));
             }
         }
         {
-            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
+            vector_t v(&resource, logical_type::TEXT, test_size);
             column_scan_state state;
             state.child_states.resize(1);
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                REQUIRE(v.type().type() == logical_type::STRING_LITERAL);
+                REQUIRE(v.type().type() == logical_type::TEXT);
                 std::string result{v.get_value<std::string_view>(i)};
                 REQUIRE(result == generate_string(i));
             }
@@ -223,16 +223,13 @@ TEST_CASE("components::table::column") {
         std::remove(db_path.c_str());
         auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
         REQUIRE_FALSE(block_manager.create_new_database().has_error());
-        auto column =
-            column_data_t::create_column(&resource,
-                                         block_manager,
-                                         0,
-                                         0,
-                                         complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size));
+        auto column = column_data_t::create_column(&resource,
+                                                   block_manager,
+                                                   0,
+                                                   0,
+                                                   complex_logical_type::create_array(logical_type::TEXT, array_size));
         {
-            vector_t v(&resource,
-                       complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
-                       test_size);
+            vector_t v(&resource, complex_logical_type::create_array(logical_type::TEXT, array_size), test_size);
             for (size_t i = 0; i < test_size; i++) {
                 std::vector<std::string> storage;
                 storage.reserve(array_size);
@@ -255,9 +252,7 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
-            vector_t v(&resource,
-                       complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
-                       test_size);
+            vector_t v(&resource, complex_logical_type::create_array(logical_type::TEXT, array_size), test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
@@ -266,16 +261,14 @@ TEST_CASE("components::table::column") {
                 const auto seq = sequence_of(v, i);
                 REQUIRE(v.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    REQUIRE(seq.child->type().type() == logical_type::TEXT);
                     std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * array_size + j));
                 }
             }
         }
         {
-            vector_t v(&resource,
-                       complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
-                       test_size);
+            vector_t v(&resource, complex_logical_type::create_array(logical_type::TEXT, array_size), test_size);
             column_scan_state state;
             state.child_states.resize(2);
             state.child_states[1].child_states.resize(1);
@@ -285,7 +278,7 @@ TEST_CASE("components::table::column") {
                 const auto seq = sequence_of(v, i);
                 REQUIRE(v.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    REQUIRE(seq.child->type().type() == logical_type::TEXT);
                     std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * array_size + j));
                 }
@@ -368,9 +361,9 @@ TEST_CASE("components::table::column") {
                                                    block_manager,
                                                    0,
                                                    0,
-                                                   complex_logical_type::create_list(logical_type::STRING_LITERAL));
+                                                   complex_logical_type::create_list(logical_type::TEXT));
         {
-            vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
+            vector_t v(&resource, complex_logical_type::create_list(logical_type::TEXT), test_size);
             for (size_t i = 0; i < test_size; i++) {
                 std::vector<std::string> storage;
                 storage.reserve(list_length(i));
@@ -393,7 +386,7 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
-            vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
+            vector_t v(&resource, complex_logical_type::create_list(logical_type::TEXT), test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
@@ -402,14 +395,14 @@ TEST_CASE("components::table::column") {
                 const auto seq = sequence_of(v, i);
                 REQUIRE(v.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    REQUIRE(seq.child->type().type() == logical_type::TEXT);
                     std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * list_length(i) + j));
                 }
             }
         }
         {
-            vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
+            vector_t v(&resource, complex_logical_type::create_list(logical_type::TEXT), test_size);
             column_scan_state state;
             state.child_states.resize(2);
             state.child_states[1].child_states.resize(1);
@@ -419,7 +412,7 @@ TEST_CASE("components::table::column") {
                 const auto seq = sequence_of(v, i);
                 REQUIRE(v.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    REQUIRE(seq.child->type().type() == logical_type::TEXT);
                     std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * list_length(i) + j));
                 }
@@ -487,7 +480,7 @@ TEST_CASE("components::table::column") {
                 REQUIRE(v.type().child_types()[0].alias() == "flag");
                 REQUIRE(v.type().child_types()[1].type() == logical_type::INTEGER);
                 REQUIRE(v.type().child_types()[1].alias() == "number");
-                REQUIRE(v.type().child_types()[2].type() == logical_type::STRING_LITERAL);
+                REQUIRE(v.type().child_types()[2].type() == logical_type::TEXT);
                 REQUIRE(v.type().child_types()[2].alias() == "name");
                 REQUIRE(v.type().child_types()[3].type() == logical_type::LIST);
                 REQUIRE(v.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
@@ -523,7 +516,7 @@ TEST_CASE("components::table::column") {
                 REQUIRE(v.type().child_types()[0].alias() == "flag");
                 REQUIRE(v.type().child_types()[1].type() == logical_type::INTEGER);
                 REQUIRE(v.type().child_types()[1].alias() == "number");
-                REQUIRE(v.type().child_types()[2].type() == logical_type::STRING_LITERAL);
+                REQUIRE(v.type().child_types()[2].type() == logical_type::TEXT);
                 REQUIRE(v.type().child_types()[2].alias() == "name");
                 REQUIRE(v.type().child_types()[3].type() == logical_type::LIST);
                 REQUIRE(v.type().child_types()[3].child_type().type() == logical_type::USMALLINT);

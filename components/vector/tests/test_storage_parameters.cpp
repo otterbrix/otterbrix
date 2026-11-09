@@ -47,7 +47,7 @@ TEST_CASE("storage_parameters: add hands out dense ids with their kind and type"
     CHECK(params.kind(third) == parameter_kind::execution);
     CHECK(params.type(first) == bigint());
     CHECK(params.type(second).type() == logical_type::NA);
-    CHECK(params.type(third).type() == logical_type::STRING_LITERAL);
+    CHECK(params.type(third).type() == logical_type::TEXT);
     CHECK_FALSE(params.is_null(first));
     CHECK(params.is_null(second));
     CHECK(params.at(first).get_value<int64_t>(0) == 7);
@@ -89,7 +89,7 @@ TEST_CASE("storage_parameters: an external slot takes the last bind whatever its
     CHECK(params.type(slot) == bigint());
 
     params.set(slot, make_scalar(&resource, std::string_view{"abc"}));
-    CHECK(params.type(slot).type() == logical_type::STRING_LITERAL);
+    CHECK(params.type(slot).type() == logical_type::TEXT);
     CHECK(params.at(slot).get_value<std::string_view>(0) == "abc");
 }
 
@@ -170,13 +170,13 @@ TEST_CASE("storage_parameters: set_cell copies a string out of the column") {
     storage_parameters params(&resource);
     const auto slot = params.add(make_null(&resource, na()), parameter_kind::execution);
 
-    vector_t column(&resource, complex_logical_type{logical_type::STRING_LITERAL}, 3);
+    vector_t column(&resource, complex_logical_type{logical_type::TEXT}, 3);
     column.set_value(0, std::string_view{"first"});
     column.set_value(1, std::string_view{"a string long enough to leave the inline buffer"});
     column.set_value(2, std::string_view{"third"});
 
     params.set_cell(slot, column, 1);
-    CHECK(params.type(slot).type() == logical_type::STRING_LITERAL);
+    CHECK(params.type(slot).type() == logical_type::TEXT);
     CHECK(params.at(slot).get_value<std::string_view>(0) == "a string long enough to leave the inline buffer");
 }
 
@@ -200,7 +200,7 @@ namespace {
         std::pmr::vector<complex_logical_type> fields(resource);
         fields.emplace_back(complex_logical_type{logical_type::BIGINT});
         fields.back().set_alias("n");
-        fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL});
+        fields.emplace_back(complex_logical_type{logical_type::TEXT});
         fields.back().set_alias("s");
         const auto type = complex_logical_type::create_struct("row", fields);
         const vector_t members[] = {make_scalar(resource, int64_t{4}),
@@ -231,12 +231,12 @@ TEST_CASE("storage_parameters: clone is a deep copy of every type family on the 
     const auto decimal_id = source.add(std::move(decimal.value()), parameter_kind::literal);
     const auto list = source.add(make_list(&source_resource, bigint(), list_elements), parameter_kind::execution);
     const auto array =
-        source.add(make_array(&source_resource, complex_logical_type{logical_type::STRING_LITERAL}, array_elements),
+        source.add(make_array(&source_resource, complex_logical_type{logical_type::TEXT}, array_elements),
                    parameter_kind::execution);
     const auto structure = source.add(struct_value(&source_resource), parameter_kind::literal);
-    const auto map = source.add(
-        make_map(&source_resource, bigint(), complex_logical_type{logical_type::STRING_LITERAL}, keys, values),
-        parameter_kind::literal);
+    const auto map =
+        source.add(make_map(&source_resource, bigint(), complex_logical_type{logical_type::TEXT}, keys, values),
+                   parameter_kind::literal);
     const auto null_bigint = source.add(make_null(&source_resource, bigint()), parameter_kind::literal);
     const auto null_na = source.add(make_null(&source_resource, na()), parameter_kind::external);
 

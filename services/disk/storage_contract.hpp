@@ -216,9 +216,9 @@ namespace actor_zeta::otterbrix {
     // The only send to a table's storage: a bare actor address does not compile. An empty address (a connection the
     // host's map lost) is a caller's bug.
     template<auto MethodPtr, typename... Args>
-        requires std::is_same_v<typename type_traits::callable_trait<decltype(MethodPtr)>::class_type,
-                                services::disk::storage_contract>
-    [[nodiscard]] inline auto send(const components::table::storage_address_t& target, Args&&... args) {
+    requires std::is_same_v<typename type_traits::callable_trait<decltype(MethodPtr)>::class_type,
+                            services::disk::storage_contract> [[nodiscard]] inline auto
+    send(const components::table::storage_address_t& target, Args&&... args) {
         using contract = services::disk::storage_contract;
         static_assert(contract_declares_method<MethodPtr, typename contract::dispatch_traits::methods>::value,
                       "send<&storage_contract::method>(): the method is not in the contract's dispatch_traits list");

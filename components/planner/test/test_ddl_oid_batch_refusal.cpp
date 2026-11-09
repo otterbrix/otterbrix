@@ -24,8 +24,7 @@ namespace {
     std::vector<components::table::column_definition_t> two_columns() {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type(components::types::logical_type::BIGINT));
-        cols.emplace_back("payload",
-                          components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL));
+        cols.emplace_back("payload", components::types::complex_logical_type(components::types::logical_type::TEXT));
         return cols;
     }
 

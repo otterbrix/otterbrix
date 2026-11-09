@@ -17,7 +17,7 @@ public:
     explicit box_t(T value)
         : physical_(to_physical_type(to_logical_type<T>())) {
         if constexpr (std::is_same_v<T, std::string>) {
-            physical_ = physical_type::STRING;
+            physical_ = physical_type::TEXT;
             text_ = std::move(value);
         } else {
             std::memcpy(bytes_, &value, sizeof(T));

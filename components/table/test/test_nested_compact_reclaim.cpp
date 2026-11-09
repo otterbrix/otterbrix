@@ -82,7 +82,7 @@ namespace {
     complex_logical_type nested_struct_type(nested_env_t& env) {
         std::pmr::vector<complex_logical_type> fields(&env.resource);
         fields.emplace_back(logical_type::BIGINT, "num");
-        fields.emplace_back(logical_type::STRING_LITERAL, "name");
+        fields.emplace_back(logical_type::TEXT, "name");
         return complex_logical_type::create_struct("pair", fields);
     }
 

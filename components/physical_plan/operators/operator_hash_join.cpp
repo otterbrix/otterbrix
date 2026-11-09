@@ -207,8 +207,7 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         if (!probe_graph_) {
-            if (auto error =
-                    key_graph_(ctx, probe_key_exprs_, probe, vector::DEFAULT_VECTOR_CAPACITY, &probe_graph_);
+            if (auto error = key_graph_(ctx, probe_key_exprs_, probe, vector::DEFAULT_VECTOR_CAPACITY, &probe_graph_);
                 error.contains_error()) {
                 return error;
             }

@@ -410,7 +410,6 @@ namespace services::collection::executor {
         coerce_argument_(const components::vector::vector_t& value,
                          const components::types::complex_logical_type& expected,
                          std::size_t number,
-                         bool quoted_literal,
                          const components::casts::cast_registry_t& casts,
                          const components::graph_execution_context& settings) const;
 

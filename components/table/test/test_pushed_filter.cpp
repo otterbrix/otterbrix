@@ -25,7 +25,7 @@ TEST_CASE("components::table::pushed_filter::the_parameters_of_a_built_filter_ar
     auto predicate = expressions::make_compare_expression(&sender, expressions::compare_type::eq, column, id);
 
     std::pmr::vector<types::complex_logical_type> types(&builder);
-    types.emplace_back(types::complex_logical_type{types::logical_type::STRING_LITERAL});
+    types.emplace_back(types::complex_logical_type{types::logical_type::TEXT});
     auto built = table::build_table_filter(&builder, predicate, *params, graph_execution_context{}, types);
     REQUIRE_FALSE(built.has_error());
     params.reset();

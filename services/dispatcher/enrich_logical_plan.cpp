@@ -321,7 +321,7 @@ namespace services::catalog_resolve {
             components::catalog::oid_t table_oid() const noexcept {
                 return entry->table_md.has_value() ? entry->table_md->table_oid : components::catalog::INVALID_OID;
             }
-            const std::string& relname() const noexcept { return entry->relname; }
+            const core::relname_t& relname() const noexcept { return entry->written.collection; }
             const std::optional<components::logical_plan::resolved_table_metadata_t>&
             resolved_metadata() const noexcept {
                 return entry->table_md;
@@ -659,10 +659,7 @@ namespace services::catalog_resolve {
             std::size_t primary_index = resolve_entry_t::no_target;
             if (!names.table.collection.t.empty()) {
                 resolve_entry_t entry;
-                entry.connection = names.table.connection.t;
-                entry.database = names.table.database.t;
-                entry.schema = names.table.schema.t;
-                entry.relname = names.table.collection.t;
+                entry.written = names.table;
                 primary_index = resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
                 const auto direction = constraint_direction_of(n->type());
                 if (direction.has_value()) {
@@ -674,10 +671,7 @@ namespace services::catalog_resolve {
             }
             if (!names.secondary.collection.t.empty()) {
                 resolve_entry_t entry;
-                entry.connection = names.secondary.connection.t;
-                entry.database = names.secondary.database.t;
-                entry.schema = names.secondary.schema.t;
-                entry.relname = names.secondary.collection.t;
+                entry.written = names.secondary;
                 // An unqualified REFERENCES target lives where the table owning the key is found.
                 if (n->type() == node_type::create_constraint_t && names.secondary.schema.t.empty()) {
                     entry.namespace_of = primary_index;
@@ -686,9 +680,9 @@ namespace services::catalog_resolve {
             }
             if (!names.type_name.empty()) {
                 resolve_entry_t entry;
-                entry.database = names.table.database.t;
-                entry.schema = names.table.schema.t;
-                entry.type_name = names.type_name;
+                entry.written = qualified_name_t{names.table.database,
+                                                 names.table.schema,
+                                                 core::relname_t{std::string{names.type_name}}};
                 resolves->ensure(resource, resolve_kind::type).add(std::move(entry));
             }
         });
@@ -728,7 +722,8 @@ namespace services::catalog_resolve {
                 !entry.table_md.has_value()) {
                 return components::planner::view_stale_error(resource,
                                                              entry.pin.view.t,
-                                                             "the relation its body was bound to (\"" + entry.relname +
+                                                             "the relation its body was bound to (\"" +
+                                                                 entry.written.collection.t +
                                                                  "\", oid " + std::to_string(entry.pin.oid) +
                                                                  ") no longer exists");
             }
@@ -754,7 +749,7 @@ namespace services::dispatcher { namespace {
 
     constraint_table_view_t table_view_of(const components::logical_plan::resolved_table_metadata_t& md) {
         constraint_table_view_t out;
-        out.name = md.name;
+        out.name = md.name.t;
         out.columns.reserve(md.columns.size());
         for (const auto& ci : md.columns) {
             out.columns.push_back(constraint_column_view_t{ci.attname, ci.attoid});

@@ -134,6 +134,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_schema_level.cpp
         test_current_place.cpp
         test_remote_databases.cpp
+        test_connection_names.cpp
         test_remote_ddl.cpp
         test_not_null.cpp
         test_host_transactions.cpp

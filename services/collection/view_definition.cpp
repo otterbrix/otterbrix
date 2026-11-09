@@ -81,7 +81,7 @@ namespace services::collection {
             return core::error_t::no_error();
         }
         const auto stale = [&](const std::string& why) {
-            return components::planner::view_stale_error(resource, view.name, why);
+            return components::planner::view_stale_error(resource, view.name.t, why);
         };
         const auto& types = body.output_types();
         if (types.size() != view.columns.size()) {
@@ -282,7 +282,7 @@ namespace services::collection {
             const std::string created_over =
                 "function " + pinned + " it was created over (oid " + std::to_string(binding.refobjid) + ")";
             if (row == rows.end()) {
-                return components::planner::view_stale_error(resource, view.name, created_over + " no longer exists");
+                return components::planner::view_stale_error(resource, view.name.t, created_over + " no longer exists");
             }
             if (row->name != binding.relname.t || row->signature.proargmatchers != binding.proargmatchers) {
                 auto now = describe_function(resource, row->name, row->signature.proargmatchers);
@@ -290,12 +290,12 @@ namespace services::collection {
                     return core::error_on(resource, now.error());
                 }
                 return components::planner::view_stale_error(resource,
-                                                             view.name,
+                                                             view.name.t,
                                                              created_over + " is now " + now.value());
             }
             if (row->signature.prorettype != binding.prorettype) {
                 return components::planner::view_stale_error(resource,
-                                                             view.name,
+                                                             view.name.t,
                                                              created_over + " returns another type now");
             }
             bool found = false;
@@ -315,7 +315,7 @@ namespace services::collection {
             if (!found) {
                 return core::error_t{
                     core::error_code_t::unrecognized_function,
-                    std::pmr::string{"function " + pinned + " used by view \"" + view.name + "\" is not registered",
+                    std::pmr::string{"function " + pinned + " used by view \"" + view.name.t + "\" is not registered",
                                      resource}};
             }
         }
@@ -382,10 +382,10 @@ namespace services::collection {
             for (std::size_t i = 0; i < own_tables && i < entries.size(); ++i) {
                 const auto& entry = entries[i];
                 catalog::view_binding_t binding;
-                binding.connection = core::connection_name_t{entry.connection};
-                binding.dbname = core::dbname_t{entry.database};
-                binding.schema = entry.schema;
-                binding.relname = entry.relname;
+                binding.connection = entry.written.connection;
+                binding.dbname = entry.written.database;
+                binding.schema = entry.written.schema;
+                binding.relname = entry.written.collection;
                 if (entry.table_md.has_value() && entry.table_md->table_oid != view.replaced_oid()) {
                     // The view OR REPLACE names is a lookup of the statement, not of the body.
                     binding.refkind = catalog::view_refkind::relation;

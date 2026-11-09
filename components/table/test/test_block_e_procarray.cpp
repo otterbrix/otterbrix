@@ -169,12 +169,12 @@ namespace components::table::test_block_e {
 
         auto node = make_node_catalog_resolve(&resource, resolve_kind::database);
         resolve_entry_t request;
-        request.database = "main";
+        request.written.database = core::dbname_t{"main"};
         const auto index = node->add(std::move(request));
         auto& entry = node->entries()[index];
 
         // A fresh entry defaults to INVALID_OID.
-        REQUIRE(entry.database == "main");
+        REQUIRE(entry.written.database.t == "main");
         REQUIRE(entry.database_oid == INVALID_OID);
 
         entry.database_oid = well_known_oid::main_database;

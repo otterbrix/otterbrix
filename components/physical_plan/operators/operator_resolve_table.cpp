@@ -58,10 +58,11 @@ namespace components::operators {
         // pg_catalog holds exactly the system tables (CREATE in it is refused), so a bare name's first look reads
         // nothing.
         const catalog::system_table_def_t* bare_system_table(const components::logical_plan::resolve_entry_t& entry) {
-            if (!entry.connection.empty() || !entry.database.empty() || !entry.schema.empty()) {
+            if (!entry.written.connection.t.empty() || !entry.written.database.t.empty() ||
+                !entry.written.schema.t.empty()) {
                 return nullptr;
             }
-            return catalog::find_system_table_by_name(entry.relname);
+            return catalog::find_system_table_by_name(entry.written.collection.t);
         }
 
     } // namespace
@@ -90,7 +91,7 @@ namespace components::operators {
 
         for (auto& entry : node_->entries()) {
             if (ctx->disk_address == actor_zeta::address_t::empty_address() || entry.table_md.has_value() ||
-                (entry.relname.empty() && entry.relation_oid == catalog::INVALID_OID)) {
+                (entry.written.collection.t.empty() && entry.relation_oid == catalog::INVALID_OID)) {
                 continue;
             }
             // Where the table was found: [connection.]database.schema; read by the namespace oid when the entry
@@ -107,8 +108,8 @@ namespace components::operators {
                     entry.database_oid = owner.database_oid;
                     where =
                         catalog::place_t{owner.table_md->connection, owner.table_md->database, owner.table_md->schema};
-                    auto found =
-                        co_await lookup_relation_oid(resource_, ctx, owner.table_md->namespace_oid, entry.relname);
+                    auto found = co_await lookup_relation_oid(
+                        resource_, ctx, owner.table_md->namespace_oid, entry.written.collection);
                     if (found.has_error()) {
                         set_error(found.error());
                         co_return;
@@ -118,9 +119,14 @@ namespace components::operators {
                     // PostgreSQL 18 namespace.c: a bare name looks in pg_catalog before the search path.
                     table_oid = system->relation_oid;
                     entry.database_oid = catalog::well_known_oid::main_database;
-                    where = catalog::place_t{{}, catalog::well_known_oid::main_database_name, "pg_catalog"};
+                    where = catalog::place_t{core::connection_name_t{},
+                                             core::dbname_t{std::string{catalog::well_known_oid::main_database_name}},
+                                             core::schema_t{std::string{"pg_catalog"}}};
                 } else {
-                    where = catalog::complete_name(ctx->place, entry.connection, entry.database, entry.schema);
+                    where = catalog::complete_name(ctx->place,
+                                                   entry.written.connection.t,
+                                                   entry.written.database.t,
+                                                   entry.written.schema.t);
                     auto schema = co_await lookup_schema(resource_, ctx, *where);
                     if (schema.has_error()) {
                         // A failed catalog read is not "row not found"; it must not be reported as a miss.
@@ -132,8 +138,10 @@ namespace components::operators {
                     if (schema.value().namespace_oid == catalog::INVALID_OID) {
                         continue;
                     }
-                    auto found =
-                        co_await lookup_relation_oid(resource_, ctx, schema.value().namespace_oid, entry.relname);
+                    where->connection = schema.value().connection;
+                    where->database = schema.value().database;
+                    auto found = co_await lookup_relation_oid(
+                        resource_, ctx, schema.value().namespace_oid, entry.written.collection);
                     if (found.has_error()) {
                         set_error(found.error());
                         co_return;
@@ -147,7 +155,7 @@ namespace components::operators {
             bool found = false;
             auto namespace_oid = catalog::INVALID_OID;
             char relkind = 0;
-            std::string relname = entry.relname;
+            std::string relname = entry.written.collection.t;
             {
                 std::pmr::vector<std::uint64_t> pc_keys(resource_);
                 pc_keys.emplace_back(catalog::pg_class_col::oid);
@@ -177,7 +185,7 @@ namespace components::operators {
                         relkind = catalog::relkind::regular;
                     }
                     // An entry requested by oid names no relation: the catalog's row does.
-                    if (entry.relname.empty() && !pc_batches[0].is_null(2, 0)) {
+                    if (entry.written.collection.t.empty() && !pc_batches[0].is_null(2, 0)) {
                         relname.assign(pc_batches[0].get_value<std::string_view>(2, 0));
                     }
                 }
@@ -300,7 +308,7 @@ namespace components::operators {
                         msg +=
                             std::to_string(static_cast<std::size_t>(catalog::pg_computed_column_col::attrefcount) + 1);
                         msg += " this build reads — the columns of table \"";
-                        msg += entry.relname;
+                        msg += entry.written.collection.t;
                         msg += "\" cannot be decoded";
                         set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
@@ -403,7 +411,7 @@ namespace components::operators {
                         std::string msg = "table resolution: column \"";
                         msg += row.attname;
                         msg += "\" of computed table \"";
-                        msg += entry.relname;
+                        msg += entry.written.collection.t;
                         msg += "\" is typed ";
                         msg += row_type.type_name();
                         msg += " in pg_computed_column, and ";
@@ -460,7 +468,7 @@ namespace components::operators {
                         msg += std::to_string(
                             static_cast<std::size_t>(catalog::pg_attribute_col::dropped_at_commit_id) + 1);
                         msg += " this build reads — the columns of table \"";
-                        msg += entry.relname;
+                        msg += entry.written.collection.t;
                         msg += "\" cannot be decoded";
                         set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
@@ -517,7 +525,7 @@ namespace components::operators {
             md.table_oid = table_oid;
             md.namespace_oid = namespace_oid;
             md.relkind = relkind;
-            md.name = relname;
+            md.name = core::relname_t{std::move(relname)};
             md.view_sql = std::move(view_sql);
             md.view_bindings = std::move(view_bindings);
             md.columns.reserve(rows.size());

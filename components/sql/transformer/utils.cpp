@@ -33,7 +33,7 @@ namespace components::sql::transform {
         struct element_view_t {
             const qualified_name_t* name;
             const std::string* alias;
-            expressions::side_t side;
+            expressions::source_element_id_t source_element;
 
             bool exists() const noexcept { return !name->collection.t.empty() || !alias->empty(); }
             const std::string& visible_name() const noexcept { return transform::visible_name(*name, *alias); }
@@ -42,11 +42,11 @@ namespace components::sql::transform {
         std::vector<element_view_t> elements_of(const name_collection_t& names) {
             std::vector<element_view_t> elements;
             elements.reserve(names.extra_left.size() + 2);
-            elements.push_back({&names.left_name, &names.left_alias, expressions::side_t::left});
+            elements.push_back({&names.left_name, &names.left_alias, names.left_element});
             for (const auto& element : names.extra_left) {
-                elements.push_back({&element.name, &element.alias, expressions::side_t::left});
+                elements.push_back({&element.name, &element.alias, element.source_element});
             }
-            elements.push_back({&names.right_name, &names.right_alias, expressions::side_t::right});
+            elements.push_back({&names.right_name, &names.right_alias, names.right_element});
             return elements;
         }
 
@@ -196,8 +196,17 @@ namespace components::sql::transform {
         return !name.empty() && name == visible_name(right_name, right_alias);
     }
 
-    core::result_wrapper_t<expressions::side_t> name_collection_t::resolve(std::pmr::memory_resource* resource,
-                                                                           const column_ref_t& ref) const {
+    expressions::source_element_id_t name_collection_t::element_named(const std::string& name) const {
+        for (const auto& element : elements_of(*this)) {
+            if (element.exists() && element.visible_name() == name) {
+                return element.source_element;
+            }
+        }
+        return expressions::NO_SOURCE_ELEMENT;
+    }
+
+    core::result_wrapper_t<expressions::source_element_id_t>
+    name_collection_t::resolve(std::pmr::memory_resource* resource, const column_ref_t& ref) const {
         const auto elements = elements_of(*this);
 
         const element_view_t* answered = nullptr;
@@ -215,7 +224,7 @@ namespace components::sql::transform {
             answering += spell(element);
         }
         if (count == 1) {
-            return answered->side;
+            return answered->source_element;
         }
         if (count > 1) {
             return refusal(resource, ref, refusal_reason::ambiguous, answering);
@@ -325,15 +334,14 @@ namespace components::sql::transform {
                                                  "both sides — write that COALESCE explicitly",
                                              resource}};
                     }
-                    out.field.set_side(column->join == logical_plan::join_type::right ? expressions::side_t::right
-                                                                                      : expressions::side_t::left);
+                    out.field.set_source_element(column->source_element);
                 }
             }
             return out;
         }
         out.field.set_qualifier(out.table.collection.t);
-        VALUE_OR_RETURN(auto side, names.resolve(resource, out));
-        out.field.set_side(side);
+        VALUE_OR_RETURN(auto element, names.resolve(resource, out));
+        out.field.set_source_element(element);
         return out;
     }
 

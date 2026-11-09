@@ -7,26 +7,11 @@ using key = components::expressions::key_t;
 
 TEST_CASE("components::expression::compare::equals") {
     auto resource = core::pmr::otterbrix_resource();
-    auto expr1 = make_compare_expression(&resource,
-                                         compare_type::eq,
-                                         key(&resource, "name", side_t::left),
-                                         core::parameter_id_t(1));
-    auto expr2 = make_compare_expression(&resource,
-                                         compare_type::eq,
-                                         key(&resource, "name", side_t::left),
-                                         core::parameter_id_t(1));
-    auto expr3 = make_compare_expression(&resource,
-                                         compare_type::ne,
-                                         key(&resource, "name", side_t::left),
-                                         core::parameter_id_t(1));
-    auto expr4 = make_compare_expression(&resource,
-                                         compare_type::eq,
-                                         key(&resource, "count", side_t::left),
-                                         core::parameter_id_t(1));
-    auto expr5 = make_compare_expression(&resource,
-                                         compare_type::eq,
-                                         key(&resource, "name", side_t::left),
-                                         core::parameter_id_t(2));
+    auto expr1 = make_compare_expression(&resource, compare_type::eq, key(&resource, "name"), core::parameter_id_t(1));
+    auto expr2 = make_compare_expression(&resource, compare_type::eq, key(&resource, "name"), core::parameter_id_t(1));
+    auto expr3 = make_compare_expression(&resource, compare_type::ne, key(&resource, "name"), core::parameter_id_t(1));
+    auto expr4 = make_compare_expression(&resource, compare_type::eq, key(&resource, "count"), core::parameter_id_t(1));
+    auto expr5 = make_compare_expression(&resource, compare_type::eq, key(&resource, "name"), core::parameter_id_t(2));
     auto expr_union1 = make_compare_union_expression(&resource, compare_type::union_and);
     expr_union1->append_child(expr1);
     expr_union1->append_child(expr3);
@@ -50,20 +35,13 @@ TEST_CASE("components::expression::compare::equals") {
 
 TEST_CASE("components::expression::compare::to_string") {
     auto resource = core::pmr::otterbrix_resource();
-    auto expr = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "count", side_t::left),
-                                        core::parameter_id_t(1));
+    auto expr = make_compare_expression(&resource, compare_type::eq, key(&resource, "count"), core::parameter_id_t(1));
     REQUIRE(expr->to_string() == R"("count": {$eq: #1})");
 
     expr = make_compare_union_expression(&resource, compare_type::union_and);
-    expr->append_child(make_compare_expression(&resource,
-                                               compare_type::eq,
-                                               key(&resource, "key1", side_t::left),
-                                               core::parameter_id_t(1)));
-    expr->append_child(make_compare_expression(&resource,
-                                               compare_type::lt,
-                                               key(&resource, "key2", side_t::left),
-                                               core::parameter_id_t(2)));
+    expr->append_child(
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "key1"), core::parameter_id_t(1)));
+    expr->append_child(
+        make_compare_expression(&resource, compare_type::lt, key(&resource, "key2"), core::parameter_id_t(2)));
     REQUIRE(expr->to_string() == R"($and: ["key1": {$eq: #1}, "key2": {$lt: #2}])");
 }

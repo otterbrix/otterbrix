@@ -25,7 +25,6 @@ namespace components::operators {
                                          const std::pmr::vector<projected_column_t>& columns,
                                          const logical_plan::storage_parameters& parameters,
                                          const vector::data_chunk_t& input,
-                                         size_t right_offset,
                                          std::unique_ptr<execution_dag::execution_dag_t>* graph);
 
     // Evaluate a projection column list against ONE input chunk, producing an

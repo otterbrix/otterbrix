@@ -135,7 +135,7 @@ TEST_CASE("components::sql::update_bind") {
         fields f;
         auto rating =
             make_scalar_expression(&resource, scalar_type::add, components::expressions::key_t{&resource, "rating"});
-        rating->append_param(components::expressions::key_t{&resource, "rating", side_t::undefined});
+        rating->append_param(components::expressions::key_t{&resource, "rating"});
         rating->append_param(core::parameter_id_t{0});
         f.emplace_back(expression_ptr{rating});
 

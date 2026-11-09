@@ -47,7 +47,6 @@ namespace {
 using namespace components;
 using namespace components::logical_plan;
 using expressions::compare_type;
-using expressions::side_t;
 
 namespace {
     // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
@@ -143,7 +142,7 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     agg->append_child(outer_cross);
     agg->append_child(match);
 
-    // Real validation: stamps side()/path() on the keys and output_types() on the
+    // Real validation: stamps path() on the keys and output_types() on the
     // scans + both joins (left_width/right_width the promote rule classifies against).
     logical_plan::storage_parameters params{res};
     auto validated = services::dispatcher::validate_schema(test_validation_context(res), agg.get(), params);
@@ -160,27 +159,25 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     auto* agg_after = static_cast<node_aggregate_t*>(root.get());
     REQUIRE(agg_after->children().size() >= 2);
 
-    // Outer join: promoted to INNER + hash on b_v (left, merged idx 3) = c_k (right,
-    // re-localized to 0 within c).
+    // Outer join: promoted to INNER + hash on b_v (left, merged idx 3) = c_k (right, merged idx 4).
     auto outer_after = agg_after->children()[0];
     REQUIRE(outer_after->type() == node_type::join_t);
     auto* oj = static_cast<node_join_t*>(outer_after.get());
     CHECK(oj->type() == join_type::inner);
     CHECK(oj->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(oj) == 3);
-    CHECK(on_right_col(oj) == 0);
+    CHECK(on_right_col(oj) == 4);
     REQUIRE(oj->children().size() == 2);
     CHECK(oj->children()[1].get() == c.get()); // right child is still table c
 
-    // Inner join (child0 of the outer): promoted to INNER + hash on a_k (left idx 1)
-    // = b_k (right, re-localized to 0 within b).
+    // Inner join (child0 of the outer): promoted to INNER + hash on a_k (left idx 1) = b_k (right, idx 2).
     auto inner_after = oj->children()[0];
     REQUIRE(inner_after->type() == node_type::join_t);
     auto* ij = static_cast<node_join_t*>(inner_after.get());
     CHECK(ij->type() == join_type::inner);
     CHECK(ij->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(ij) == 1);
-    CHECK(on_right_col(ij) == 0);
+    CHECK(on_right_col(ij) == 2);
     REQUIRE(ij->children().size() == 2);
     CHECK(ij->children()[0].get() == a.get());
     CHECK(ij->children()[1].get() == b.get());

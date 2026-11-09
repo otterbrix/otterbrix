@@ -94,6 +94,16 @@ namespace services::dispatcher {
             return out;
         }
 
+        // A node that is no source element leaves its columns' ids as its inputs set them.
+        void stamp_source_element(named_schema& schema, components::expressions::source_element_id_t source_element) {
+            if (source_element == components::expressions::NO_SOURCE_ELEMENT) {
+                return;
+            }
+            for (auto& column : schema) {
+                column.source_element = source_element;
+            }
+        }
+
         template<typename Node>
         [[nodiscard]] core::error_t bind_predicates(const validation::validation_context_t& context,
                                                     Node* node,
@@ -193,7 +203,7 @@ namespace services::dispatcher {
                 for (const auto& c : schema) {
                     if (c.type.has_alias() && std::string(c.type.alias()).rfind(prefix_slash, 0) == 0) {
                         components::expressions::key_t ckey(resource, std::string(c.type.alias()));
-                        ckey.set_side(key.side());
+                        ckey.set_source_element(key.source_element());
                         children.push_back(std::move(ckey));
                     }
                 }
@@ -1329,17 +1339,9 @@ namespace services::dispatcher {
                             idx++;
                             break;
                         }
-                        side_t side = side_t::left;
-                        auto field = find_types(resource, star_key, *schema_left, context.column_uses);
+                        auto field = validate_key(resource, star_key, schema_left, schema_right, context.column_uses);
                         if (field.has_error()) {
-                            if (schema_right == nullptr) {
-                                return field.error();
-                            }
-                            field = find_types(resource, star_key, *schema_right, context.column_uses);
-                            if (field.has_error()) {
-                                return field.error();
-                            }
-                            side = side_t::right;
+                            return field.error();
                         }
                         auto& field_paths = field.value();
                         exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(idx));
@@ -1349,7 +1351,6 @@ namespace services::dispatcher {
                                 new_key.storage().push_back(std::pmr::string(field_paths[j].type.alias(), resource));
                             }
                             new_key.set_path(field_paths[j].path);
-                            new_key.set_side(side);
                             exprs.insert(exprs.begin() + static_cast<ptrdiff_t>(idx + j),
                                          make_scalar_expression(resource, scalar_type::get_field, new_key));
                         }
@@ -1383,12 +1384,20 @@ namespace services::dispatcher {
         complex_logical_type returned_column_type(const components::expressions::key_t& key,
                                                   const named_schema* schema_left,
                                                   const named_schema* schema_right) {
-            const named_schema* schema =
-                key.side() == side_t::right && schema_right != nullptr ? schema_right : schema_left;
-            if (key.path().empty() || key.path().front() >= schema->size()) {
+            if (key.path().empty()) {
                 return complex_logical_type{logical_type::INVALID};
             }
-            complex_logical_type type = (*schema)[key.path().front()].type;
+            // A right column's path counts past every left column.
+            size_t column = key.path().front();
+            const named_schema* schema = schema_left;
+            if (column >= schema_left->size() && schema_right != nullptr) {
+                column -= schema_left->size();
+                schema = schema_right;
+            }
+            if (column >= schema->size()) {
+                return complex_logical_type{logical_type::INVALID};
+            }
+            complex_logical_type type = (*schema)[column].type;
             for (size_t depth = 1; depth < key.path().size(); depth++) {
                 type = type.type() == logical_type::STRUCT ? type.child_types()[key.path()[depth]] : type.child_type();
             }
@@ -1984,6 +1993,8 @@ namespace services::dispatcher {
                     table_schema = incoming_schema;
                     source_schema = nullptr;
                 }
+                stamp_source_element(table_schema, node->source_element());
+                stamp_source_element(incoming_schema, node->source_element());
                 if (node_group != nullptr) {
                     std::pmr::vector<complex_logical_type> group_input_types{node_group->resource()};
                     group_input_types.reserve(incoming_schema.size());
@@ -2099,22 +2110,11 @@ namespace services::dispatcher {
                             if (scalar_expr->type() == scalar_type::star_expand &&
                                 !scalar_expr->key().storage().empty() && scalar_expr->key().storage().front() != "*") {
                                 const auto& alias = scalar_expr->key().storage().front();
-                                // d1.t JOIN d2.t: both carry the alias t; the side the qualification picked
-                                // tells them apart.
-                                const auto star_side = scalar_expr->key().side();
-                                bool on_star_side = false;
-                                bool on_other_side = false;
-                                for (const auto& col : incoming_schema) {
-                                    if (core::pmr::operator==(col.result_alias, alias)) {
-                                        (col.side == star_side ? on_star_side : on_other_side) = true;
-                                    }
-                                }
-                                const bool names_both_sides =
-                                    star_side != side_t::undefined && on_star_side && on_other_side;
+                                const auto star_element = scalar_expr->key().source_element();
                                 std::pmr::vector<size_t> matched(resource);
                                 for (size_t i = 0; i < incoming_schema.size(); i++) {
-                                    if (core::pmr::operator==(incoming_schema[i].result_alias, alias) &&
-                                        (!names_both_sides || incoming_schema[i].side == star_side)) {
+                                    if (star_element != components::expressions::NO_SOURCE_ELEMENT &&
+                                        incoming_schema[i].source_element == star_element) {
                                         matched.push_back(i);
                                     }
                                 }
@@ -2197,18 +2197,18 @@ namespace services::dispatcher {
                             }
                             const std::string prefix = se->key().as_string();
                             const std::string prefix_slash = prefix + "/";
-                            components::expressions::side_t op_side = se->key().side();
+                            auto op_element = se->key().source_element();
                             if (se->key().is_null()) {
                                 for (const auto& p : se->params()) {
                                     if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                        op_side = components::expressions::as_key(p).side();
+                                        op_element = components::expressions::as_key(p).source_element();
                                         break;
                                     }
                                 }
                             }
                             auto on_op_side = [&](const type_from_t& sc) {
-                                return op_side == side_t::undefined || sc.side == side_t::undefined ||
-                                       sc.side == op_side;
+                                return op_element == components::expressions::NO_SOURCE_ELEMENT ||
+                                       validation::of_relation(sc, op_element);
                             };
                             std::vector<std::string> del_prefixes;
                             if (is_delete) {
@@ -2256,7 +2256,7 @@ namespace services::dispatcher {
                             for (size_t j = 0; j < cols.size(); j++) {
                                 components::expressions::key_t out_key(resource, cols[j].first.c_str());
                                 components::expressions::key_t src_key(resource, cols[j].second.c_str());
-                                src_key.set_side(op_side);
+                                src_key.set_source_element(op_element);
                                 exprs.insert(
                                     exprs.begin() + static_cast<ptrdiff_t>(ei + j),
                                     make_scalar_expression(resource, scalar_type::get_field, out_key, src_key));
@@ -2334,14 +2334,14 @@ namespace services::dispatcher {
                             std::string result_alias;
                             std::string name;
                             logical_type type;
-                            side_t side;
+                            components::expressions::source_element_id_t source_element;
                             auto operator<=>(const column_key&) const = default;
                         };
                         std::set<column_key> seen_cols;
                         for (const auto& col : incoming_schema) {
                             std::string col_alias =
                                 col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
-                            column_key key{col.result_alias, col_alias, col.type.type(), col.side};
+                            column_key key{col.result_alias, col_alias, col.type.type(), col.source_element};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
                                     core::error_code_t::ambiguous_column,
@@ -2986,6 +2986,15 @@ namespace services::dispatcher {
                 if (left_schema.has_error()) {
                     return left_schema;
                 }
+                // A nested join on the left is an input with an id of its own but no columns of its own.
+                if (const auto input = node->children().front()->source_element();
+                    input != components::expressions::NO_SOURCE_ELEMENT) {
+                    for (auto& column : left_schema.value()) {
+                        if (column.source_element != input) {
+                            column.joined_inputs.push_back(input);
+                        }
+                    }
+                }
                 const storage_parameters* inner_parameters = &parameters;
                 std::optional<storage_parameters> lateral_parameters;
                 if (join_node->is_lateral() && !join_node->correlations().empty()) {
@@ -3419,23 +3428,21 @@ namespace services::dispatcher {
                         core::error_code_t::table_not_exists,
                         std::pmr::string{"could not find table in update/delete validation", resource});
                 }
+                stamp_source_element(table_schema, node->source_element());
                 if (node_data) {
                     auto source_res = validate_schema(context, node_data, parameters, cte_schemas);
                     if (source_res.has_error()) {
                         return source_res;
                     }
                     incoming_schema = std::move(source_res.value());
-                    for (auto& entry : incoming_schema) {
-                        entry.side = components::expressions::side_t::right;
-                    }
                 } else if (node->type() == node_type::update_t &&
                            !reinterpret_cast<node_update_t*>(node)->excluded_alias().empty()) {
                     // ON CONFLICT DO UPDATE: the proposed rows carry the target's own columns.
-                    const auto& alias = reinterpret_cast<node_update_t*>(node)->excluded_alias();
+                    const auto* conflict_update = reinterpret_cast<node_update_t*>(node);
                     for (const auto& column : tbl_upd->columns) {
-                        incoming_schema.emplace_back(type_from_t{alias, column.type});
-                        incoming_schema.back().side = components::expressions::side_t::right;
+                        incoming_schema.emplace_back(type_from_t{conflict_update->excluded_alias(), column.type});
                     }
+                    stamp_source_element(incoming_schema, conflict_update->excluded_element());
                 } else {
                     incoming_schema = table_schema;
                     source_schema = nullptr;
@@ -3459,7 +3466,6 @@ namespace services::dispatcher {
                         if (target_res.has_error()) {
                             return target_res.convert_error<named_schema>();
                         }
-                        expr->key().set_side(side_t::left);
                         expr->key().set_path(target_res.value().front().path);
                         const auto& target_type = target_res.value().front().type;
 
@@ -3799,6 +3805,10 @@ namespace services::dispatcher {
             cte_schemas = &local_cte_schemas;
         }
         auto res = validate_schema_impl(context, node, parameters, cte_schemas, literals);
+        // A source element answers for its output; a join's columns keep the ids of the elements it joins.
+        if (!res.has_error() && node->type() != node_type::join_t) {
+            stamp_source_element(res.value(), node->source_element());
+        }
         if (!res.has_error() && !res.value().empty()) {
             std::pmr::vector<complex_logical_type> types{node->resource()};
             types.reserve(res.value().size());

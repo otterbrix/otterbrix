@@ -18,27 +18,20 @@ namespace components::planner::optimizer {
         constexpr size_t no_input = SIZE_MAX;
 
         // A multi-element path is a nested-struct field access; those keys stay on the nested-loop join.
-        size_t operand_side(ce::param_storage& operand) {
+        size_t operand_side(ce::param_storage& operand, size_t left_width) {
             return operand_input(
                 operand,
-                [](const ce::key_t& key) {
+                [left_width](const ce::key_t& key) {
                     if (key.path().size() != 1) {
                         return no_input;
                     }
-                    switch (key.side()) {
-                        case ce::side_t::left:
-                            return left_input;
-                        case ce::side_t::right:
-                            return right_input;
-                        default:
-                            return no_input;
-                    }
+                    return key.path().front() < left_width ? left_input : right_input;
                 },
                 no_input);
         }
 
         // A single eq whose operands each read one side, one per side; the left side's operand is moved first.
-        bool is_hash_condition(const ce::expression_ptr& expr) {
+        bool is_hash_condition(const ce::expression_ptr& expr, size_t left_width) {
             if (!expr || expr->group() != ce::expression_group::compare) {
                 return false;
             }
@@ -46,8 +39,8 @@ namespace components::planner::optimizer {
             if (cmp->type() != ce::compare_type::eq) {
                 return false;
             }
-            const size_t l = operand_side(cmp->left());
-            const size_t r = operand_side(cmp->right());
+            const size_t l = operand_side(cmp->left(), left_width);
+            const size_t r = operand_side(cmp->right(), left_width);
             if (l == no_input || r == no_input || l == r) {
                 return false;
             }
@@ -73,10 +66,11 @@ namespace components::planner::optimizer {
                 return node;
             }
             auto* join = static_cast<lp::node_join_t*>(node.get());
-            if (!is_equi_joinable(*join) || node->expressions().empty()) {
+            if (!is_equi_joinable(*join) || node->expressions().empty() ||
+                !node->children().front()->has_output_types()) {
                 return node;
             }
-            if (is_hash_condition(node->expressions().front())) {
+            if (is_hash_condition(node->expressions().front(), node->children().front()->output_types().size())) {
                 join->set_algo(lp::node_join_t::join_algo::hash);
             }
             return node;

@@ -941,13 +941,13 @@ TEST_CASE("integration::cpp::clause_answers::a_hand_built_plan_names_a_parameter
         return read;
     };
     SECTION("O4 a RETURNING column read whose operand is not a column is refused") {
-        auto match = logical_plan::make_node_match(
-            resource,
-            table,
-            expressions::make_compare_expression(resource,
-                                                 expressions::compare_type::eq,
-                                                 expressions::key_t{resource, "a", expressions::side_t::left},
-                                                 core::parameter_id_t{0}));
+        auto match =
+            logical_plan::make_node_match(resource,
+                                          table,
+                                          expressions::make_compare_expression(resource,
+                                                                               expressions::compare_type::eq,
+                                                                               expressions::key_t{resource, "a"},
+                                                                               core::parameter_id_t{0}));
         auto del =
             logical_plan::make_node_delete(resource,
                                            match,
@@ -1025,7 +1025,7 @@ TEST_CASE("integration::cpp::clause_answers::a_hand_built_plan_names_a_parameter
             table,
             expressions::make_compare_expression(resource,
                                                  expressions::compare_type::gt,
-                                                 expressions::key_t{resource, "b", expressions::side_t::left},
+                                                 expressions::key_t{resource, "b"},
                                                  expressions::expression_ptr{plus_a(column_read_of_a_parameter())})));
         CHECK(mentions(protocol_violation(run(plan, false)), "a column read holds an operand that is not a column"));
         CHECK(column_of(exec(dispatcher, "SELECT a FROM ob.t ORDER BY a;")) == values{1, 2, 3});

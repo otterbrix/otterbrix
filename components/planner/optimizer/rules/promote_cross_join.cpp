@@ -28,9 +28,7 @@ namespace components::planner::optimizer {
         // A conjunct qualifies as a promotable join key iff it is an eq whose two operands each read one
         // input (operand_input) and the two straddle the join boundary: one in the
         // left range [0, left_width), the other in the right range
-        // [left_width, left_width + right_width). All keys are stamped side=left by
-        // the validator (unqualified names over the merged schema), so we cannot use
-        // side_t here — we classify by the merged-relative path index. Correctness of
+        // [left_width, left_width + right_width): we classify by the merged-relative path index. Correctness of
         // the range test rests on the validator rejecting ambiguous duplicate names
         // (validate_logical_plan.cpp), so a name resolves to exactly one merged column.
         constexpr size_t no_input = SIZE_MAX;
@@ -63,9 +61,8 @@ namespace components::planner::optimizer {
         // join, claiming one straddling equi conjunct per join. `conjuncts` are in the
         // OUTER-merged coordinate space (paths stamped by the validator against the
         // whole join's merged schema). For any single join, the left child spans the
-        // merged prefix [0, left_width), so a key's merged path equals its column index
-        // within the left child; the right child spans [left_width, left_width+right_width)
-        // contiguously, so a right-range key re-localizes to mergedIdx - left_width. That
+        // merged prefix [0, left_width) and the right child [left_width, left_width+right_width)
+        // contiguously — exactly how the join's ON counts its inputs. That
         // holds recursively (a nested join's own merged schema is exactly this join's
         // left-child prefix), so each nested join classifies its two keys against ITS OWN
         // children widths — not the outer schema.
@@ -131,33 +128,13 @@ namespace components::planner::optimizer {
             claimed[picked_index] = 1;
             any_claimed = true;
 
+            // The conjunct already counts THIS join's left child at [0, left_width)
+            // and its right child after it
             auto picked = conjuncts[picked_index];
-            auto* eq = static_cast<compare_expression_t*>(picked.get());
-            // Re-stamp every column of both operands against THIS join's boundary. A right-range
-            // column becomes side=right with its root moved in place to mergedIdx - left_width;
-            // a left-range root is already left-child-local, so only its side is (re)affirmed left.
-            const bool left_operand_is_right = boundary_input(eq->left(), left_width, right_width) == 1;
-            struct restamp_t {
-                size_t left_width;
-                bool right;
-                void column(key_t& k) {
-                    k.set_side(right ? side_t::right : side_t::left);
-                    if (right) {
-                        k.path()[0] -= left_width;
-                    }
-                }
-                void call(const function_expression_t&) {}
-            };
-            restamp_t left_operand{left_width, left_operand_is_right};
-            restamp_t right_operand{left_width, !left_operand_is_right};
-            [[maybe_unused]] const bool restamped =
-                walk_columns(eq->left(), left_operand) && walk_columns(eq->right(), right_operand);
-            assert(restamped && "a claimed join key reads only enumerable columns");
 
             // Immutable join_type -> a fresh inner join. oid flows from the moved scan
             // children. Hash selection stays in rewrite_hash_joins (runs
-            // after); the re-stamp makes detect_equi_columns accept it. Use the PROMOTED
-            // children so a nested inner join is carried up.
+            // after). Use the PROMOTED children so a nested inner join is carried up.
             auto inner = make_node_join(resource, join_type::inner);
             inner->append_child(new_left);
             inner->append_child(new_right);

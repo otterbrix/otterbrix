@@ -682,11 +682,10 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
         auto plan = components::logical_plan::make_node_aggregate(
             resource,
             qualified_name_t{core::schema_t{"regexdb"}, core::relname_t{"t"}});
-        auto expr = components::expressions::make_compare_expression(
-            resource,
-            components::expressions::compare_type::regex,
-            components::expressions::key_t{resource, "s", components::expressions::side_t::left},
-            core::parameter_id_t{0});
+        auto expr = components::expressions::make_compare_expression(resource,
+                                                                     components::expressions::compare_type::regex,
+                                                                     components::expressions::key_t{resource, "s"},
+                                                                     core::parameter_id_t{0});
         expr->set_regex_flags(core::parameter_id_t{1});
         plan->append_child(
             components::logical_plan::make_node_match(resource,

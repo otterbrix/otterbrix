@@ -191,6 +191,7 @@ namespace components::sql::transform {
     struct from_element_t {
         qualified_name_t name;
         std::string alias;
+        expressions::source_element_id_t source_element = expressions::NO_SOURCE_ELEMENT;
 
         const std::string& visible_name() const noexcept { return transform::visible_name(name, alias); }
     };
@@ -200,13 +201,18 @@ namespace components::sql::transform {
     struct name_collection_t {
         qualified_name_t left_name;
         std::string left_alias;
+        // The left input's id: a FROM element, or a nested join that has no name.
+        expressions::source_element_id_t left_element = expressions::NO_SOURCE_ELEMENT;
         qualified_name_t right_name;
         std::string right_alias;
+        expressions::source_element_id_t right_element = expressions::NO_SOURCE_ELEMENT;
         std::vector<from_element_t> extra_left; // FROM elements that belong to left but came in through a nested join
 
         struct using_column_t {
             std::string name;
             logical_plan::join_type join;
+            // The input whose copy the bare name stands for.
+            expressions::source_element_id_t source_element;
         };
         std::vector<using_column_t> using_columns;
         const using_column_t* using_column(std::string_view name) const;
@@ -214,8 +220,10 @@ namespace components::sql::transform {
         bool is_left_table(const std::string& name) const;
         bool is_right_table(const std::string& name) const;
 
-        core::result_wrapper_t<expressions::side_t> resolve(std::pmr::memory_resource* resource,
-                                                            const column_ref_t& ref) const;
+        core::result_wrapper_t<expressions::source_element_id_t> resolve(std::pmr::memory_resource* resource,
+                                                                         const column_ref_t& ref) const;
+        // The id of the FROM element visible as `name`; NO_SOURCE_ELEMENT when none is.
+        expressions::source_element_id_t element_named(const std::string& name) const;
 
         core::error_t refuse_indistinguishable_elements(std::pmr::memory_resource* resource) const;
     };

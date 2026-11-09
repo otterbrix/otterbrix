@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdlib>
 
+#include <components/expressions/clone_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/effective_table_oid.hpp>
@@ -11,6 +12,7 @@
 #include <components/physical_plan/operators/operator_join.hpp>
 #include <components/physical_plan/operators/operator_lateral_join.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/optimizer/rules/conjunct_utils.hpp>
 
 #include <utility>
 
@@ -48,6 +50,25 @@ namespace services::planner::impl {
                 return make_scalar_expression(resource, scalar_type::get_field, as_key(operand));
             }
             return as_expr(operand);
+        }
+
+        // hash join reads sides separately
+        components::expressions::param_storage on_right_input(std::pmr::memory_resource* resource,
+                                                              const components::expressions::param_storage& operand,
+                                                              size_t left_width) {
+            components::expressions::param_storage local = operand;
+            if (components::expressions::is_key(operand)) {
+                local = components::expressions::key_t{components::expressions::as_key(operand), resource};
+            } else if (components::expressions::is_expr(operand)) {
+                local = components::expressions::clone_expression(resource, components::expressions::as_expr(operand));
+            }
+            struct shift_t {
+                size_t left_width;
+                void column(components::expressions::key_t& key) { key.path().front() -= left_width; }
+                void call(const components::expressions::function_expression_t&) {}
+            } shift{left_width};
+            components::planner::optimizer::walk_columns(local, shift);
+            return local;
         }
 
     } // namespace
@@ -132,10 +153,12 @@ namespace services::planner::impl {
             // logical-right table, so the right operand is the probe key.
             const auto* on =
                 static_cast<const components::expressions::compare_expression_t*>(node->expressions().front().get());
+            const auto right_operand =
+                on_right_input(resource, on->right(), node->children().front()->output_types().size());
             std::pmr::vector<components::expressions::expression_ptr> probe_keys(resource);
             std::pmr::vector<components::expressions::expression_ptr> build_keys(resource);
-            probe_keys.push_back(key_expression(resource, swap_build_side ? on->right() : on->left()));
-            build_keys.push_back(key_expression(resource, swap_build_side ? on->left() : on->right()));
+            probe_keys.push_back(key_expression(resource, swap_build_side ? right_operand : on->left()));
+            build_keys.push_back(key_expression(resource, swap_build_side ? on->left() : right_operand));
             components::operators::operator_ptr hash_join =
                 boost::intrusive_ptr(new components::operators::operator_hash_join_t(resource,
                                                                                      log.clone(),

@@ -24,8 +24,8 @@ namespace {
     using core::pmr::default_resource_counter_t;
 
     // path()[0] is pre-stamped to `idx`, matching what validate_schema stamps at runtime.
-    components::expressions::key_t akey(std::pmr::memory_resource* r, const char* name, size_t idx, side_t side) {
-        components::expressions::key_t k(r, name, side);
+    components::expressions::key_t akey(std::pmr::memory_resource* r, const char* name, size_t idx) {
+        components::expressions::key_t k(r, name);
         std::pmr::vector<size_t> p{r};
         p.push_back(idx);
         k.set_path(std::move(p));
@@ -54,15 +54,11 @@ namespace {
         auto join = make_node_join(plan_arena, jt);
         join->append_child(left);
         join->append_child(right);
-        join->append_expression(make_compare_expression(plan_arena,
-                                                        compare_type::eq,
-                                                        akey(plan_arena, "k", 1, side_t::left),
-                                                        akey(plan_arena, "k2", 1, side_t::right)));
+        join->append_expression(
+            make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "k", 1), akey(plan_arena, "k2", 3)));
 
-        auto where =
-            where_on_key
-                ? make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "k", 1, side_t::left), p5)
-                : make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "a", 0, side_t::left), p5);
+        auto where = where_on_key ? make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "k", 1), p5)
+                                  : make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "a", 0), p5);
 
         auto outer = make_node_aggregate(plan_arena, qualified_name_t{adb(), arel()});
         outer->append_child(join);
@@ -92,7 +88,7 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
 
     size_t one_plain_key_copy = 0;
     {
-        auto k = akey(&resource, "k2", 3, side_t::right);
+        auto k = akey(&resource, "k2", 3);
         default_resource_counter_t counter;
         components::expressions::key_t unplaced_copy = k;
         one_plain_key_copy = counter.allocations();
@@ -105,7 +101,7 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
         auto params = make_parameter_node(&resource);
         auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
                                         components::vector::parameter_kind::literal);
-        auto k = akey(&resource, "k2", 3, side_t::right);
+        auto k = akey(&resource, "k2", 3);
         default_resource_counter_t counter;
         auto expr = make_compare_expression(&resource, compare_type::eq, k, p5);
         one_compare_expression = counter.allocations();

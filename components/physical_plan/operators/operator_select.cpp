@@ -44,7 +44,6 @@ namespace components::operators {
                                          const std::pmr::vector<projected_column_t>& columns,
                                          const logical_plan::storage_parameters& parameters,
                                          const vector::data_chunk_t& input,
-                                         size_t right_offset,
                                          std::unique_ptr<execution_dag::execution_dag_t>* graph) {
         // A star copies its columns straight from the input chunk, so it contributes
         // no output slot and the graph's slots line up with the projected columns only.
@@ -57,7 +56,7 @@ namespace components::operators {
             projected.push_back(column.value);
         }
 
-        auto built = expressions::build_graph(resource, parameters, projected, input.types(), right_offset);
+        auto built = expressions::build_graph(resource, parameters, projected, input.types());
         if (built.has_error()) {
             return built.error();
         }
@@ -110,12 +109,7 @@ namespace components::operators {
         std::optional<vector::data_chunk_t> computed;
         if (computes) {
             if (*graph == nullptr) {
-                if (auto error = build_projection_graph(resource,
-                                                        columns,
-                                                        parameters,
-                                                        source,
-                                                        right_input != nullptr ? input->column_count() : 0,
-                                                        graph);
+                if (auto error = build_projection_graph(resource, columns, parameters, source, graph);
                     error.contains_error()) {
                     return error;
                 }

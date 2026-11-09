@@ -31,9 +31,9 @@ namespace components::sql::transform {
                         std::pmr::vector<std::pmr::string> star_path{resource_};
                         star_path.emplace_back(std::pmr::string{col.table.collection.t, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
-                        out.push_back(make_scalar_expression(resource_,
-                                                             scalar_type::star_expand,
-                                                             expressions::key_t{std::move(star_path)}));
+                        expressions::key_t star_key{std::move(star_path)};
+                        star_key.set_source_element(col.field.source_element());
+                        out.push_back(make_scalar_expression(resource_, scalar_type::star_expand, std::move(star_key)));
                         continue;
                     }
                 }
@@ -43,9 +43,9 @@ namespace components::sql::transform {
             if (res->name) {
                 expressions::key_t out_key{resource_, res->name};
                 if (reads_column) {
-                    // Carry the deduced side onto the output-alias key so the
+                    // Carry the resolved relation onto the output-alias key so the
                     // validator resolves the column against the right schema.
-                    out_key.set_side(std::get<expressions::key_t>(operand).side());
+                    out_key.set_source_element(std::get<expressions::key_t>(operand).source_element());
                 }
                 auto expr = as_expression(std::move(operand));
                 expr->key() = std::move(out_key);

@@ -29,7 +29,7 @@ namespace components::sql::transform {
         std::pmr::vector<expression_ptr> updates(resource_);
         for (auto target : targets->lst) {
             auto res = pg_ptr_cast<ResTarget>(target.data);
-            expressions::key_t target_key{resource_, res->name, side_t::left};
+            expressions::key_t target_key{resource_, res->name};
             if (!res->indirection->lst.empty()) {
                 std::pmr::vector<std::pmr::string> path{resource_};
                 path.emplace_back(std::pmr::string{res->name, resource_});
@@ -42,7 +42,7 @@ namespace components::sql::transform {
                         path.emplace_back(pmrStrVal(val.data, resource_));
                     }
                 }
-                target_key = expressions::key_t{std::move(path), side_t::left};
+                target_key = expressions::key_t{std::move(path)};
             }
             VALUE_OR_RETURN(auto value, transform_update_expr(res->val, names, plan));
             value->key() = std::move(target_key);
@@ -60,6 +60,7 @@ namespace components::sql::transform {
         name_collection_t names;
         names.left_name = rangevar_to_qualified_name(node.relation);
         names.left_alias = construct_alias(node.relation->alias);
+        names.left_element = next_source_element();
 
         // UPDATE ... FROM: build the FROM clause as a source sub-plan (a table, a
         // join tree, a table function, or a — possibly LATERAL — derived table) that
@@ -74,6 +75,7 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(source_child, transform_from_source(node.fromClause, source_names, plan));
             names.right_name = source_names.left_name;
             names.right_alias = source_names.left_alias;
+            names.right_element = number_source_element(*source_child);
         }
         VALUE_OR_RETURN(updates, transform_set_list(node.targetList, names, plan));
 
@@ -91,6 +93,7 @@ namespace components::sql::transform {
         VALUE_OR_RETURN(auto upd_limit_res, build_dml_limit(node.limitCount, plan));
         auto upd_limit = std::move(upd_limit_res);
         auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates);
+        upd->set_source_element(names.left_element);
         set_target(*upd, names.left_name, target_slots::relation);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling

@@ -321,18 +321,19 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
 
     auto* j_prt = static_cast<node_join_t*>(out->children()[0].get());
     REQUIRE(j_prt->type() == join_type::inner);
+    // A right key counts after its join's left input: fct 6, + dd 2, + cust 3, + supp 2.
     CHECK(on_left_col(j_prt) == 3);
-    CHECK(on_right_col(j_prt) == 0);
+    CHECK(on_right_col(j_prt) == 13);
     CHECK(j_prt->children()[1].get() == prt.get());
     auto* j_supp = static_cast<node_join_t*>(j_prt->children()[0].get());
     CHECK(on_left_col(j_supp) == 2);
-    CHECK(on_right_col(j_supp) == 0);
+    CHECK(on_right_col(j_supp) == 11);
     auto* j_cust = static_cast<node_join_t*>(j_supp->children()[0].get());
     CHECK(on_left_col(j_cust) == 1);
-    CHECK(on_right_col(j_cust) == 0);
+    CHECK(on_right_col(j_cust) == 8);
     auto* j_dd = static_cast<node_join_t*>(j_cust->children()[0].get());
     CHECK(on_left_col(j_dd) == 0);
-    CHECK(on_right_col(j_dd) == 0);
+    CHECK(on_right_col(j_dd) == 6);
     CHECK(j_dd->children()[0].get() == fct.get()); // fact at the bottom-left
     CHECK(j_dd->children()[1].get() == dd.get());
 }

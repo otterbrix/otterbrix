@@ -159,8 +159,7 @@ namespace components::operators {
                 auto built = expressions::build_condition_graph(resource_,
                                                                 pipeline_context->parameters,
                                                                 expression_.get(),
-                                                                merged_types,
-                                                                types_left.size());
+                                                                merged_types);
                 if (built.has_error()) {
                     return built.error();
                 }

@@ -16,12 +16,10 @@ namespace components::expressions {
         public:
             builder_t(execution_dag_t* graph,
                       const vector::storage_parameters& parameters,
-                      const std::pmr::vector<complex_logical_type>& input_types,
-                      size_t right_offset)
+                      const std::pmr::vector<complex_logical_type>& input_types)
                 : graph_(graph)
                 , parameters_(parameters)
-                , input_types_(input_types)
-                , right_offset_(right_offset) {}
+                , input_types_(input_types) {}
 
             core::result_wrapper_t<slot_id_t> slot_of(const scalar_expression_t* expression);
             core::result_wrapper_t<slot_id_t> slot_of_expression(const expression_i* expression);
@@ -44,7 +42,6 @@ namespace components::expressions {
             execution_dag_t* graph_;
             const vector::storage_parameters& parameters_;
             const std::pmr::vector<complex_logical_type>& input_types_;
-            size_t right_offset_;
         };
 
         core::result_wrapper_t<slot_id_t> builder_t::slot_of_expression(const expression_i* expression) {
@@ -92,9 +89,7 @@ namespace components::expressions {
                     core::error_code_t::unimplemented_yet,
                     std::pmr::string{"execution graph builder: column is not a resolved ordinal", resource()});
             }
-            // A right-side key is resolved against the right schema, so its ordinal is relative to
-            // that side; right_offset_ places it in the merged chunk the caller feeds.
-            const size_t column = key.side() == side_t::right ? right_offset_ + path.front() : path.front();
+            const size_t column = path.front();
             if (column >= input_types_.size()) {
                 return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph builder: column ordinal " +
@@ -541,15 +536,14 @@ namespace components::expressions {
     build_expression(execution_dag::execution_dag_t* graph,
                      const vector::storage_parameters& parameters,
                      const expression_i* expression,
-                     const std::pmr::vector<types::complex_logical_type>& input_types,
-                     size_t right_offset) {
+                     const std::pmr::vector<types::complex_logical_type>& input_types) {
         if (graph == nullptr || expression == nullptr) {
             // graph may be null here, so the resource comes from input_types instead.
             return core::error_t(
                 core::error_code_t::internal_error,
                 std::pmr::string{"execution graph builder: nothing to build", input_types.get_allocator().resource()});
         }
-        builder_t builder(graph, parameters, input_types, right_offset);
+        builder_t builder(graph, parameters, input_types);
         return builder.slot_of_expression(expression);
     }
 
@@ -557,13 +551,12 @@ namespace components::expressions {
     build_graph(std::pmr::memory_resource* resource,
                 const vector::storage_parameters& parameters,
                 core::span<const expression_i* const> expressions,
-                const std::pmr::vector<types::complex_logical_type>& input_types,
-                size_t right_offset) {
+                const std::pmr::vector<types::complex_logical_type>& input_types) {
         auto graph = std::make_unique<execution_dag::execution_dag_t>(resource);
         execution_dag::slot_list_t outputs(resource);
         outputs.reserve(expressions.size());
         for (const auto* expression : expressions) {
-            auto slot = build_expression(graph.get(), parameters, expression, input_types, right_offset);
+            auto slot = build_expression(graph.get(), parameters, expression, input_types);
             if (slot.has_error()) {
                 return slot.error();
             }
@@ -580,10 +573,9 @@ namespace components::expressions {
     build_graph(std::pmr::memory_resource* resource,
                 const vector::storage_parameters& parameters,
                 core::span<const param_storage> values,
-                const std::pmr::vector<types::complex_logical_type>& input_types,
-                size_t right_offset) {
+                const std::pmr::vector<types::complex_logical_type>& input_types) {
         auto graph = std::make_unique<execution_dag::execution_dag_t>(resource);
-        builder_t builder(graph.get(), parameters, input_types, right_offset);
+        builder_t builder(graph.get(), parameters, input_types);
         execution_dag::slot_list_t outputs(resource);
         outputs.reserve(values.size());
         for (const auto& value : values) {
@@ -606,8 +598,7 @@ namespace components::expressions {
     build_update_graph(std::pmr::memory_resource* resource,
                        const vector::storage_parameters& parameters,
                        core::span<const expression_i* const> values,
-                       const std::pmr::vector<types::complex_logical_type>& input_types,
-                       size_t right_offset) {
+                       const std::pmr::vector<types::complex_logical_type>& input_types) {
         const types::complex_logical_type boolean{types::logical_type::BOOLEAN};
         auto graph = std::make_unique<execution_dag::execution_dag_t>(resource);
         execution_dag::slot_list_t outputs(resource);
@@ -615,7 +606,7 @@ namespace components::expressions {
         auto modified = execution_dag::invalid_slot;
 
         for (const auto* value : values) {
-            auto slot = build_expression(graph.get(), parameters, value, input_types, right_offset);
+            auto slot = build_expression(graph.get(), parameters, value, input_types);
             if (slot.has_error()) {
                 return slot.error();
             }
@@ -677,9 +668,8 @@ namespace components::expressions {
     build_condition_graph(std::pmr::memory_resource* resource,
                           const vector::storage_parameters& parameters,
                           const expression_i* expression,
-                          const std::pmr::vector<types::complex_logical_type>& input_types,
-                          size_t right_offset) {
-        return build_graph(resource, parameters, {&expression, 1}, input_types, right_offset);
+                          const std::pmr::vector<types::complex_logical_type>& input_types) {
+        return build_graph(resource, parameters, {&expression, 1}, input_types);
     }
 
     core::result_wrapper_t<vector::data_chunk_t> run_graph(execution_dag::execution_dag_t* graph,

@@ -67,9 +67,12 @@ namespace components::logical_plan {
         // required for ON CONFLICT DO UPDATE resolution
         void set_excluded_alias(std::string alias) { excluded_alias_ = std::move(alias); }
         const std::string& excluded_alias() const noexcept { return excluded_alias_; }
+        void set_excluded_element(expressions::source_element_id_t element) noexcept { excluded_element_ = element; }
+        expressions::source_element_id_t excluded_element() const noexcept { return excluded_element_; }
 
     private:
         std::string excluded_alias_;
+        expressions::source_element_id_t excluded_element_{expressions::NO_SOURCE_ELEMENT};
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
 

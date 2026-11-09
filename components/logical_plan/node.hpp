@@ -63,6 +63,11 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
+        expressions::source_element_id_t source_element() const noexcept { return source_element_; }
+        void set_source_element(expressions::source_element_id_t source_element) noexcept {
+            source_element_ = source_element;
+        }
+
         // The catalog metadata of the table this node targets, pasted here by
         // enrich_plan alongside table_oid()
         const resolved_table_metadata_t* table_metadata() const noexcept { return table_metadata_; }
@@ -102,6 +107,7 @@ namespace components::logical_plan {
         // See table_oid()/set_table_oid() above. Default INVALID_OID; enrich
         // is responsible for stamping the resolved oid before plan execution.
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
+        expressions::source_element_id_t source_element_{expressions::NO_SOURCE_ELEMENT};
         const resolved_table_metadata_t* table_metadata_{nullptr};
         // Resolved output column types (see output_types()). Allocated on this node's
         // resource (set in the ctor); empty until the validator stamps it.

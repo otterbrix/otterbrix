@@ -98,6 +98,8 @@ namespace {
             for (auto& child : n->children()) {
                 if (child && child->type() == logical_plan::node_type::aggregate_t) {
                     const auto& rel = static_cast<const logical_plan::node_aggregate_t&>(*child).target().collection.t;
+                    // The data stands in for the scan as the same source element, so it keeps the scan's id.
+                    const auto element = child->source_element();
                     if (rel == "campaigns") {
                         child =
                             logical_plan::make_node_raw_data(resource,
@@ -105,6 +107,7 @@ namespace {
                                                                         {{"campaign_id", types::logical_type::INTEGER},
                                                                          {"campaign_name", name_type},
                                                                          {"budget", types::logical_type::DOUBLE}}));
+                        child->set_source_element(element);
                         ++swapped;
                         continue;
                     }
@@ -116,6 +119,7 @@ namespace {
                                                                          {"campaign_id", types::logical_type::INTEGER},
                                                                          {"product_name", name_type},
                                                                          {"price", types::logical_type::DOUBLE}}));
+                        child->set_source_element(element);
                         ++swapped;
                         continue;
                     }

@@ -423,17 +423,19 @@ namespace components::planner::optimizer {
         }
 
         // `columns` is the side's output schema; empty when it is not stamped.
+        // `offset` is where `columns` start in the joined row the operand's path counts in.
         bool widens_its_column(const param_storage& operand,
-                               const std::pmr::vector<components::types::complex_logical_type>& columns) {
+                               const std::pmr::vector<components::types::complex_logical_type>& columns,
+                               size_t offset) {
             if (!is_expr(operand) || as_expr(operand)->group() != expression_group::cast) {
                 return false;
             }
             const auto* cast = static_cast<const cast_expression_t*>(as_expr(operand).get());
             const auto* column = join_key_operand(operand);
-            if (column == nullptr || column->path()[0] >= columns.size()) {
+            if (column == nullptr || column->path()[0] < offset || column->path()[0] - offset >= columns.size()) {
                 return false;
             }
-            return is_lossless_integer_widening(columns[column->path()[0]].type(), cast->result_type().type());
+            return is_lossless_integer_widening(columns[column->path()[0] - offset].type(), cast->result_type().type());
         }
 
         // `resource` is explicit because key_t's plain copy ctor lands an un-placed copy on the process default.
@@ -473,21 +475,24 @@ namespace components::planner::optimizer {
             if (a == nullptr || b == nullptr) {
                 return std::nullopt;
             }
-            if (a->side() == side_t::left && b->side() == side_t::right) {
+            // ON keys count the right input's columns after the left's.
+            const bool a_left = a->path()[0] < left_width;
+            const bool b_left = b->path()[0] < left_width;
+            if (a_left && !b_left) {
                 return equi_pair_t{copy_operand(resource, cmp->left()),
                                    copy_operand(resource, cmp->right()),
                                    a->path()[0],
-                                   left_width + b->path()[0],
-                                   widens_its_column(cmp->left(), left_columns),
-                                   widens_its_column(cmp->right(), right_columns)};
+                                   b->path()[0],
+                                   widens_its_column(cmp->left(), left_columns, 0),
+                                   widens_its_column(cmp->right(), right_columns, left_width)};
             }
-            if (a->side() == side_t::right && b->side() == side_t::left) {
+            if (!a_left && b_left) {
                 return equi_pair_t{copy_operand(resource, cmp->right()),
                                    copy_operand(resource, cmp->left()),
                                    b->path()[0],
-                                   left_width + a->path()[0],
-                                   widens_its_column(cmp->right(), left_columns),
-                                   widens_its_column(cmp->left(), right_columns)};
+                                   a->path()[0],
+                                   widens_its_column(cmp->right(), left_columns, 0),
+                                   widens_its_column(cmp->left(), right_columns, left_width)};
             }
             return std::nullopt;
         }
@@ -638,6 +643,13 @@ namespace components::planner::optimizer {
                 return side;
             }
             auto wrapper = make_node_aggregate(resource, node_cfn(side));
+            // A filter passes its input's columns through: the join above reads the side's width off the wrapper.
+            if (side->has_output_types()) {
+                wrapper->set_output_types(
+                    std::pmr::vector<components::types::complex_logical_type>{side->output_types().begin(),
+                                                                              side->output_types().end(),
+                                                                              wrapper->resource()});
+            }
             wrapper->append_child(side);
             wrapper->append_child(make_node_match(resource, match_name, std::move(where)));
             return boost::static_pointer_cast<node_t>(wrapper);

@@ -103,12 +103,9 @@ namespace components::expressions {
         nulls_last = 2
     };
 
-    enum class side_t : uint8_t
-    {
-        undefined = 0,
-        left,
-        right
-    };
+    // data source id, used internally instead of strings
+    using source_element_id_t = uint32_t;
+    inline constexpr source_element_id_t NO_SOURCE_ELEMENT = 0;
 
     std::string to_string(compare_type type);
 

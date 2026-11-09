@@ -218,7 +218,9 @@ namespace components::sql::transform {
                 name_collection_t names;
                 names.left_name = target;
                 names.left_alias = construct_alias(node.relation->alias);
+                names.left_element = next_source_element();
                 names.right_alias = "excluded";
+                names.right_element = next_source_element();
                 VALUE_OR_RETURN(auto updates, transform_set_list(clause->targetList, names, plan));
                 expressions::expression_ptr where_expr = make_compare_expression(resource_, compare_type::all_true);
                 if (clause->whereClause) {
@@ -228,6 +230,8 @@ namespace components::sql::transform {
                 VALUE_OR_RETURN(auto limit, build_dml_limit(nullptr, plan));
                 conflict_update = logical_plan::make_node_update(resource_, match, limit, updates);
                 conflict_update->set_excluded_alias(names.right_alias);
+                conflict_update->set_source_element(names.left_element);
+                conflict_update->set_excluded_element(names.right_element);
                 set_target(*conflict_update, target, target_slots::relation);
                 if (node.returningList) {
                     name_collection_t target_names;

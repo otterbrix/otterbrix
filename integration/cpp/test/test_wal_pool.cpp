@@ -12,7 +12,6 @@
 #include <filesystem>
 
 using components::expressions::compare_type;
-using components::expressions::side_t;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 using namespace components::types;
@@ -63,7 +62,7 @@ static const core::relname_t collection_name_2{"testcollection2"};
             qualified_name_t{core::schema_t{DB}, core::relname_t{COLL}});                                              \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
-                                                                     key{dispatcher->resource(), KEY, side_t::left},   \
+                                                                     key{dispatcher->resource(), KEY},                 \
                                                                      id_par{0});                                       \
         plan->append_child(                                                                                            \
             components::logical_plan::make_node_match(dispatcher->resource(),                                          \

@@ -176,7 +176,7 @@ TEST_CASE("components::sql::update_from") {
         fields f;
         auto price = set_value(&resource, components::expressions::key_t{&resource, "price"}, scalar_type::multiply);
         auto* price_expr = static_cast<scalar_expression_t*>(price.get());
-        price_expr->append_param(components::expressions::key_t{&resource, "price", side_t::undefined});
+        price_expr->append_param(components::expressions::key_t{&resource, "price"});
         price_expr->append_param(core::parameter_id_t{0});
         f.emplace_back(std::move(price));
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET price = price * 1.5;)_",
@@ -188,11 +188,11 @@ TEST_CASE("components::sql::update_from") {
     {
         fields f;
         auto product = make_scalar_expression(&resource, scalar_type::multiply);
-        product->append_param(components::expressions::key_t{&resource, "price", side_t::right});
-        product->append_param(components::expressions::key_t{&resource, "discount", side_t::left});
+        product->append_param(components::expressions::key_t{&resource, "price"});
+        product->append_param(components::expressions::key_t{&resource, "discount"});
         auto price = set_value(&resource, components::expressions::key_t{&resource, "price"}, scalar_type::subtract);
         auto* price_expr = static_cast<scalar_expression_t*>(price.get());
-        price_expr->append_param(components::expressions::key_t{&resource, "price", side_t::right});
+        price_expr->append_param(components::expressions::key_t{&resource, "price"});
         price_expr->append_param(expression_ptr{product});
         f.emplace_back(std::move(price));
         TEST_SIMPLE_UPDATE(
@@ -212,11 +212,9 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
             &resource}};
         auto sum = set_value(&resource, field, scalar_type::add);
         auto* sum_expr = static_cast<scalar_expression_t*>(sum.get());
-        sum_expr->append_param(components::expressions::key_t{
-            std::pmr::vector<std::pmr::string>{
-                {std::pmr::string{"struct_type", &resource}, std::pmr::string{"field", &resource}},
-                &resource},
-            side_t::undefined});
+        sum_expr->append_param(components::expressions::key_t{std::pmr::vector<std::pmr::string>{
+            {std::pmr::string{"struct_type", &resource}, std::pmr::string{"field", &resource}},
+            &resource}});
         sum_expr->append_param(core::parameter_id_t{0});
         f.emplace_back(std::move(sum));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET struct_type.field = (struct_type).field + 1;",

@@ -230,10 +230,10 @@ namespace components::planner::optimizer {
             if (join_key == nullptr) {
                 return;
             }
-            const size_t join_key_local = join_key->path()[0];
-            if (join_key_local >= pushed->output_types().size()) {
+            if (join_key->path()[0] < base || join_key->path()[0] - base >= pushed->output_types().size()) {
                 return; // defensive: unexpected stamp
             }
+            const size_t join_key_local = join_key->path()[0] - base;
             // Every referenced column must resolve inside the pushed side's stamped width (re-stamped
             // below by that local index).
             for (size_t m : key_merged) {
@@ -345,8 +345,20 @@ namespace components::planner::optimizer {
                 pushed->set_output_types(std::move(partial_types));
             }
 
-            // The pushed-side key now sits at its partial-output position; the other side is untouched.
-            set_key_path(resource, *join_key, join_key_pos);
+            // The pushed-side key now sits at its partial-output position. A partial on the left changes the
+            // left width, so the right operand's columns move by the difference.
+            set_key_path(resource, *join_key, base + join_key_pos);
+            if (pushed_left) {
+                struct shift_t {
+                    size_t old_left_width;
+                    size_t new_left_width;
+                    void column(ce::key_t& key) {
+                        key.path().front() = key.path().front() - old_left_width + new_left_width;
+                    }
+                    void call(const ce::function_expression_t&) {}
+                } shift{left_width, pushed->output_types().size()};
+                walk_columns(on->right(), shift);
+            }
         }
 
         void walk(std::pmr::memory_resource* resource, const lp::node_ptr& node) {

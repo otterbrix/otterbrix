@@ -11,7 +11,7 @@ namespace components::planner {
     // Single optimization pass. Runs AFTER the planner rewrite, i.e. after
     // resolve → validate → enrich → planner.create_plan, so node->table_oid()
     // and node->table_metadata() are populated, and the schema stamps
-    // key.side()/key.path() set by validate_schema are present.
+    // key.path() set by validate_schema are present.
     // Rules (in order):
     //   - constant_folding (on parameter expressions)
     //   - pushdown_filter

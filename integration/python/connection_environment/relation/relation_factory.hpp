@@ -73,6 +73,8 @@ namespace otterbrix {
                             components::logical_plan::node_limit_ptr limit = nullptr);
 
         engine_arena_ptr arena_;
+        components::expressions::source_element_id_t source_element_counter_{
+            components::expressions::NO_SOURCE_ELEMENT};
     };
 
 } // namespace otterbrix

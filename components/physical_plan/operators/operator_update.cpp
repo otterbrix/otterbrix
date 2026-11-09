@@ -67,8 +67,7 @@ namespace components::operators {
                 auto built = expressions::build_condition_graph(resource,
                                                                 pipeline_context->parameters,
                                                                 expr_.get(),
-                                                                merged.types(),
-                                                                paired_left_types_.size());
+                                                                merged.types());
                 if (built.has_error()) {
                     return built.error();
                 }
@@ -308,7 +307,6 @@ namespace components::operators {
                                                   const vector::data_chunk_t* from_chunk,
                                                   uint64_t match_count) {
         // Both sides are already aligned row-for-row, so the FROM-side merge only references them — no copy.
-        const size_t right_offset = out_chunk.column_count();
         std::optional<vector::data_chunk_t> merged;
         if (from_chunk != nullptr) {
             merged.emplace(merged_view(resource_, out_chunk, *from_chunk, match_count));
@@ -321,11 +319,8 @@ namespace components::operators {
             for (const auto& update : updates_) {
                 values.push_back(update.get());
             }
-            auto built = expressions::build_update_graph(resource_,
-                                                         pipeline_context->parameters,
-                                                         values,
-                                                         input.types(),
-                                                         right_offset);
+            auto built =
+                expressions::build_update_graph(resource_, pipeline_context->parameters, values, input.types());
             if (built.has_error()) {
                 return built.error();
             }
@@ -462,8 +457,7 @@ namespace components::operators {
                 auto built = expressions::build_condition_graph(resource,
                                                                 pipeline_context->parameters,
                                                                 expr_.get(),
-                                                                merged_types,
-                                                                types_left.size());
+                                                                merged_types);
                 if (built.has_error()) {
                     return built.error();
                 }

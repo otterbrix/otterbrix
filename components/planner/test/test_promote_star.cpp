@@ -60,7 +60,6 @@ using namespace components::logical_plan;
 using namespace components::expressions;
 using expressions::compare_type;
 using expressions::scalar_type;
-using expressions::side_t;
 
 namespace {
     // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
@@ -300,11 +299,12 @@ namespace {
 //
 // Expected AFTER the star reorder + canonical promotion + hash lowering:
 //  * a fact-first left-deep tree, `lineorder` at the bottom-left leaf;
-//  * all four joins inner + hash with (left_col/right_col), bottom-up:
-//        lineorder x dim_date : 5/0   (lo_orderdate=5, d_datekey local 0)
-//        ... x customer       : 2/0   (lo_custkey=2,  c_custkey  local 0)
-//        ... x supplier       : 4/0   (lo_suppkey=4,  s_suppkey  local 0)
-//        ... x part           : 3/0   (lo_partkey=3,  p_partkey  local 0)
+//  * all four joins inner + hash with (left_col/right_col), bottom-up; a right
+//    key counts after its join's left input:
+//        lineorder x dim_date : 5/17  (lo_orderdate=5, d_datekey after lineorder's 17)
+//        ... x customer       : 2/34  (lo_custkey=2,  c_custkey  after 17 + 17)
+//        ... x supplier       : 4/42  (lo_suppkey=4,  s_suppkey  after 34 + 8)
+//        ... x part           : 3/49  (lo_partkey=3,  p_partkey  after 42 + 7)
 //  * NO residual join-equi (all four claimed onto the joins);
 //  * MERGED loci remapped by P: group keys d_year 4->21, c_nation 21->38;
 //    aggregate args lo_revenue 53->12, lo_supplycost 54->13; residual filters
@@ -412,7 +412,7 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     CHECK(j_part->type() == join_type::inner);
     CHECK(j_part->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(j_part) == 3);
-    CHECK(on_right_col(j_part) == 0);
+    CHECK(on_right_col(j_part) == 49);
     REQUIRE(j_part->children().size() == 2);
     CHECK(j_part->children()[1].get() == s.part.get());
 
@@ -420,21 +420,21 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     REQUIRE(j_supp->type() == join_type::inner);
     CHECK(j_supp->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(j_supp) == 4);
-    CHECK(on_right_col(j_supp) == 0);
+    CHECK(on_right_col(j_supp) == 42);
     CHECK(j_supp->children()[1].get() == s.supplier.get());
 
     auto* j_cust = static_cast<node_join_t*>(j_supp->children()[0].get());
     REQUIRE(j_cust->type() == join_type::inner);
     CHECK(j_cust->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(j_cust) == 2);
-    CHECK(on_right_col(j_cust) == 0);
+    CHECK(on_right_col(j_cust) == 34);
     CHECK(j_cust->children()[1].get() == s.customer.get());
 
     auto* j_date = static_cast<node_join_t*>(j_cust->children()[0].get());
     REQUIRE(j_date->type() == join_type::inner);
     CHECK(j_date->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(j_date) == 5);
-    CHECK(on_right_col(j_date) == 0);
+    CHECK(on_right_col(j_date) == 17);
     CHECK(j_date->children()[0].get() == s.lineorder.get()); // fact bottom-left
     CHECK(j_date->children()[1].get() == s.dim_date.get());
 
@@ -491,7 +491,7 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
 // unchanged and the canonical path promotes it exactly as today.
 //
 // Observable proof of "not reordered": leaves stay in FROM order (a,b,c) and the
-// two joins claim their ORIGINAL boundaries (a_k=b_k -> 1/0, b_v=c_k -> 3/0). A
+// two joins claim their ORIGINAL boundaries (a_k=b_k -> 1/2, b_v=c_k -> 3/4). A
 // mistaken star reorder would permute the leaves and change these columns.
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
@@ -527,7 +527,7 @@ TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
     CHECK(oj->type() == join_type::inner);
     CHECK(oj->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(oj) == 3);
-    CHECK(on_right_col(oj) == 0);
+    CHECK(on_right_col(oj) == 4);
     CHECK(oj->children()[1].get() == c.get());
 
     // Inner join claims a_k=b_k, leaves a,b in FROM order.
@@ -535,7 +535,7 @@ TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
     CHECK(ij->type() == join_type::inner);
     CHECK(ij->algo() == node_join_t::join_algo::hash);
     CHECK(on_left_col(ij) == 1);
-    CHECK(on_right_col(ij) == 0);
+    CHECK(on_right_col(ij) == 2);
     CHECK(ij->children()[0].get() == a.get());
     CHECK(ij->children()[1].get() == b.get());
 

@@ -392,7 +392,7 @@ namespace services::disk {
 
     void manager_disk_t::loop_body() {
         auto& in_flight = in_flight_;
-        while (loop_running_.load(std::memory_order_acquire)) {
+        while (loop_running_.load(std::memory_order_acquire) || !in_flight.empty()) {
             actor_zeta::mailbox::message* raw = nullptr;
             while (inbox_.pop(raw)) {
                 in_flight.emplace_back();

@@ -368,8 +368,8 @@ TEST_CASE("integration::cpp::hand_built_constraints::sql_registers_one_constrain
         CHECK_FALSE(entry.names_only);
         REQUIRE(resolves.tables != nullptr);
         REQUIRE(entry.target < resolves.tables->entries().size());
-        CHECK(resolves.tables->entries()[entry.target].schema == "hb");
-        CHECK(resolves.tables->entries()[entry.target].relname == "t");
+        CHECK(resolves.tables->entries()[entry.target].written.schema.t == "hb");
+        CHECK(resolves.tables->entries()[entry.target].written.collection.t == "t");
     }
 }
 
@@ -434,6 +434,6 @@ TEST_CASE("integration::cpp::hand_built_constraints::a_hand_built_write_register
         CHECK(entry.direction == c.direction);
         REQUIRE(resolves.tables != nullptr);
         REQUIRE(entry.target < resolves.tables->entries().size());
-        CHECK(resolves.tables->entries()[entry.target].relname == "t");
+        CHECK(resolves.tables->entries()[entry.target].written.collection.t == "t");
     }
 }

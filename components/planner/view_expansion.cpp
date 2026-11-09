@@ -229,18 +229,6 @@ namespace components::planner {
     }
 
     namespace {
-        std::string written_name(const logical_plan::resolve_entry_t& entry) {
-            std::string out;
-            for (const auto* part : {&entry.connection, &entry.database, &entry.schema}) {
-                if (!part->empty()) {
-                    out += *part;
-                    out += '.';
-                }
-            }
-            out += entry.relname;
-            return out;
-        }
-
         bool contains_star(const node_t* n) {
             if (!n) {
                 return false;
@@ -292,18 +280,18 @@ namespace components::planner {
             const auto binding =
                 std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
                     return b.refkind == components::catalog::view_refkind::relation &&
-                           b.connection.t == entry.connection && b.dbname.t == entry.database &&
-                           b.schema.t == entry.schema && b.relname.t == entry.relname;
+                           b.connection == entry.written.connection && b.dbname == entry.written.database &&
+                           b.schema == entry.written.schema && b.relname == entry.written.collection;
                 });
             if (binding == view.view_bindings.end()) {
                 return view_stale_error(resource,
-                                        view.name,
-                                        "its body names \"" + written_name(entry) +
+                                        view.name.t,
+                                        "its body names \"" + entry.written.to_string() +
                                             "\", which was not bound when the view was created");
             }
             entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
             entry.pin.oid = binding->refobjid;
-            entry.pin.view = core::viewname_t{view.name};
+            entry.pin.view = core::viewname_t{view.name.t};
         }
         return core::error_t::no_error();
     }
@@ -324,7 +312,7 @@ namespace components::planner {
             auto& target = dest.ensure(resource, kind);
             for (auto& entry : (*slot)->entries()) {
                 const auto pin = entry.pin;
-                const auto written = written_name(entry);
+                const auto written = entry.written.to_string();
                 const auto before = target.entries().size();
                 const auto index = target.add(std::move(entry));
                 if (index == before || kind != resolve_kind::table) {
@@ -372,9 +360,7 @@ namespace components::planner {
     namespace {
         // The matview the REFRESH found, by the name the catalog has for it.
         qualified_name_t matview_name_of(const logical_plan::resolved_table_metadata_t& matview) {
-            return qualified_name_t{core::dbname_t{matview.database},
-                                    core::schema_t{matview.schema},
-                                    core::relname_t{matview.name}};
+            return qualified_name_t{matview.database, matview.schema, matview.name};
         }
 
         // Read again by its oid, never looked up by name.
@@ -382,9 +368,7 @@ namespace components::planner {
                               logical_plan::catalog_resolves_t& resolves,
                               const logical_plan::resolved_table_metadata_t& matview) {
             logical_plan::resolve_entry_t entry;
-            entry.database = matview.database;
-            entry.schema = matview.schema;
-            entry.relname = matview.name;
+            entry.written = matview_name_of(matview);
             entry.relation_oid = matview.table_oid;
             resolves.ensure(resource, logical_plan::resolve_kind::table).add(std::move(entry));
         }

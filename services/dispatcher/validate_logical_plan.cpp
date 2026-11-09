@@ -107,7 +107,7 @@ namespace services::dispatcher {
             }
             named_schema stored_row_schema{context.resource};
             for (const auto& column : target->columns) {
-                stored_row_schema.emplace_back(type_from_t{target->name, column.type});
+                stored_row_schema.emplace_back(type_from_t{target->name.t, column.type});
             }
             const auto& predicate_parameters = node->check_params() ? node->check_params()->parameters() : parameters;
             const validation::expression_context_t predicate_context{context.resource,
@@ -468,7 +468,7 @@ namespace services::dispatcher {
             named_schema table_schema(resource);
             for (const auto& column : table->columns) {
                 table_schema.emplace_back(
-                    type_from_t{node->result_alias().empty() ? table->name : node->result_alias(), column.type});
+                    type_from_t{node->result_alias().empty() ? table->name.t : node->result_alias(), column.type});
             }
             // Read from the resolved constraints: enrich stamps them onto the node only after validation.
             const auto* constraints =
@@ -504,7 +504,7 @@ namespace services::dispatcher {
                     std::pmr::string what{"constraint \"", resource};
                     what += on_conflict.constraint_name;
                     what += "\" for table \"";
-                    what += table->name;
+                    what += table->name.t;
                     what += "\" does not exist";
                     return core::error_t(core::error_code_t::undefined_object, std::move(what));
                 }
@@ -1574,13 +1574,9 @@ namespace services::dispatcher {
             if (!entry || entry->database_oid == components::catalog::INVALID_OID) {
                 return missing(core::error_code_t::database_not_exists,
                                "database",
-                               qualified_name_t{core::connection_name_t{completed.connection},
-                                                core::dbname_t{completed.database},
-                                                {},
-                                                {}}
-                                   .to_string());
+                               qualified_name_t{completed.connection, completed.database, {}, {}}.to_string());
             }
-            return missing(core::error_code_t::schema_not_exists, "schema", completed.schema);
+            return missing(core::error_code_t::schema_not_exists, "schema", completed.schema.t);
         }
     } // namespace
 
@@ -1626,9 +1622,9 @@ namespace services::dispatcher {
                 return core::error_t::no_error();
             }
             std::pmr::string msg{"cannot modify system catalog", resource};
-            if (tbl && !tbl->name.empty()) {
+            if (tbl && !tbl->name.t.empty()) {
                 msg += " \"";
-                msg.append(tbl->name.begin(), tbl->name.end());
+                msg.append(tbl->name.t);
                 msg += '"';
             }
             return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
@@ -3028,7 +3024,7 @@ namespace services::dispatcher {
                 }
                 named_schema table_schema(resource);
                 bool is_computed = false;
-                const std::string& target_relname_ins = tbl_ins ? tbl_ins->name : std::string{};
+                const std::string target_relname_ins = tbl_ins ? tbl_ins->name.t : std::string{};
                 if (tbl_ins && tbl_ins->relkind != 'g') {
                     for (const auto& column : tbl_ins->columns) {
                         table_schema.emplace_back(
@@ -3300,7 +3296,7 @@ namespace services::dispatcher {
                 named_schema incoming_schema(resource);
                 const named_schema* source_schema = &incoming_schema;
                 const auto* tbl_upd = node->table_metadata();
-                const std::string target_relname = tbl_upd ? tbl_upd->name : std::string{};
+                const std::string target_relname = tbl_upd ? tbl_upd->name.t : std::string{};
                 if (tbl_upd && tbl_upd->relkind != 'g') {
                     for (const auto& column : tbl_upd->columns) {
                         table_schema.emplace_back(
@@ -3486,7 +3482,7 @@ namespace services::dispatcher {
                                          "(relkind='g') table."};
                 } else if (tbl_idx) {
                     for (const auto& column : tbl_idx->columns) {
-                        table_schema.emplace_back(type_from_t{tbl_idx->name, column.type});
+                        table_schema.emplace_back(type_from_t{tbl_idx->name.t, column.type});
                     }
                 }
                 auto& keys = idx_node->keys();
@@ -3530,7 +3526,7 @@ namespace services::dispatcher {
 
                 named_schema constraint_schema{resource};
                 for (const auto& column : constrained->columns) {
-                    constraint_schema.emplace_back(type_from_t{constrained->name, column.type});
+                    constraint_schema.emplace_back(type_from_t{constrained->name.t, column.type});
                 }
 
                 validation::expression_context_t constraint_context{resource,

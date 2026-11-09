@@ -80,7 +80,7 @@ namespace components::operators::alter_validators {
                 continue;
             }
             if (!chunk.is_null(catalog::pg_class_col::relname, 0)) {
-                out.relname.assign(chunk.get_value<std::string_view>(catalog::pg_class_col::relname, 0));
+                out.relname = std::string{chunk.get_value<std::string_view>(catalog::pg_class_col::relname, 0)};
             }
             if (chunk.column_count() > catalog::pg_class_col::relkind &&
                 !chunk.is_null(catalog::pg_class_col::relkind, 0)) {

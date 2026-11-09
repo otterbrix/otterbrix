@@ -70,11 +70,11 @@ namespace components::operators {
             }
             std::pmr::vector<vector::data_chunk_t> batches{resource_};
             // A bare type name looks in pg_catalog before the place, as a bare relation name does.
-            if (entry.database.empty() && entry.schema.empty()) {
+            if (entry.written.database.t.empty() && entry.written.schema.t.empty()) {
                 auto in_catalog = co_await read_pg_type(resource_,
                                                         ctx,
                                                         catalog::well_known_oid::pg_catalog_namespace,
-                                                        entry.type_name);
+                                                        entry.written.collection.t);
                 if (in_catalog.has_error()) {
                     set_error(in_catalog.error());
                     co_return;
@@ -82,10 +82,9 @@ namespace components::operators {
                 batches = std::move(in_catalog.value());
             }
             if (!holds_a_type(batches)) {
-                auto schema =
-                    co_await lookup_schema(resource_,
-                                           ctx,
-                                           catalog::complete_name(ctx->place, {}, entry.database, entry.schema));
+                auto schema = co_await lookup_schema(
+                    resource_, ctx, catalog::complete_name(ctx->place, {}, entry.written.database.t,
+                                                           entry.written.schema.t));
                 if (schema.has_error()) {
                     // A failed pg_namespace read is not a miss; saying "not found" here hides it.
                     set_error(schema.error());
@@ -96,7 +95,8 @@ namespace components::operators {
                 if (entry.namespace_oid == catalog::INVALID_OID) {
                     continue;
                 }
-                auto in_schema = co_await read_pg_type(resource_, ctx, entry.namespace_oid, entry.type_name);
+                auto in_schema = co_await read_pg_type(resource_, ctx, entry.namespace_oid,
+                                                       entry.written.collection.t);
                 if (in_schema.has_error()) {
                     set_error(in_schema.error());
                     co_return;
@@ -116,7 +116,7 @@ namespace components::operators {
 
             components::logical_plan::resolved_type_metadata_t md;
             md.type_oid = static_cast<catalog::oid_t>(batch.get_value<std::uint32_t>(0, 0));
-            md.name = std::string(batch.get_value<std::string_view>(1, 0));
+            md.name = core::relname_t{std::string{batch.get_value<std::string_view>(1, 0)}};
             md.namespace_oid = static_cast<catalog::oid_t>(batch.get_value<std::uint32_t>(2, 0));
             if (!batch.is_null(3, 0)) {
                 md.typdefspec = std::string(batch.get_value<std::string_view>(3, 0));

@@ -125,15 +125,13 @@ namespace {
         }
     }
 
-    // A type names itself in type_name; every other catalog-resolve kind uses relname.
     void collect_catalog_targets(const logical_plan::catalog_resolves_t& resolves, std::vector<std::string>& out) {
         const auto add = [&out](const logical_plan::node_catalog_resolve_ptr& node, const char* kind) {
             if (!node) {
                 return;
             }
             for (const auto& entry : node->entries()) {
-                const std::string& name = entry.relname.empty() ? entry.type_name : entry.relname;
-                out.push_back(std::string{kind} + ":" + entry.schema + "." + name);
+                out.push_back(std::string{kind} + ":" + entry.written.schema.t + "." + entry.written.collection.t);
             }
         };
         add(resolves.namespaces, "namespace");

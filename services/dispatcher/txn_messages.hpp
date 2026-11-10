@@ -84,6 +84,7 @@ namespace services::dispatcher {
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        std::vector<components::table::dropped_object_t> dropped_objects{};
         // Every storage that kept state of the transaction; drained also by an empty COMMIT, which takes no commit_id.
         std::vector<components::table::participant_t> participants{};
     };
@@ -122,6 +123,7 @@ namespace services::dispatcher {
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        std::vector<components::table::dropped_object_t> dropped_objects{};
         std::vector<components::table::participant_t> participants{};
         // The functions and casts the statement registered or dropped.
         registry_changes_t registry_changes{};
@@ -130,7 +132,7 @@ namespace services::dispatcher {
             return base_appends.empty() && base_deletes.empty() && pg_catalog_appends.empty() &&
                    pg_catalog_delete_tables.empty() && backfills.empty() && dropped_storage_oids.empty() &&
                    created_storage_oids.empty() && created_indexes.empty() && referenced_deletes.empty() &&
-                   participants.empty() && registry_changes.empty();
+                   dropped_objects.empty() && participants.empty() && registry_changes.empty();
         }
     };
 

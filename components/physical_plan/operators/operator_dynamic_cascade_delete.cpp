@@ -363,6 +363,132 @@ namespace components::operators {
                          char relkind,
                          const core::columnname_t& column,
                          std::span<const logical_plan::storage_target_t> targets) {
+        auto planned =
+            co_await plan_drop_of(resource, ctx, seed_classid, seed_objid, behavior, target, relkind, column);
+        if (planned.has_error()) {
+            co_return planned.error();
+        }
+        co_return co_await drop_steps(resource,
+                                      ctx,
+                                      seed_classid,
+                                      seed_objid,
+                                      behavior,
+                                      planned.value().steps,
+                                      targets);
+    }
+
+    actor_zeta::unique_future<core::error_t> drop_late_dependents(std::pmr::memory_resource* resource,
+                                                                  pipeline::context_t* ctx,
+                                                                  const std::vector<table::dropped_object_t>& dropped) {
+        if (dropped.empty()) {
+            co_return core::error_t::no_error();
+        }
+        constexpr catalog::oid_t pg_depend_oid = catalog::well_known_oid::pg_depend_table;
+        execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+
+        // One read finds the dropped objects something still depends on
+        chunks_vector_t keys(resource);
+        {
+            std::pmr::vector<types::complex_logical_type> key_types(resource);
+            key_types.emplace_back(types::to_logical_type<catalog::oid_t>());
+            key_types.emplace_back(types::to_logical_type<catalog::oid_t>());
+            for (std::size_t first = 0; first < dropped.size(); first += vector::DEFAULT_VECTOR_CAPACITY) {
+                const std::size_t count =
+                    std::min<std::size_t>(vector::DEFAULT_VECTOR_CAPACITY, dropped.size() - first);
+                vector::data_chunk_t chunk(resource, key_types, count);
+                for (std::size_t row = 0; row < count; ++row) {
+                    chunk.set_value(uint64_t{0}, static_cast<uint64_t>(row), dropped[first + row].classid);
+                    chunk.set_value(uint64_t{1}, static_cast<uint64_t>(row), dropped[first + row].objid);
+                }
+                chunk.set_cardinality(static_cast<uint64_t>(count));
+                keys.push_back(std::move(chunk));
+            }
+        }
+        std::pmr::vector<std::uint64_t> key_columns(resource);
+        key_columns.emplace_back(catalog::pg_depend_col::refclassid);
+        key_columns.emplace_back(catalog::pg_depend_col::refobjid);
+        std::pmr::vector<std::uint64_t> projected(resource);
+        projected.emplace_back(catalog::pg_depend_col::objid);
+        auto [_rd, rdf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::read_chunks_by_keys,
+                                                      exec_ctx,
+                                                      pg_depend_oid,
+                                                      std::move(key_columns),
+                                                      std::move(keys),
+                                                      std::move(projected));
+        auto dependents = co_await std::move(rdf);
+        if (dependents.has_error()) {
+            co_return dependents.error();
+        }
+        if (dependents.value().size() != dropped.size()) {
+            co_return core::error_t{core::error_code_t::internal_error,
+                                    std::pmr::string{"DROP at COMMIT: the pg_depend read answered a count that does "
+                                                     "not match the dropped objects",
+                                                     resource}};
+        }
+
+        std::pmr::unordered_map<catalog::oid_t, bool> remote_namespaces(resource);
+        for (std::size_t index = 0; index < dropped.size(); ++index) {
+            const auto& batches = dependents.value()[index];
+            if (std::none_of(batches.begin(), batches.end(), [](const auto& chunk) { return chunk.size() != 0; })) {
+                continue;
+            }
+            // Planned one root at a time: a dependent an earlier root took is no longer seen
+            const auto& root = dropped[index];
+            auto planned = co_await plan_drop_of(resource,
+                                                 ctx,
+                                                 root.classid,
+                                                 root.objid,
+                                                 root.behavior,
+                                                 qualified_name_t{},
+                                                 catalog::relkind::regular,
+                                                 core::columnname_t{});
+            if (planned.has_error()) {
+                co_return planned.error();
+            }
+            // The root itself went with the DROP
+            auto steps = std::move(planned.value().steps);
+            steps.pop_back();
+            for (const auto& step : steps) {
+                bool takeable = step.classid != catalog::well_known_oid::pg_proc_table;
+                if (takeable && step.classid == catalog::well_known_oid::pg_class_table) {
+                    auto relation = co_await namespace_and_kind(resource, ctx, step.objid);
+                    if (relation.has_error()) {
+                        co_return relation.error();
+                    }
+                    auto remote =
+                        co_await is_remote_namespace(resource, ctx, relation.value().first, remote_namespaces);
+                    if (remote.has_error()) {
+                        co_return remote.error();
+                    }
+                    takeable = !remote.value();
+                }
+                if (!takeable) {
+                    co_return core::error_t{
+                        core::error_code_t::dependent_objects_still_exist,
+                        std::pmr::string{"DROP: a function or a table of a connection was created inside a dropped "
+                                         "object by a transaction that committed first",
+                                         resource}};
+                }
+            }
+            if (steps.empty()) {
+                continue;
+            }
+            if (auto taken = co_await drop_steps(resource, ctx, root.classid, root.objid, root.behavior, steps, {});
+                taken.contains_error()) {
+                co_return taken;
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
+    actor_zeta::unique_future<core::error_t> drop_steps(std::pmr::memory_resource* resource,
+                                                        pipeline::context_t* ctx,
+                                                        catalog::oid_t seed_classid,
+                                                        catalog::oid_t seed_objid,
+                                                        catalog::drop_behavior_t behavior,
+                                                        const std::pmr::vector<catalog::drop_step_t>& steps,
+                                                        std::span<const logical_plan::storage_target_t> targets) {
         // The executor stamps the storages of a DROP that may reach a connection's table; one it did not stamp (a
         // table of otterbrix's own as the seed) reaches the disk only.
         const auto storage_of =
@@ -381,16 +507,8 @@ namespace components::operators {
             return core::error_t{core::error_code_t::internal_error, std::move(what)};
         };
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
-        auto planned =
-            co_await plan_drop_of(resource, ctx, seed_classid, seed_objid, behavior, target, relkind, column);
-        if (planned.has_error()) {
-            co_return planned.error();
-        }
-        const auto& plan = planned.value();
-
         // topological_drop_order already emits each object once, so a caller-side dedup is deliberately
         // omitted here.
-        const auto& steps = plan.steps;
 
         struct pending_storage_drop_t {
             catalog::oid_t table_oid{catalog::INVALID_OID};
@@ -663,6 +781,11 @@ namespace components::operators {
                                             INDEX_KIND);
         }
 
+        if (ctx->txn.transaction_id != 0) {
+            for (const auto& step : steps) {
+                ctx->dropped_objects.push_back(table::dropped_object_t{step.classid, step.objid, behavior});
+            }
+        }
         co_return core::error_t::no_error();
     }
 

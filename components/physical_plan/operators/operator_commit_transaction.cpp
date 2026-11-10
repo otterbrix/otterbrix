@@ -1,8 +1,10 @@
 #include "operator_commit_transaction.hpp"
 
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/unique_key.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/physical_plan/operators/operator_dynamic_cascade_delete.hpp>
 #include <components/physical_plan/operators/operator_fk_cascade.hpp>
 #include <components/physical_plan/operators/operator_fk_check.hpp>
 #include <components/physical_plan/operators/operator_unique_constraint.hpp>
@@ -64,6 +66,12 @@ namespace components::operators {
         std::vector<components::table::created_index_t> created_indexes;
         components::table::commit_view_t commit_view;
         std::vector<components::table::referenced_delete_t> referenced_deletes;
+
+        core::error_t late_drop = core::error_t::no_error();
+        if (drain_.txn.transaction_id != 0 && drain_.commit_id > 0 && !drain_.commit_view.snapshot_is_current &&
+            !drain_.dropped_objects.empty() && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            late_drop = co_await drop_late_dependents_(ctx);
+        }
         // Until the WAL marker, the only record of this transaction's writes: the drain emptied it.
         components::table::txn_abort_drain_t undo = undo_of_commit(drain_);
         txn_data = drain_.txn;
@@ -85,6 +93,17 @@ namespace components::operators {
         if (checks_.refusal.contains_error()) {
             co_await refuse_(ctx, std::move(undo), std::move(checks_.refusal));
             co_return;
+        }
+        if (late_drop.contains_error()) {
+            co_await refuse_(ctx, std::move(undo), std::move(late_drop));
+            co_return;
+        }
+        if (prepares && !commit_view.snapshot_is_current) {
+            if (auto refused = co_await check_dependency_targets_(ctx, commit_view.snapshot, undo.swap_appends);
+                refused.contains_error()) {
+                co_await refuse_(ctx, std::move(undo), std::move(refused));
+                co_return;
+            }
         }
         if (prepares) {
             if (auto refused =
@@ -618,6 +637,126 @@ namespace components::operators {
                     co_return core::error_t{core::error_code_t::foreign_key_violation,
                                             std::pmr::string{"FK constraint violated: a child row committed beside "
                                                              "the delete of its parent",
+                                                             resource_}};
+                }
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
+    actor_zeta::unique_future<core::error_t>
+    operator_commit_transaction_t::drop_late_dependents_(pipeline::context_t* ctx) {
+        pipeline::context_t drop_ctx(ctx->parameters, ctx->disk_address, ctx->index_address, ctx->wal_address);
+        drop_ctx.session = ctx->session;
+        drop_ctx.current_message_sender = ctx->current_message_sender;
+        drop_ctx.function_registry = ctx->function_registry;
+        drop_ctx.txn = drain_.commit_view.snapshot;
+        drop_ctx.execution_context = ctx->execution_context;
+        drop_ctx.place = ctx->place;
+        drop_ctx.runner = ctx->runner;
+        auto dropped = co_await drop_late_dependents(resource_, &drop_ctx, drain_.dropped_objects);
+
+        drain_.swap_appends.insert(drain_.swap_appends.end(),
+                                   drop_ctx.pg_catalog_appends.begin(),
+                                   drop_ctx.pg_catalog_appends.end());
+        drain_.swap_deletes.insert(drop_ctx.pg_catalog_delete_tables.begin(), drop_ctx.pg_catalog_delete_tables.end());
+        drain_.swap_backfills.insert(drain_.swap_backfills.end(),
+                                     std::make_move_iterator(drop_ctx.pg_attribute_commit_id_backfills.begin()),
+                                     std::make_move_iterator(drop_ctx.pg_attribute_commit_id_backfills.end()));
+        drain_.dropped_storage_oids.insert(drain_.dropped_storage_oids.end(),
+                                           drop_ctx.dropped_storage_oids.begin(),
+                                           drop_ctx.dropped_storage_oids.end());
+        co_return dropped;
+    }
+
+    actor_zeta::unique_future<core::error_t> operator_commit_transaction_t::check_dependency_targets_(
+        pipeline::context_t* ctx,
+        const components::table::transaction_data& commit_snapshot,
+        const std::vector<components::pg_catalog_append_range_t>& catalog_appends) {
+        constexpr auto pg_depend_oid = components::catalog::well_known_oid::pg_depend_table;
+        constexpr auto pg_attribute_oid = components::catalog::well_known_oid::pg_attribute_table;
+        std::pmr::vector<int64_t> rows(resource_);
+        for (const auto& range : catalog_appends) {
+            if (range.table_oid != pg_depend_oid) {
+                continue;
+            }
+            for (uint64_t offset = 0; offset < range.count; ++offset) {
+                rows.push_back(range.start_row + static_cast<int64_t>(offset));
+            }
+        }
+        if (rows.empty()) {
+            co_return core::error_t::no_error();
+        }
+        pipeline::context_t check_ctx(ctx->parameters, ctx->disk_address, ctx->index_address, ctx->wal_address);
+        check_ctx.session = ctx->session;
+        check_ctx.txn = commit_snapshot;
+        check_ctx.execution_context = ctx->execution_context;
+        check_ctx.runner = ctx->runner;
+
+        chunks_vector_t edges(resource_);
+        if (auto fetch_error = co_await fetch_rows_(&check_ctx,
+                                                    pg_depend_oid,
+                                                    rows,
+                                                    components::table::fetch_visibility_t::SNAPSHOT,
+                                                    &edges);
+            fetch_error.contains_error()) {
+            co_return fetch_error;
+        }
+        namespace depend = components::catalog::pg_depend_col;
+        std::pmr::map<components::catalog::oid_t, std::pmr::vector<components::catalog::oid_t>> targets(resource_);
+        for (const auto& chunk : edges) {
+            for (uint64_t row = 0; row < chunk.size(); ++row) {
+                if (chunk.is_null(depend::refclassid, row) || chunk.is_null(depend::refobjid, row)) {
+                    continue;
+                }
+                const auto classid =
+                    static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(depend::refclassid, row));
+                targets[classid].push_back(
+                    static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(depend::refobjid, row)));
+            }
+        }
+
+        const components::execution_context_t exec_ctx{ctx->session, commit_snapshot, {}};
+        for (auto& [classid, oids] : targets) {
+            std::sort(oids.begin(), oids.end());
+            oids.erase(std::unique(oids.begin(), oids.end()), oids.end());
+            std::pmr::vector<std::uint64_t> keys(resource_);
+            keys.emplace_back(0);
+            std::pmr::vector<std::uint64_t> projected(resource_);
+            projected.emplace_back(0);
+            const bool tombstoned = classid == pg_attribute_oid;
+            if (tombstoned) {
+                projected.emplace_back(components::catalog::pg_attribute_col::attisdropped);
+            }
+            auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::read_chunks_by_keys,
+                                                        exec_ctx,
+                                                        classid,
+                                                        std::move(keys),
+                                                        make_keys_batch(resource_, oids),
+                                                        std::move(projected));
+            auto found = co_await std::move(rf);
+            if (found.has_error()) {
+                co_return found.error();
+            }
+            if (found.value().size() != oids.size()) {
+                co_return core::error_t{core::error_code_t::internal_error,
+                                        std::pmr::string{"COMMIT: the catalog read answered a count that does not "
+                                                         "match the objects asked for",
+                                                         resource_}};
+            }
+            for (std::size_t index = 0; index < oids.size(); ++index) {
+                bool live = false;
+                for (const auto& chunk : found.value()[index]) {
+                    for (uint64_t row = 0; row < chunk.size() && !live; ++row) {
+                        live = !tombstoned || chunk.is_null(1, row) || !chunk.get_value<bool>(1, row);
+                    }
+                }
+                if (!live) {
+                    co_return core::error_t{core::error_code_t::undefined_object,
+                                            std::pmr::string{"COMMIT: an object this transaction's catalog rows "
+                                                             "depend on was dropped by a transaction that "
+                                                             "committed first",
                                                              resource_}};
                 }
             }

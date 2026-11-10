@@ -85,6 +85,8 @@ namespace components::pipeline {
         std::vector<components::table::created_index_t> created_indexes;
         // Recorded by operator_fk_cascade_t
         std::vector<components::table::referenced_delete_t> referenced_deletes;
+        // Recorded by drop_with_dependents
+        std::vector<components::table::dropped_object_t> dropped_objects;
         // Every pg_proc row a DROP took with its dependents.
         std::vector<dropped_function_t> dropped_functions;
         // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.

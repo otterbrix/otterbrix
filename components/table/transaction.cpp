@@ -67,6 +67,7 @@ namespace components::table {
         marks.created_storages = created_storage_oids_.size();
         marks.created_indexes = created_indexes_.size();
         marks.referenced_deletes = referenced_deletes_.size();
+        marks.dropped_objects = dropped_objects_.size();
         current_sub_id_ = ++last_sub_id_;
         savepoints_.push_back(
             savepoint_t{std::pmr::string{name, savepoints_.get_allocator().resource()}, current_sub_id_, marks});
@@ -115,6 +116,7 @@ namespace components::table {
         drain->created_storage_oids = cut_tail(created_storage_oids_, marks.created_storages);
         drain->created_indexes = cut_tail(created_indexes_, marks.created_indexes);
         cut_tail(referenced_deletes_, marks.referenced_deletes);
+        cut_tail(dropped_objects_, marks.dropped_objects);
         drain->participants = participants_;
 
         // A fresh level, so the WAL can tell the rolled-back writes from those made after this point.

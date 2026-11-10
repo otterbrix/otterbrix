@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/cascade_planner.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/logical_plan/node_dynamic_cascade_delete.hpp>
@@ -27,6 +28,21 @@ namespace components::operators {
                          char relkind,
                          const core::columnname_t& column,
                          std::span<const logical_plan::storage_target_t> targets);
+
+    // The planned `steps` (children first) of a DROP
+    actor_zeta::unique_future<core::error_t> drop_steps(std::pmr::memory_resource* resource,
+                                                        pipeline::context_t* ctx,
+                                                        components::catalog::oid_t seed_classid,
+                                                        components::catalog::oid_t seed_objid,
+                                                        components::catalog::drop_behavior_t behavior,
+                                                        const std::pmr::vector<components::catalog::drop_step_t>& steps,
+                                                        std::span<const logical_plan::storage_target_t> targets);
+
+    // What transactions that committed before this one created inside the objects its DROPs took
+    actor_zeta::unique_future<core::error_t>
+    drop_late_dependents(std::pmr::memory_resource* resource,
+                         pipeline::context_t* ctx,
+                         const std::vector<components::table::dropped_object_t>& dropped);
 
     // The catalog rows of the column `attoid` of `table_oid`: its pg_attribute row and its own pg_depend edges go,
     // and its storage at `address` drops it; a storage that waits for otterbrix's COMMIT gets a tombstone row it and

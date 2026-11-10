@@ -59,6 +59,13 @@ namespace components::operators {
                            const components::table::transaction_data& commit_snapshot,
                            const std::vector<components::pg_catalog_append_range_t>& appends,
                            const std::vector<components::table::referenced_delete_t>& referenced_deletes);
+        // A transaction that committed first may have created something inside an object this one dropped
+        actor_zeta::unique_future<core::error_t> drop_late_dependents_(pipeline::context_t* ctx);
+        // Every pg_depend edge this transaction wrote must still refer to a live object
+        actor_zeta::unique_future<core::error_t>
+        check_dependency_targets_(pipeline::context_t* ctx,
+                                  const components::table::transaction_data& commit_snapshot,
+                                  const std::vector<components::pg_catalog_append_range_t>& catalog_appends);
         actor_zeta::unique_future<core::error_t> fetch_rows_(pipeline::context_t* check_ctx,
                                                              components::catalog::oid_t table_oid,
                                                              const std::pmr::vector<int64_t>& row_ids,

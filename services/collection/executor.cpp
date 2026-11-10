@@ -4126,6 +4126,7 @@ namespace services::collection::executor {
             payload.created_storage_oids = std::move(exec_result.created_storage_oids);
             payload.created_indexes = std::move(exec_result.created_indexes);
             payload.referenced_deletes = std::move(exec_result.referenced_deletes);
+            payload.dropped_objects = std::move(exec_result.dropped_objects);
             payload.participants = exec_result.participants;
             trace(log_,
                   "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
@@ -5113,6 +5114,10 @@ namespace services::collection::executor {
             result_tracking.referenced_deletes.push_back(std::move(rows));
         }
         pipeline_context.referenced_deletes.clear();
+        for (const auto& object : pipeline_context.dropped_objects) {
+            result_tracking.dropped_objects.push_back(object);
+        }
+        pipeline_context.dropped_objects.clear();
         for (auto& dropped : pipeline_context.dropped_functions) {
             result_tracking.dropped_functions.push_back(std::move(dropped));
         }
@@ -5275,6 +5280,7 @@ namespace services::collection::executor {
                              std::move(result.applied_settings)};
         out.captured_explain_ir = std::move(captured_ir);
         out.referenced_deletes = std::move(result.referenced_deletes);
+        out.dropped_objects = std::move(result.dropped_objects);
         out.written = result.written;
         out.participants = std::move(result.participants);
         out.host_rows = std::move(result.host_rows);

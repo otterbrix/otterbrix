@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
@@ -37,6 +38,12 @@ namespace components::table {
     struct referenced_delete_t {
         catalog::oid_t table_oid;
         std::vector<int64_t> row_ids;
+    };
+
+    struct dropped_object_t {
+        catalog::oid_t classid;
+        catalog::oid_t objid;
+        catalog::drop_behavior_t behavior;
     };
 
     // A storage that keeps state of the transaction (a host's backend): every one the transaction read or wrote gets
@@ -96,6 +103,7 @@ namespace components::table {
         size_t created_storages{0};
         size_t created_indexes{0};
         size_t referenced_deletes{0};
+        size_t dropped_objects{0};
     };
 
     struct savepoint_t {
@@ -258,6 +266,12 @@ namespace components::table {
             referenced_deletes_.clear();
             return out;
         }
+        void accumulate_dropped_object(dropped_object_t object) { dropped_objects_.push_back(object); }
+        std::vector<dropped_object_t> drain_dropped_objects() {
+            std::vector<dropped_object_t> out(std::move(dropped_objects_));
+            dropped_objects_.clear();
+            return out;
+        }
 
         // Lets the commit-drain handler ABORT an empty COMMIT instead of allocating a commit_id for a no-op.
         bool has_accumulated() const {
@@ -307,6 +321,7 @@ namespace components::table {
         std::vector<components::catalog::oid_t> created_storage_oids_;
         std::vector<created_index_t> created_indexes_;
         std::vector<referenced_delete_t> referenced_deletes_;
+        std::vector<dropped_object_t> dropped_objects_;
         std::vector<participant_t> participants_;
         std::string write_connection_;
 

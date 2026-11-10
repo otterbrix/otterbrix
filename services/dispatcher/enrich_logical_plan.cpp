@@ -723,9 +723,8 @@ namespace services::catalog_resolve {
                 return components::planner::view_stale_error(resource,
                                                              entry.pin.view.t,
                                                              "the relation its body was bound to (\"" +
-                                                                 entry.written.collection.t +
-                                                                 "\", oid " + std::to_string(entry.pin.oid) +
-                                                                 ") no longer exists");
+                                                                 entry.written.collection.t + "\", oid " +
+                                                                 std::to_string(entry.pin.oid) + ") no longer exists");
             }
         }
         return core::error_t::no_error();

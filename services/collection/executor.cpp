@@ -2343,17 +2343,16 @@ namespace services::collection::executor {
                         return;
                     }
                     // The place's connection is its database's own: it is there while the database is.
-                    const bool exists = place != nullptr && (database || connection ? place->database_oid
-                                                                                    : place->namespace_oid) !=
-                                                                components::catalog::INVALID_OID;
+                    const bool exists =
+                        place != nullptr && (database || connection ? place->database_oid : place->namespace_oid) !=
+                                                components::catalog::INVALID_OID;
                     const auto& value = connection ? resolves.place.connection.t
                                         : database ? resolves.place.database.t
                                                    : resolves.place.schema.t;
-                    auto bound =
-                        exists ? components::vector::make_scalar(resource, std::string_view{value})
-                               : components::vector::make_null(resource,
-                                                               components::types::complex_logical_type{
-                                                                   components::types::logical_type::TEXT});
+                    auto bound = exists ? components::vector::make_scalar(resource, std::string_view{value})
+                                        : components::vector::make_null(resource,
+                                                                        components::types::complex_logical_type{
+                                                                            components::types::logical_type::TEXT});
                     call.args().emplace_back(
                         parameters.add_parameter(std::move(bound), components::vector::parameter_kind::literal));
                 }
@@ -2382,8 +2381,7 @@ namespace services::collection::executor {
                 if (assignment.id != components::catalog::setting_id::search_path || assignment.is_default) {
                     continue;
                 }
-                VALUE_OR_RETURN(auto canonical,
-                                components::catalog::canonical_search_path(assignment.value, resource));
+                VALUE_OR_RETURN(auto canonical, components::catalog::canonical_search_path(assignment.value, resource));
                 if (canonical.empty()) {
                     return set_place_t{true, components::catalog::place_t{}};
                 }

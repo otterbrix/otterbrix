@@ -83,8 +83,9 @@ namespace components::operators {
             }
             if (!holds_a_type(batches)) {
                 auto schema = co_await lookup_schema(
-                    resource_, ctx, catalog::complete_name(ctx->place, {}, entry.written.database.t,
-                                                           entry.written.schema.t));
+                    resource_,
+                    ctx,
+                    catalog::complete_name(ctx->place, {}, entry.written.database.t, entry.written.schema.t));
                 if (schema.has_error()) {
                     // A failed pg_namespace read is not a miss; saying "not found" here hides it.
                     set_error(schema.error());
@@ -95,8 +96,7 @@ namespace components::operators {
                 if (entry.namespace_oid == catalog::INVALID_OID) {
                     continue;
                 }
-                auto in_schema = co_await read_pg_type(resource_, ctx, entry.namespace_oid,
-                                                       entry.written.collection.t);
+                auto in_schema = co_await read_pg_type(resource_, ctx, entry.namespace_oid, entry.written.collection.t);
                 if (in_schema.has_error()) {
                     set_error(in_schema.error());
                     co_return;

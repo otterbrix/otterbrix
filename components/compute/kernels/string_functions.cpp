@@ -671,11 +671,12 @@ namespace {
 
     core::pmr::polymorphic_unique_ptr<vector_function> make_place_name_func(std::pmr::memory_resource* resource,
                                                                             std::string_view name) {
-        function_doc doc{resource,
-                         "The session's current place",
-                         "current_database() / current_schema() / current_connection() -> text; NULL when the place is gone",
-                         {"place"},
-                         false};
+        function_doc doc{
+            resource,
+            "The session's current place",
+            "current_database() / current_schema() / current_connection() -> text; NULL when the place is gone",
+            {"place"},
+            false};
         auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
                                                                       name,
                                                                       arity::unary(),

@@ -8,41 +8,6 @@
 namespace components::vector::vector_ops {
 
     namespace impl {
-        template<typename T>
-        void templated_generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
-            if (start > std::numeric_limits<T>::max() || increment > std::numeric_limits<T>::max()) {
-                assert(false && "sequence start or increment out of type range");
-                std::abort();
-            }
-            result.set_vector_type(vector_type::FLAT);
-            auto result_data = result.data<T>();
-            auto value = T(start);
-            for (uint64_t i = 0; i < count; i++) {
-                if (i > 0) {
-                    value = static_cast<T>(value + static_cast<T>(increment));
-                }
-                result_data[i] = value;
-            }
-        }
-
-        template<typename T>
-        void templated_generate_sequence(vector_t& result,
-                                         uint64_t count,
-                                         const indexing_vector_t& indexing,
-                                         int64_t start,
-                                         int64_t increment) {
-            if (start > std::numeric_limits<T>::max() || increment > std::numeric_limits<T>::max()) {
-                assert(false && "sequence start or increment out of type range");
-                std::abort();
-            }
-            result.set_vector_type(vector_type::FLAT);
-            auto result_data = result.data<T>();
-            auto value = static_cast<uint64_t>(start);
-            for (uint64_t i = 0; i < count; i++) {
-                auto idx = indexing.get_index(i);
-                result_data[idx] = static_cast<T>(value + static_cast<uint64_t>(increment) * idx);
-            }
-        }
 
         template<typename T>
         static void templated_copy(const vector_t& source,
@@ -699,128 +664,6 @@ namespace components::vector::vector_ops {
 
     } // namespace impl
 
-    void generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
-        switch (result.type().type()) {
-            case types::logical_type::TINYINT:
-                impl::templated_generate_sequence<int8_t>(result, count, start, increment);
-                return;
-            case types::logical_type::SMALLINT:
-                impl::templated_generate_sequence<int16_t>(result, count, start, increment);
-                return;
-            case types::logical_type::INTEGER:
-                impl::templated_generate_sequence<int32_t>(result, count, start, increment);
-                return;
-            case types::logical_type::BIGINT:
-                impl::templated_generate_sequence<int64_t>(result, count, start, increment);
-                return;
-            case types::logical_type::NA:
-            case types::logical_type::ANY:
-            case types::logical_type::USER:
-            case types::logical_type::BOOLEAN:
-            case types::logical_type::HUGEINT:
-            case types::logical_type::DATE:
-            case types::logical_type::TIME:
-            case types::logical_type::TIME_TZ:
-            case types::logical_type::TIMESTAMP:
-            case types::logical_type::TIMESTAMP_TZ:
-            case types::logical_type::INTERVAL:
-            case types::logical_type::DECIMAL:
-            case types::logical_type::FLOAT:
-            case types::logical_type::DOUBLE:
-            case types::logical_type::BLOB:
-            case types::logical_type::UTINYINT:
-            case types::logical_type::USMALLINT:
-            case types::logical_type::UINTEGER:
-            case types::logical_type::UBIGINT:
-            case types::logical_type::UHUGEINT:
-            case types::logical_type::BIT:
-            case types::logical_type::TEXT:
-            case types::logical_type::STRING_LITERAL:
-            case types::logical_type::INTEGER_LITERAL:
-            case types::logical_type::POINTER:
-            case types::logical_type::VALIDITY:
-            case types::logical_type::UUID:
-            case types::logical_type::STRUCT:
-            case types::logical_type::LIST:
-            case types::logical_type::MAP:
-            case types::logical_type::TABLE:
-            case types::logical_type::ENUM:
-            case types::logical_type::FUNCTION:
-            case types::logical_type::LAMBDA:
-            case types::logical_type::UNION:
-            case types::logical_type::VARIANT:
-            case types::logical_type::ARRAY:
-            case types::logical_type::UNKNOWN:
-            case types::logical_type::INVALID:
-                break;
-        }
-        assert(false && "Unimplemented type for generate sequence");
-        std::abort();
-    }
-
-    void generate_sequence(vector_t& result,
-                           uint64_t count,
-                           const indexing_vector_t& indexing,
-                           int64_t start,
-                           int64_t increment) {
-        switch (result.type().type()) {
-            case types::logical_type::TINYINT:
-                impl::templated_generate_sequence<int8_t>(result, count, indexing, start, increment);
-                return;
-            case types::logical_type::SMALLINT:
-                impl::templated_generate_sequence<int16_t>(result, count, indexing, start, increment);
-                return;
-            case types::logical_type::INTEGER:
-                impl::templated_generate_sequence<int32_t>(result, count, indexing, start, increment);
-                return;
-            case types::logical_type::BIGINT:
-                impl::templated_generate_sequence<int64_t>(result, count, indexing, start, increment);
-                return;
-            case types::logical_type::NA:
-            case types::logical_type::ANY:
-            case types::logical_type::USER:
-            case types::logical_type::BOOLEAN:
-            case types::logical_type::HUGEINT:
-            case types::logical_type::DATE:
-            case types::logical_type::TIME:
-            case types::logical_type::TIME_TZ:
-            case types::logical_type::TIMESTAMP:
-            case types::logical_type::TIMESTAMP_TZ:
-            case types::logical_type::INTERVAL:
-            case types::logical_type::DECIMAL:
-            case types::logical_type::FLOAT:
-            case types::logical_type::DOUBLE:
-            case types::logical_type::BLOB:
-            case types::logical_type::UTINYINT:
-            case types::logical_type::USMALLINT:
-            case types::logical_type::UINTEGER:
-            case types::logical_type::UBIGINT:
-            case types::logical_type::UHUGEINT:
-            case types::logical_type::BIT:
-            case types::logical_type::TEXT:
-            case types::logical_type::STRING_LITERAL:
-            case types::logical_type::INTEGER_LITERAL:
-            case types::logical_type::POINTER:
-            case types::logical_type::VALIDITY:
-            case types::logical_type::UUID:
-            case types::logical_type::STRUCT:
-            case types::logical_type::LIST:
-            case types::logical_type::MAP:
-            case types::logical_type::TABLE:
-            case types::logical_type::ENUM:
-            case types::logical_type::FUNCTION:
-            case types::logical_type::LAMBDA:
-            case types::logical_type::UNION:
-            case types::logical_type::VARIANT:
-            case types::logical_type::ARRAY:
-            case types::logical_type::UNKNOWN:
-            case types::logical_type::INVALID:
-                break;
-        }
-        assert(false && "Unimplemented type for generate sequence");
-        std::abort();
-    }
-
     static void copy_resolved(const vector_t* source_ptr,
                               const indexing_vector_t* indexing_ptr,
                               const indexing_vector_t& indexing,
@@ -1100,14 +943,6 @@ namespace components::vector::vector_ops {
                     indexing_ptr = &owned_indexing;
                     source_ptr = &child;
                     continue;
-                }
-                case vector_type::SEQUENCE: {
-                    int64_t start, increment;
-                    vector_t seq(source_ptr->resource(), source_ptr->type());
-                    source_ptr->get_sequence(start, increment);
-                    generate_sequence(seq, source_count, *indexing_ptr, start, increment);
-                    copy(seq, target, *indexing_ptr, source_count, source_offset, target_offset);
-                    return;
                 }
                 case vector_type::CONSTANT:
                     indexing_ptr = zero_indexing_vector(copy_count, owned_indexing);

@@ -197,7 +197,8 @@ TEST_CASE("integration::cpp::connection_names::current_connection_names_the_plac
         CHECK(host.db.strings(session, "SELECT current_connection();") == std::vector<std::string>{connection});
     }
     check(host,
-          {{"", "SELECT current_connection('my');",
+          {{"",
+            "SELECT current_connection('my');",
             refusal(code::unrecognized_function, "function current_connection takes no arguments")}});
 }
 

@@ -57,8 +57,9 @@ namespace {
             return false;
         }
         const auto& entries = t.resolves.types->entries();
-        return std::any_of(entries.begin(), entries.end(),
-                           [&](const auto& entry) { return entry.written.collection.t == name; });
+        return std::any_of(entries.begin(), entries.end(), [&](const auto& entry) {
+            return entry.written.collection.t == name;
+        });
     }
 
     void require_refused(const std::string& sql, core::error_code_t code) {

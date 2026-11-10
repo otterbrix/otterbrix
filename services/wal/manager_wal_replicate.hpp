@@ -102,7 +102,7 @@ namespace services::wal {
 
         unique_future<core::error_t> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
-        unique_future<wal::id_t> current_wal_id(session_id_t session);
+        unique_future<core::result_wrapper_t<wal::id_t>> current_wal_id(session_id_t session);
 
         // Self-sent by commit_txn when WAL growth trips the threshold; fire-and-forget.
         unique_future<void> run_auto_checkpoint(session_id_t session);

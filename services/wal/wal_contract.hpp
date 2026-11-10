@@ -39,7 +39,7 @@ namespace services::wal {
 
         actor_zeta::unique_future<core::error_t> truncate_before(session_id_t session, id_t checkpoint_wal_id);
 
-        actor_zeta::unique_future<id_t> current_wal_id(session_id_t session);
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>> current_wal_id(session_id_t session);
 
         // Auto-checkpoint orchestration triggered by commit_txn when WAL growth
         // since the last checkpoint trips auto_checkpoint_threshold_bytes. The WAL

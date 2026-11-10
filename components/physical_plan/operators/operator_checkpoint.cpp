@@ -52,7 +52,13 @@ namespace components::operators {
             auto [_wi, wif] = actor_zeta::otterbrix::send(ctx->wal_address,
                                                           &services::wal::manager_wal_replicate_t::current_wal_id,
                                                           ctx->session);
-            wal_max_id = co_await std::move(wif);
+            auto current = co_await std::move(wif);
+            if (current.has_error()) {
+                set_error(current.error());
+                mark_failed();
+                co_return;
+            }
+            wal_max_id = current.value();
         }
 
         // Compact watermark = dispatcher's visible-to-all horizon; 0 when no dispatcher is wired (test
@@ -91,7 +97,7 @@ namespace components::operators {
             auto [_gp, gpf] = actor_zeta::otterbrix::send(ctx->wal_address,
                                                           &services::wal::manager_wal_replicate_t::current_wal_id,
                                                           ctx->session);
-            [[maybe_unused]] const services::wal::id_t ping = co_await std::move(gpf);
+            [[maybe_unused]] const auto ping = co_await std::move(gpf);
         }
 #endif
 

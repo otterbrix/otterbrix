@@ -180,7 +180,7 @@ struct test_wal_worker {
         return std::move(future);
     }
 
-    actor_zeta::unique_future<services::wal::id_t> send_current_wal_id() {
+    actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>> send_current_wal_id() {
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
                                                                  &manager_wal_replicate_t::current_wal_id,
                                                                  session_id_t::generate_uid());
@@ -463,7 +463,9 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                          &manager_wal_replicate_t::current_wal_id,
                                                          session_id_t::generate_uid());
             REQUIRE(fut.valid());
-            last_wal_id = await_ready(fut);
+            auto last_r = await_ready(fut);
+            REQUIRE_FALSE(last_r.has_error());
+            last_wal_id = last_r.value();
             REQUIRE(last_wal_id > 0);
         }
 

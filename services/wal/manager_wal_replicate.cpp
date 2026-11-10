@@ -633,7 +633,11 @@ namespace services::wal {
                                        pending_auto_checkpoint_.end());
     }
 
-    manager_wal_replicate_t::unique_future<wal::id_t> manager_wal_replicate_t::current_wal_id(session_id_t session) {
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
+    manager_wal_replicate_t::current_wal_id(session_id_t session) {
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
+        }
         wal::id_t max_id = 0;
         for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] =
@@ -642,11 +646,14 @@ namespace services::wal {
                 scheduler_->enqueue(worker.get());
             }
             auto wid = co_await std::move(fut);
-            if (wid > max_id) {
-                max_id = wid;
+            if (wid.has_error()) {
+                co_return wid;
+            }
+            if (wid.value() > max_id) {
+                max_id = wid.value();
             }
         }
-        co_return max_id;
+        co_return core::result_wrapper_t<wal::id_t>{max_id};
     }
 
     manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>

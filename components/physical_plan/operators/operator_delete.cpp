@@ -316,7 +316,11 @@ namespace components::operators {
                                                         table_oid_,
                                                         oid_col_idx_,
                                                         target_oid_);
-            co_await std::move(cf);
+            if (auto deleted = co_await std::move(cf); deleted.has_error()) {
+                set_error(deleted.error());
+                mark_failed();
+                co_return;
+            }
             if (ctx->txn.transaction_id != 0) {
                 ctx->pg_catalog_delete_tables.insert(table_oid_);
             }

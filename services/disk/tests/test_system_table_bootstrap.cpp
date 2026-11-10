@@ -490,16 +490,16 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
         append_rows(fd, user_table, 3);
 
         for (const auto& def : all_system_tables()) {
-            fd.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                      disk_test_helpers::auto_ctx(),
-                      pg_class,
-                      std::int64_t{components::catalog::pg_class_col::oid},
-                      def.relation_oid);
-            fd.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                      disk_test_helpers::auto_ctx(),
-                      pg_attribute,
-                      std::int64_t{components::catalog::pg_attribute_col::attrelid},
-                      def.relation_oid);
+            disk_test_helpers::delete_rows_ok(fd,
+                                              disk_test_helpers::auto_ctx(),
+                                              pg_class,
+                                              std::int64_t{components::catalog::pg_class_col::oid},
+                                              def.relation_oid);
+            disk_test_helpers::delete_rows_ok(fd,
+                                              disk_test_helpers::auto_ctx(),
+                                              pg_attribute,
+                                              std::int64_t{components::catalog::pg_attribute_col::attrelid},
+                                              def.relation_oid);
         }
         auto rk = fd.boot.relkind_for_oid_sync(pg_class);
         REQUIRE_FALSE(rk.has_error());

@@ -451,7 +451,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         REQUIRE(dead_attoids[0] == attoid_b);
 
         for (const auto attoid : dead_attoids) {
-            fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
+            disk_test_helpers::delete_rows_ok(fx, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
@@ -568,7 +568,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
             }
         }
         for (const auto attoid : dead_attoids) {
-            fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
+            disk_test_helpers::delete_rows_ok(fx, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));

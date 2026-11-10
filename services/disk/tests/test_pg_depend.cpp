@@ -167,21 +167,9 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
     {
         constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  disk_test_helpers::txn_ctx(),
-                  pg_type,
-                  std::int64_t{0},
-                  type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  disk_test_helpers::txn_ctx(),
-                  pg_dep,
-                  std::int64_t{1},
-                  type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  disk_test_helpers::txn_ctx(),
-                  pg_dep,
-                  std::int64_t{3},
-                  type_oid);
+        disk_test_helpers::delete_rows_ok(fx, disk_test_helpers::txn_ctx(), pg_type, std::int64_t{0}, type_oid);
+        disk_test_helpers::delete_rows_ok(fx, disk_test_helpers::txn_ctx(), pg_dep, std::int64_t{1}, type_oid);
+        disk_test_helpers::delete_rows_ok(fx, disk_test_helpers::txn_ctx(), pg_dep, std::int64_t{3}, type_oid);
         std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
         fx.invoke(&manager_disk_t::storage_publish_deletes,
                   disk_test_helpers::txn_ctx(),

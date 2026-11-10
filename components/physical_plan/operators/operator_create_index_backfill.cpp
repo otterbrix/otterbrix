@@ -255,7 +255,12 @@ namespace components::operators {
                                                         pg_idx_oid,
                                                         std::int64_t{0},
                                                         index_oid_);
-            co_await std::move(df);
+            if (auto deleted = co_await std::move(df); deleted.has_error()) {
+                set_error(deleted.error());
+                mark_failed();
+                co_await abandon_build(resource_);
+                co_return;
+            }
             if (ctx->txn.transaction_id != 0)
                 ctx->pg_catalog_delete_tables.insert(pg_idx_oid);
 

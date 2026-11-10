@@ -1287,11 +1287,11 @@ TEST_CASE("services::disk::open::an_unknown_indtype_refuses_the_start_instead_of
     INFO("an unknown indtype is a start refusal, not a SIGABRT");
     REQUIRE(fx.boot.scan_alive_pg_index_sync().has_error());
 
-    fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-              disk_test_helpers::auto_ctx(),
-              catalog::well_known_oid::pg_index_table,
-              std::int64_t{0},
-              oids[0]);
+    disk_test_helpers::delete_rows_ok(fx,
+                                      disk_test_helpers::auto_ctx(),
+                                      catalog::well_known_oid::pg_index_table,
+                                      std::int64_t{0},
+                                      oids[0]);
     REQUIRE_FALSE(fx.boot.scan_alive_pg_index_sync().has_error());
 }
 

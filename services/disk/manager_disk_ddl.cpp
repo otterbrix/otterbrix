@@ -36,36 +36,31 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::delete_pg_catalog_rows(execution_context_t ctx,
-                                                                               components::catalog::oid_t table_oid,
-                                                                               std::int64_t oid_col_idx,
-                                                                               components::catalog::oid_t target_oid) {
-        // Blocking debt: no error channel, so a refused delete reaches no caller and risks a duplicate row.
-        if (!agents_.empty()) {
-            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[idx];
-            if (agent != nullptr) {
-                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::delete_pg_catalog_rows_inner,
-                                                                      ctx,
-                                                                      table_oid,
-                                                                      oid_col_idx,
-                                                                      target_oid);
-                if (needs_sched) {
-                    scheduler_disk_->enqueue(agent.get());
-                }
-                auto deleted = co_await std::move(fut);
-                if (deleted.has_error()) {
-                    error(log_,
-                          "manager_disk::delete_pg_catalog_rows: the scrub of catalog oid={} for target oid={} "
-                          "was refused and this route cannot report it: {}",
-                          static_cast<unsigned>(table_oid),
-                          static_cast<unsigned>(target_oid),
-                          deleted.error().what);
-                }
-            }
+    manager_disk_t::unique_future<core::result_wrapper_t<std::uint64_t>>
+    manager_disk_t::delete_pg_catalog_rows(execution_context_t ctx,
+                                           components::catalog::oid_t table_oid,
+                                           std::int64_t oid_col_idx,
+                                           components::catalog::oid_t target_oid) {
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"delete_pg_catalog_rows: no disk agents", resource()}};
         }
-        co_return;
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[idx];
+        if (agent == nullptr) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"delete_pg_catalog_rows: owning disk agent is null", resource()}};
+        }
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::delete_pg_catalog_rows_inner,
+                                                              ctx,
+                                                              table_oid,
+                                                              oid_col_idx,
+                                                              target_oid);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(fut);
     }
 
     // Serialized so WAL ordering matches N successive singular calls, stopping at the first refusal.

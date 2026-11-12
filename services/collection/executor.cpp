@@ -2361,6 +2361,189 @@ namespace services::collection::executor {
             return refused;
         }
 
+        // What the set_config() calls of a statement set: SET's own channel to the session, taken only when the
+        // statement succeeds.
+        struct setting_calls_t {
+            explicit setting_calls_t(std::pmr::memory_resource* resource)
+                : assignments(resource) {}
+
+            components::catalog::setting_scope_t scope{components::catalog::setting_scope_t::session};
+            std::pmr::vector<components::catalog::setting_assignment_t> assignments;
+        };
+
+        // A SELECT without FROM, WHERE, HAVING or LIMIT is one row: its select list (the calls go to its group) is
+        // evaluated once, so a set_config in it sets once, as PostgreSQL 18's per-row evaluation does for that row.
+        bool evaluates_once(const components::logical_plan::node_t* root) {
+            using components::logical_plan::node_type;
+            if (root == nullptr || root->type() != node_type::aggregate_t || !root->target().collection.t.empty()) {
+                return false;
+            }
+            return std::all_of(root->children().begin(), root->children().end(), [](const auto& child) {
+                return child && (child->type() == node_type::select_t || child->type() == node_type::group_t ||
+                                 child->type() == node_type::sort_t);
+            });
+        }
+
+        // current_setting(name [, missing_ok]) / set_config(name, value, is_local), PostgreSQL 18 guc_funcs.c: the
+        // value as SHOW shows it, of the settings the statement started with and what its earlier set_config calls
+        // set, bound as the call's one argument. A setting is named by a constant; a statement that is only described
+        // binds a NULL of the answer's type.
+        core::error_t bind_setting_calls(std::pmr::memory_resource* resource,
+                                         components::logical_plan::node_t* root,
+                                         const components::catalog::session_catalog_t& settings,
+                                         components::logical_plan::parameter_node_t& parameters,
+                                         setting_calls_t* calls) {
+            namespace catalog = components::catalog;
+            using components::types::logical_type;
+            catalog::session_catalog_t current = settings;
+            const bool once = evaluates_once(root);
+            bool any_set = false;
+            core::error_t refused = core::error_t::no_error();
+            const auto refuse = [&](core::error_code_t code, std::string what) {
+                if (!refused.contains_error()) {
+                    refused = core::error_t{code, std::pmr::string{what, resource}};
+                }
+            };
+            // A constant argument: nullptr for one of a column, an expression or a sub-query; `known` false for a $n
+            // a describe has no value of.
+            const auto constant = [&](const components::expressions::param_storage& argument,
+                                      bool* known) -> const components::vector::vector_t* {
+                const auto* id = std::get_if<core::parameter_id_t>(&argument);
+                if (id == nullptr ||
+                    parameters.parameters().kind(*id) == components::vector::parameter_kind::execution) {
+                    return nullptr;
+                }
+                const auto& value = parameters.parameter(*id);
+                *known = !components::vector::is_placeholder(value.type());
+                return &value;
+            };
+            const auto is_text = [](const components::vector::vector_t& value) {
+                return value.type().type() == logical_type::TEXT || value.type().type() == logical_type::STRING_LITERAL;
+            };
+            const auto bind = [&](auto& call, const std::pmr::string* value) {
+                call.args().clear();
+                call.args().emplace_back(parameters.add_parameter(
+                    value == nullptr
+                        ? components::vector::make_null(resource,
+                                                        components::types::complex_logical_type{logical_type::TEXT})
+                        : components::vector::make_scalar(resource, std::string_view{*value}),
+                    components::vector::parameter_kind::literal));
+            };
+            auto visit = [&](auto& call, const components::logical_plan::node_t& node, bool in_check) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(call)>,
+                                             components::expressions::function_expression_t>) {
+                    const auto& name = call.full_name();
+                    const bool reads = name.function.t == components::compute::current_setting_name;
+                    const bool sets = name.function.t == components::compute::set_config_name;
+                    if ((!reads && !sets) || names_a_user_schema(name)) {
+                        return;
+                    }
+                    const auto signature = name.to_string();
+                    const auto& args = call.args();
+                    if ((reads && (args.empty() || args.size() > 2)) || (sets && args.size() != 3)) {
+                        refuse(core::error_code_t::unrecognized_function,
+                               "function " + signature + " takes " +
+                                   (reads ? "(name text [, missing_ok boolean])"
+                                          : "(name text, value text, is_local boolean)"));
+                        return;
+                    }
+                    if (sets &&
+                        (in_check || !once ||
+                         std::none_of(root->children().begin(), root->children().end(), [&node](const auto& child) {
+                             return child.get() == &node;
+                         }))) {
+                        refuse(core::error_code_t::unimplemented_yet,
+                               signature + " is supported only in the select list of a SELECT without FROM, WHERE, "
+                                           "HAVING or LIMIT");
+                        return;
+                    }
+                    std::array<const components::vector::vector_t*, 3> values{};
+                    bool known = true;
+                    for (std::size_t index = 0; index < args.size(); ++index) {
+                        values[index] = constant(args[index], &known);
+                        if (values[index] == nullptr) {
+                            refuse(core::error_code_t::unimplemented_yet,
+                                   signature + " takes only constants and parameters as its arguments");
+                            return;
+                        }
+                    }
+                    if (!known) {
+                        bind(call, nullptr);
+                        return;
+                    }
+                    // name, value: text; missing_ok, is_local: boolean.
+                    if (!is_text(*values[0]) || (sets && !is_text(*values[1])) ||
+                        (args.size() == (reads ? 2u : 3u) &&
+                         values[args.size() - 1]->type().type() != logical_type::BOOLEAN)) {
+                        refuse(core::error_code_t::unrecognized_function,
+                               "function " + signature + " takes " +
+                                   (reads ? "(name text [, missing_ok boolean])"
+                                          : "(name text, value text, is_local boolean)"));
+                        return;
+                    }
+                    const auto flag = [&](const components::vector::vector_t& value) {
+                        return !value.is_null(0) && value.get_value<bool>(0);
+                    };
+                    if (values[0]->is_null(0)) {
+                        if (sets) {
+                            refuse(core::error_code_t::invalid_parameter, "SET requires parameter name");
+                        } else {
+                            bind(call, nullptr);
+                        }
+                        return;
+                    }
+                    const auto setting_name = values[0]->get_value<std::string_view>(0);
+                    const auto* setting = catalog::find_setting_by_sql_name(setting_name);
+                    if (setting == nullptr) {
+                        if (reads && args.size() == 2 && flag(*values[1])) {
+                            bind(call, nullptr);
+                        } else {
+                            refuse(core::error_code_t::undefined_object,
+                                   "unrecognized configuration parameter \"" + std::string{setting_name} + "\"");
+                        }
+                        return;
+                    }
+                    if (sets) {
+                        if (values[1]->is_null(0)) {
+                            refuse(core::error_code_t::unimplemented_yet,
+                                   signature + " with a NULL value (a RESET) is not supported");
+                            return;
+                        }
+                        const auto scope =
+                            flag(*values[2]) ? catalog::setting_scope_t::local : catalog::setting_scope_t::session;
+                        if (any_set && scope != calls->scope) {
+                            refuse(core::error_code_t::unimplemented_yet,
+                                   "set_config calls of one statement must all be local or all not");
+                            return;
+                        }
+                        auto canonical = catalog::canonical_setting_value(setting->id,
+                                                                          values[1]->get_value<std::string_view>(0),
+                                                                          resource);
+                        if (canonical.has_error()) {
+                            if (!refused.contains_error()) {
+                                refused = canonical.error();
+                            }
+                            return;
+                        }
+                        if (auto applied = catalog::set_setting(current, setting->id, canonical.value(), resource);
+                            applied.contains_error()) {
+                            if (!refused.contains_error()) {
+                                refused = std::move(applied);
+                            }
+                            return;
+                        }
+                        any_set = true;
+                        calls->scope = scope;
+                        calls->assignments.emplace_back(setting->id, canonical.value(), resource);
+                    }
+                    const auto value = catalog::current_setting_value(current, setting->id, resource);
+                    bind(call, &value);
+                }
+            };
+            components::logical_plan::for_each_plan_call(root, visit);
+            return refused;
+        }
+
         // SET [LOCAL] search_path = '<place>': the place completed with the current one.
         struct set_place_t {
             bool sets{false};
@@ -3056,6 +3239,15 @@ namespace services::collection::executor {
         }
         if (auto refused =
                 bind_place_calls(resource(), plan.sub_queries.back().get(), plan.catalog_resolves, *plan.parameters);
+            refused.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+        }
+        setting_calls_t setting_calls{resource()};
+        if (auto refused = bind_setting_calls(resource(),
+                                              plan.sub_queries.back().get(),
+                                              session_ctx.settings,
+                                              *plan.parameters,
+                                              &setting_calls);
             refused.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(refused))};
         }
@@ -3891,6 +4083,10 @@ namespace services::collection::executor {
             }
             error = co_await finish_run_(portal, std::move(error));
             exec_result = result_of_run_(portal, std::move(error));
+        }
+        if (!setting_calls.assignments.empty() && exec_result.cursor->is_success() && !describe) {
+            exec_result.applied_setting_scope = setting_calls.scope;
+            exec_result.applied_settings = std::move(setting_calls.assignments);
         }
         // The functions a DROP took with its dependents leave the registries with their rows; a function of a previous
         // process has rows only, and one the statement drops itself is in its changes already.

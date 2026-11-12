@@ -871,5 +871,6 @@ namespace components::compute {
         register_math_functions(r);
         register_internal_functions(r);
         register_place_functions(r);
+        register_setting_functions(r);
     }
 } // namespace components::compute

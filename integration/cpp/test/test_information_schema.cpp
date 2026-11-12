@@ -78,8 +78,7 @@ TEST_CASE("integration::cpp::information_schema::a_database_has_its_own") {
     CHECK(db.strings(session,
                      "SELECT table_name FROM information_schema.columns WHERE table_schema <> 'pg_catalog' AND "
                      "table_schema <> 'information_schema';") == strings{"in_main"});
-    CHECK(db.strings(session,
-                     "SELECT table_name FROM d2.information_schema.columns WHERE table_schema = 'public';") ==
+    CHECK(db.strings(session, "SELECT table_name FROM d2.information_schema.columns WHERE table_schema = 'public';") ==
           strings{"in_d2"});
     CHECK(db.strings(session, "SELECT DISTINCT table_catalog FROM d2.information_schema.columns;") == strings{"d2"});
 }
@@ -122,12 +121,13 @@ TEST_CASE("integration::cpp::information_schema::declared_types_are_the_bodies")
             auto rows = db.ok(session, "SELECT * FROM " + database + ".information_schema." + view + ";");
             REQUIRE(rows->size() > 0);
             const auto& computed = rows->chunks().front();
-            auto declared = db.ok(session,
-                                  "SELECT a.attname, a.atttypid FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class "
-                                  "c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
-                                  "JOIN pg_catalog.pg_database d ON d.oid = n.nspdatabase WHERE d.datname = '" +
-                                      database + "' AND n.nspname = 'information_schema' AND c.relname = '" + view +
-                                      "' ORDER BY a.attnum;");
+            auto declared =
+                db.ok(session,
+                      "SELECT a.attname, a.atttypid FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class "
+                      "c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+                      "JOIN pg_catalog.pg_database d ON d.oid = n.nspdatabase WHERE d.datname = '" +
+                          database + "' AND n.nspname = 'information_schema' AND c.relname = '" + view +
+                          "' ORDER BY a.attnum;");
             REQUIRE(declared->size() == computed.column_count());
             const auto& attributes = declared->chunks().front();
             for (std::uint64_t column = 0; column < computed.column_count(); ++column) {

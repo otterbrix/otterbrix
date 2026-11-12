@@ -3,6 +3,7 @@
 // pipeline drives the txn_manager/disk side effects. 2PC variants are
 // unsupported and are refused here.
 
+#include <components/catalog/settings.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/sql/transformer/transformer.hpp>
 
@@ -27,10 +28,9 @@ namespace components::sql::transform {
                 access = intVal(&value->val) != 0 ? logical_plan::transaction_access_t::read_only
                                                   : logical_plan::transaction_access_t::read_write;
             } else if (name == "transaction_isolation") {
-                return core::error_t(core::error_code_t::unimplemented_yet,
-                                     std::pmr::string{"transaction isolation level " +
-                                                          std::string{strVal(&value->val)} + " is not supported",
-                                                      resource});
+                if (auto level = catalog::isolation_level_of(strVal(&value->val), resource); level.has_error()) {
+                    return level.error();
+                }
             } else if (name != "transaction_deferrable") {
                 return core::error_t(
                     core::error_code_t::unimplemented_yet,

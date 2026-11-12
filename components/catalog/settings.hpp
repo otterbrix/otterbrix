@@ -17,7 +17,11 @@ namespace components::catalog {
         autocommit,
         search_path,
         default_transaction_read_only,
-        transaction_read_only
+        transaction_read_only,
+        default_transaction_isolation,
+        transaction_isolation,
+        default_transaction_deferrable,
+        transaction_deferrable
     };
 
     // Where a value goes: SET to its session, SET LOCAL to its session until the transaction ends, ALTER SYSTEM to
@@ -61,6 +65,11 @@ namespace components::catalog {
 
     [[nodiscard]] core::result_wrapper_t<std::pmr::string>
     canonical_setting_value(setting_id id, std::string_view raw, std::pmr::memory_resource* resource);
+
+    // The level a transaction runs at for one asked for: snapshot isolation is PostgreSQL 18's repeatable read, and a
+    // weaker level runs as it (the SQL standard lets a level run as a stronger one); serializable is refused.
+    [[nodiscard]] core::result_wrapper_t<std::pmr::string> isolation_level_of(std::string_view written,
+                                                                              std::pmr::memory_resource* resource);
 
     // The only way to change a setting on a cache
     [[nodiscard]] core::error_t

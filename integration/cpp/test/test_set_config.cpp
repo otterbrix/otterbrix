@@ -127,11 +127,17 @@ TEST_CASE("integration::cpp::set_config::show") {
 
     SECTION("all") {
         db.ok(session, "SET search_path = 'main.s';");
-        CHECK(
-            db.strings(session, "SHOW ALL;") ==
-            strings{"autocommit", "default_transaction_read_only", "search_path", "TimeZone", "transaction_read_only"});
+        CHECK(db.strings(session, "SHOW ALL;") == strings{"autocommit",
+                                                          "default_transaction_deferrable",
+                                                          "default_transaction_isolation",
+                                                          "default_transaction_read_only",
+                                                          "search_path",
+                                                          "TimeZone",
+                                                          "transaction_deferrable",
+                                                          "transaction_isolation",
+                                                          "transaction_read_only"});
         auto all = db.ok(session, "SHOW ALL;");
-        REQUIRE(all->size() == 5);
+        REQUIRE(all->size() == 9);
         std::vector<std::string> settings;
         for (const auto& chunk : all->chunks()) {
             for (std::uint64_t row = 0; row < chunk.size(); ++row) {
@@ -139,6 +145,6 @@ TEST_CASE("integration::cpp::set_config::show") {
                 CHECK_FALSE(chunk.get_value<std::string_view>(2, row).empty());
             }
         }
-        CHECK(settings[2] == "main.s");
+        CHECK(settings[4] == "main.s");
     }
 }

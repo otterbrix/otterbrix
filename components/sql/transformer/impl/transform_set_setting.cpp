@@ -17,6 +17,14 @@ namespace components::sql::transform {
             return resets ? "RESET" : "SET";
         }
 
+        // The current transaction's own modes: whatever the SET says they are the transaction's, no default stores
+        // them, and RESET ALL leaves them (GUC_NO_RESET_ALL).
+        bool is_transaction_mode(catalog::setting_id id) {
+            return id == catalog::setting_id::transaction_read_only ||
+                   id == catalog::setting_id::transaction_isolation ||
+                   id == catalog::setting_id::transaction_deferrable;
+        }
+
         core::result_wrapper_t<const catalog::setting_def_t*>
         known_setting(std::string_view statement, const VariableSetStmt& node, std::pmr::memory_resource* resource) {
             std::string_view name = node.name ? node.name : "";
@@ -92,9 +100,8 @@ namespace components::sql::transform {
             const auto statement = statement_of(node, scope);
             std::pmr::vector<catalog::setting_assignment_t> assignments{r};
             if (node.kind == VAR_RESET_ALL) {
-                // The transaction's own access is no session setting RESET ALL returns (GUC_NO_RESET_ALL).
                 for (const auto& setting : catalog::all_settings()) {
-                    if (setting.id != catalog::setting_id::transaction_read_only) {
+                    if (!is_transaction_mode(setting.id)) {
                         assignments.push_back(catalog::setting_assignment_t::to_default(setting.id, r));
                     }
                 }
@@ -105,12 +112,12 @@ namespace components::sql::transform {
                 return setting.error();
             }
             const auto id = setting.value()->id;
-            // transaction_read_only is the current transaction's whatever the SET says; no default stores it.
-            if (id == catalog::setting_id::transaction_read_only) {
+            if (is_transaction_mode(id)) {
                 if (scope == catalog::setting_scope_t::system) {
                     return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"transaction_read_only is the current transaction's, and "
-                                                          "has no default to store",
+                                         std::pmr::string{std::string{setting.value()->sql_name} +
+                                                              " is the current transaction's, and has no default to "
+                                                              "store",
                                                           r});
                 }
                 scope = catalog::setting_scope_t::local;

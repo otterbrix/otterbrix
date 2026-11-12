@@ -12,6 +12,7 @@ namespace {
 
     const std::string read_only = "SHOW transaction_read_only;";
     const std::string insert = "INSERT INTO s.t (a) VALUES (1);";
+    const std::string isolation = "SHOW transaction_isolation;";
 
 } // namespace
 
@@ -43,11 +44,32 @@ TEST_CASE("integration::cpp::transaction_access::begin") {
     SECTION("deferrable") {
         db.ok(session, "BEGIN READ ONLY, DEFERRABLE;");
         CHECK(db.strings(session, read_only) == strings{"on"});
+        CHECK(db.strings(session, "SHOW transaction_deferrable;") == strings{"off"});
+        db.ok(session, "SET TRANSACTION DEFERRABLE;");
+        db.ok(session, "SET transaction_deferrable = on;");
+        CHECK(db.strings(session, "SHOW transaction_deferrable;") == strings{"off"});
+        CHECK(db.refused(session, "SET transaction_deferrable = maybe;").type == code::invalid_parameter);
+        db.ok(session, "COMMIT;");
+        db.ok(session, "SET SESSION CHARACTERISTICS AS TRANSACTION DEFERRABLE;");
+        db.ok(session, "SET default_transaction_deferrable = on;");
+        CHECK(db.strings(session, "SHOW default_transaction_deferrable;") == strings{"off"});
+        CHECK(db.refused(session, "ALTER SYSTEM SET transaction_deferrable = on;").type == code::invalid_parameter);
+    }
+
+    SECTION("a weaker isolation level") {
+        db.ok(session, "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY;");
+        CHECK(db.strings(session, isolation) == strings{"repeatable read"});
+        CHECK(db.strings(session, read_only) == strings{"on"});
+        db.ok(session, "COMMIT;");
+        db.ok(session, "BEGIN ISOLATION LEVEL READ UNCOMMITTED;");
+        db.ok(session, "COMMIT;");
+        db.ok(session, "BEGIN ISOLATION LEVEL REPEATABLE READ;");
+        db.ok(session, insert);
         db.ok(session, "COMMIT;");
     }
 
-    SECTION("an isolation level") {
-        CHECK(db.refused(session, "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;").type == code::unimplemented_yet);
+    SECTION("serializable") {
+        CHECK(db.refused(session, "BEGIN ISOLATION LEVEL SERIALIZABLE;").type == code::unimplemented_yet);
     }
 }
 
@@ -76,9 +98,14 @@ TEST_CASE("integration::cpp::transaction_access::set_transaction") {
 
     SECTION("an isolation level") {
         db.ok(session, "BEGIN;");
-        CHECK(db.refused(session, "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;").type ==
-              code::unimplemented_yet);
+        db.ok(session, "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;");
+        CHECK(db.strings(session, isolation) == strings{"repeatable read"});
+        db.ok(session, "SET transaction_isolation = 'read uncommitted';");
+        CHECK(db.refused(session, "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;").type == code::unimplemented_yet);
         db.ok(session, "ROLLBACK;");
+        CHECK(db.refused(session, "SET transaction_isolation = 'snapshot';").type == code::invalid_parameter);
+        CHECK(db.refused(session, "ALTER SYSTEM SET transaction_isolation = 'read committed';").type ==
+              code::invalid_parameter);
     }
 }
 
@@ -111,7 +138,12 @@ TEST_CASE("integration::cpp::transaction_access::session_characteristics") {
     }
 
     SECTION("an isolation level") {
+        db.ok(session, "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED;");
+        db.ok(session, "SET default_transaction_isolation = 'read committed';");
+        CHECK(db.strings(session, "SHOW default_transaction_isolation;") == strings{"repeatable read"});
         CHECK(db.refused(session, "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;").type ==
+              code::unimplemented_yet);
+        CHECK(db.refused(session, "SET default_transaction_isolation = 'serializable';").type ==
               code::unimplemented_yet);
     }
 }

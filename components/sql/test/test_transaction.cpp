@@ -35,7 +35,7 @@ TEST_CASE("components::sql::transaction::spellings_map_to_their_operation") {
     REQUIRE(operation_of("ABORT;") == transaction_op::abort);
 }
 
-TEST_CASE("components::sql::transaction::mode_lists_are_refused") {
+TEST_CASE("components::sql::transaction::mode_lists") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
@@ -46,9 +46,10 @@ TEST_CASE("components::sql::transaction::mode_lists_are_refused") {
     };
 
     REQUIRE(refused("BEGIN ISOLATION LEVEL SERIALIZABLE;"));
-    REQUIRE(refused("START TRANSACTION ISOLATION LEVEL READ COMMITTED;"));
-    REQUIRE(refused("BEGIN READ ONLY, ISOLATION LEVEL REPEATABLE READ;"));
-    // Not vacuous: without an isolation level the same statements transform.
+    REQUIRE(refused("START TRANSACTION READ ONLY, ISOLATION LEVEL SERIALIZABLE;"));
+    REQUIRE_FALSE(refused("START TRANSACTION ISOLATION LEVEL READ COMMITTED;"));
+    REQUIRE_FALSE(refused("BEGIN ISOLATION LEVEL READ UNCOMMITTED;"));
+    REQUIRE_FALSE(refused("BEGIN READ ONLY, ISOLATION LEVEL REPEATABLE READ;"));
     REQUIRE_FALSE(refused("BEGIN;"));
     REQUIRE_FALSE(refused("START TRANSACTION;"));
     REQUIRE_FALSE(refused("BEGIN READ ONLY;"));

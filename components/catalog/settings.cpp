@@ -17,7 +17,7 @@ namespace components::catalog {
 
     namespace {
 
-        constexpr std::array<setting_def_t, 5> known_settings{
+        constexpr std::array<setting_def_t, 9> known_settings{
             setting_def_t{"timezone",
                           "TimeZone",
                           setting_id::timezone,
@@ -37,7 +37,26 @@ namespace components::catalog {
             setting_def_t{"transaction_read_only",
                           "transaction_read_only",
                           setting_id::transaction_read_only,
-                          "Sets the current transaction's read-only status."}};
+                          "Sets the current transaction's read-only status."},
+            setting_def_t{"default_transaction_isolation",
+                          "default_transaction_isolation",
+                          setting_id::default_transaction_isolation,
+                          "Sets the transaction isolation level of each new transaction."},
+            setting_def_t{"transaction_isolation",
+                          "transaction_isolation",
+                          setting_id::transaction_isolation,
+                          "Sets the current transaction's isolation level."},
+            setting_def_t{"default_transaction_deferrable",
+                          "default_transaction_deferrable",
+                          setting_id::default_transaction_deferrable,
+                          "Sets the default deferrable status of new transactions."},
+            setting_def_t{"transaction_deferrable",
+                          "transaction_deferrable",
+                          setting_id::transaction_deferrable,
+                          "Whether to defer a read-only serializable transaction until it can be executed with no "
+                          "possible serialization failures."}};
+
+        constexpr std::string_view repeatable_read = "repeatable read";
 
         std::string to_lower(std::string_view text) {
             std::string lowered(text);
@@ -112,6 +131,12 @@ namespace components::catalog {
                 return std::pmr::string{cache.default_transaction_read_only ? "on" : "off", resource};
             case setting_id::transaction_read_only:
                 return std::pmr::string{cache.transaction_read_only ? "on" : "off", resource};
+            case setting_id::default_transaction_isolation:
+            case setting_id::transaction_isolation:
+                return std::pmr::string{repeatable_read, resource};
+            case setting_id::default_transaction_deferrable:
+            case setting_id::transaction_deferrable:
+                return std::pmr::string{"off", resource};
         }
         assert(false && "a setting_id with no value in the cache");
         std::abort();
@@ -140,8 +165,32 @@ namespace components::catalog {
                 return canonical_boolean("default_transaction_read_only", raw, resource);
             case setting_id::transaction_read_only:
                 return canonical_boolean("transaction_read_only", raw, resource);
+            case setting_id::default_transaction_isolation:
+            case setting_id::transaction_isolation:
+                return isolation_level_of(raw, resource);
+            case setting_id::default_transaction_deferrable:
+                return canonical_boolean("default_transaction_deferrable", raw, resource);
+            case setting_id::transaction_deferrable:
+                return canonical_boolean("transaction_deferrable", raw, resource);
         }
         return core::error_t(core::error_code_t::internal_error, std::pmr::string{"unknown setting", resource});
+    }
+
+    core::result_wrapper_t<std::pmr::string> isolation_level_of(std::string_view written,
+                                                                std::pmr::memory_resource* resource) {
+        const auto level = to_lower(written);
+        if (level == "serializable") {
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"transaction isolation level serializable is not supported: "
+                                                  "transactions run at repeatable read",
+                                                  resource});
+        }
+        if (level != "read uncommitted" && level != "read committed" && level != repeatable_read) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"invalid transaction isolation level: '" + std::string{written} + "'", resource});
+        }
+        return std::pmr::string{repeatable_read, resource};
     }
 
     core::error_t
@@ -171,6 +220,14 @@ namespace components::catalog {
                 return core::error_t::no_error();
             case setting_id::transaction_read_only:
                 cache.transaction_read_only = boolean_setting_value(value);
+                return core::error_t::no_error();
+            case setting_id::default_transaction_isolation:
+            case setting_id::transaction_isolation:
+                // Every level a transaction may ask for runs as the one the engine has.
+                return core::error_t::no_error();
+            case setting_id::default_transaction_deferrable:
+            case setting_id::transaction_deferrable:
+                // Deferring only waits out a read-only serializable transaction's snapshot, and none runs serializable.
                 return core::error_t::no_error();
         }
         return core::error_t(core::error_code_t::internal_error, std::pmr::string{"unknown setting", resource});

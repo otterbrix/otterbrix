@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cassert>
+#include <catch2/catch_test_macros.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -28,7 +28,7 @@ namespace disk_test_helpers {
     // vector would turn a broken read into a passing "not found".
     template<typename T>
     T read_ok(core::result_wrapper_t<T> r) {
-        assert(!r.has_error() && "disk_test_helpers::read_ok: keyed catalog read failed");
+        REQUIRE_FALSE(r.has_error());
         return std::move(r.value());
     }
 
@@ -38,13 +38,24 @@ namespace disk_test_helpers {
     // end.
     inline components::pg_catalog_append_range_t
     append_ok(core::result_wrapper_t<components::pg_catalog_append_range_t> r) {
-        assert(!r.has_error() && "disk_test_helpers::append_ok: catalog row append failed");
+        REQUIRE_FALSE(r.has_error());
         return std::move(r.value());
     }
 
     using namespace services::disk;
     namespace catalog = components::catalog;
     using session_id_t = components::session::session_id_t;
+
+    // A catalog-row delete in a test: a refused one leaves the row live, which no caller here expects.
+    template<typename Fx>
+    void delete_rows_ok(Fx& fx,
+                        components::execution_context_t ctx,
+                        catalog::oid_t table_oid,
+                        std::int64_t oid_col_idx,
+                        catalog::oid_t target_oid) {
+        auto deleted = fx.invoke(&manager_disk_t::delete_pg_catalog_rows, ctx, table_oid, oid_col_idx, target_oid);
+        REQUIRE_FALSE(deleted.has_error());
+    }
 
     // These helpers bypass transaction_manager, so there is no real horizon.
     // Set it to UINT64_MAX so the visibility filter shows every committed row.
@@ -175,12 +186,12 @@ namespace disk_test_helpers {
                                                            catalog::indtype::single);
         // Same contract as read_ok/append_ok: no test here hands the builder an
         // unstamped column, and swallowing the writer-side gate would publish nothing.
-        assert(!writes_r.has_error() && "disk_test_helpers::test_create_index: builder refused the write set");
+        REQUIRE_FALSE(writes_r.has_error());
         auto writes = std::move(writes_r.value());
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         constexpr catalog::oid_t pg_index = catalog::well_known_oid::pg_index_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_index, std::int64_t{0}, index_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_index, std::int64_t{0}, index_oid);
         std::string indkey;
         for (std::size_t i = 0; i < col_attoids.size(); ++i) {
             if (i)
@@ -356,7 +367,7 @@ namespace disk_test_helpers {
                                                                 check_expr);
         // The builder refuses INVALID_OID attoids; every fixture here passes stamped lists,
         // so a refusal is a broken test setup.
-        assert(!writes_r.has_error());
+        REQUIRE_FALSE(writes_r.has_error());
         auto writes = std::move(writes_r.value());
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
@@ -372,10 +383,10 @@ namespace disk_test_helpers {
         constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_class, std::int64_t{0}, table_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_attr, std::int64_t{1}, table_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, table_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, table_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_class, std::int64_t{0}, table_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_attr, std::int64_t{1}, table_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{1}, table_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{3}, table_oid);
         std::set<catalog::oid_t> deletes_local{pg_class, pg_attr, pg_dep};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -384,9 +395,9 @@ namespace disk_test_helpers {
     void test_drop_namespace(Fx& fx, catalog::oid_t ns_oid) {
         constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_ns, std::int64_t{0}, ns_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, ns_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, ns_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_ns, std::int64_t{0}, ns_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{1}, ns_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{3}, ns_oid);
         std::set<catalog::oid_t> deletes_local{pg_ns, pg_dep};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -396,10 +407,10 @@ namespace disk_test_helpers {
         constexpr catalog::oid_t pg_idx = catalog::well_known_oid::pg_index_table;
         constexpr catalog::oid_t pg_cls = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_idx, std::int64_t{0}, index_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cls, std::int64_t{0}, index_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, index_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, index_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_idx, std::int64_t{0}, index_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_cls, std::int64_t{0}, index_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{1}, index_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{3}, index_oid);
         std::set<catalog::oid_t> deletes_local{pg_idx, pg_cls, pg_dep};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -409,10 +420,10 @@ namespace disk_test_helpers {
         constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_seq = catalog::well_known_oid::pg_sequence_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_class, std::int64_t{0}, seq_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_seq, std::int64_t{0}, seq_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, seq_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, seq_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_class, std::int64_t{0}, seq_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_seq, std::int64_t{0}, seq_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{1}, seq_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{3}, seq_oid);
         std::set<catalog::oid_t> deletes_local{pg_class, pg_seq, pg_dep};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -423,10 +434,10 @@ namespace disk_test_helpers {
         constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_rewrite = catalog::well_known_oid::pg_rewrite_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_class, std::int64_t{0}, view_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_rewrite, std::int64_t{2}, view_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, view_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, view_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_class, std::int64_t{0}, view_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_rewrite, std::int64_t{2}, view_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{1}, view_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{3}, view_oid);
         std::set<catalog::oid_t> deletes_local{pg_class, pg_rewrite, pg_dep};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -435,9 +446,9 @@ namespace disk_test_helpers {
     void test_drop_type(Fx& fx, catalog::oid_t type_oid) {
         constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_type, std::int64_t{0}, type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, type_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_type, std::int64_t{0}, type_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{1}, type_oid);
+        delete_rows_ok(fx, txn_ctx(), pg_dep, std::int64_t{3}, type_oid);
         std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }

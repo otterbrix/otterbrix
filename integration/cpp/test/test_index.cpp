@@ -34,7 +34,6 @@
 #include <utility>
 
 using components::expressions::compare_type;
-using components::expressions::side_t;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 using namespace components::types;
@@ -164,14 +163,14 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         REQUIRE(c->size() == kDocuments);                                                                              \
     } while (false)
 
-#define CHECK_FIND(KEY, COMPARE, SIDE, VALUE, COUNT)                                                                   \
+#define CHECK_FIND(KEY, COMPARE, VALUE, COUNT)                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
                                                                   qualified_name_t{database_name, collection_name});   \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
-                                                                     key{dispatcher->resource(), KEY, SIDE},           \
+                                                                     key{dispatcher->resource(), KEY},                 \
                                                                      id_par{0});                                       \
         plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
                                                                      qualified_name_t{database_name, collection_name}, \
@@ -185,7 +184,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         REQUIRE(c->size() == COUNT);                                                                                   \
     } while (false)
 
-#define CHECK_FIND_COUNT(COMPARE, SIDE, VALUE, COUNT) CHECK_FIND("count", COMPARE, SIDE, VALUE, COUNT)
+#define CHECK_FIND_COUNT(COMPARE, VALUE, COUNT) CHECK_FIND("count", COMPARE, VALUE, COUNT)
 
 #define CHECK_FIND_SQL(QUERY, COUNT)                                                                                   \
     do {                                                                                                               \
@@ -226,11 +225,10 @@ TEST_CASE("integration::cpp::test_index::base") {
 
             auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
                                                                       qualified_name_t{database_name, collection_name});
-            auto expr =
-                components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                 compare_type::eq,
-                                                                 key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{0});
+            auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                         compare_type::eq,
+                                                                         key{dispatcher->resource(), "count"},
+                                                                         id_par{0});
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
@@ -243,12 +241,12 @@ TEST_CASE("integration::cpp::test_index::base") {
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(c->size() == 1);
         } while (false);
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
+        CHECK_FIND_COUNT(compare_type::eq, 10, 1);
+        CHECK_FIND_COUNT(compare_type::gt, 10, 90);
+        CHECK_FIND_COUNT(compare_type::lt, 10, 9);
+        CHECK_FIND_COUNT(compare_type::ne, 10, 99);
+        CHECK_FIND_COUNT(compare_type::gte, 10, 91);
+        CHECK_FIND_COUNT(compare_type::lte, 10, 10);
     }
 }
 
@@ -370,12 +368,12 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
 
     INFO("find");
     {
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
+        CHECK_FIND_COUNT(compare_type::eq, 10, 1);
+        CHECK_FIND_COUNT(compare_type::gt, 10, 90);
+        CHECK_FIND_COUNT(compare_type::lt, 10, 9);
+        CHECK_FIND_COUNT(compare_type::ne, 10, 99);
+        CHECK_FIND_COUNT(compare_type::gte, 10, 91);
+        CHECK_FIND_COUNT(compare_type::lte, 10, 10);
     }
 }
 
@@ -393,7 +391,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify initial state via index");
-    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 50); }
+    { CHECK_FIND_COUNT(compare_type::gt, 50, 50); }
 
     INFO("delete rows where count > 90");
     {
@@ -404,13 +402,13 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 collection_name,
                 components::logical_plan::make_node_delete(
                     dispatcher->resource(),
-                    components::logical_plan::make_node_match(dispatcher->resource(),
-                                                              qualified_name_t{database_name, collection_name},
-                                                              components::expressions::make_compare_expression(
-                                                                  dispatcher->resource(),
-                                                                  compare_type::gt,
-                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                  id_par{0})),
+                    components::logical_plan::make_node_match(
+                        dispatcher->resource(),
+                        qualified_name_t{database_name, collection_name},
+                        components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                         compare_type::gt,
+                                                                         key{dispatcher->resource(), "count"},
+                                                                         id_par{0})),
                     components::logical_plan::make_node_limit(dispatcher->resource(),
                                                               components::logical_plan::limit_t::all())));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
@@ -425,7 +423,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify index after delete");
-    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 40); }
+    { CHECK_FIND_COUNT(compare_type::gt, 50, 40); }
 
     INFO("update row where count == 50 to count = 999");
     {
@@ -436,7 +434,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 qualified_name_t{database_name, collection_name},
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
-                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 key{dispatcher->resource(), "count"},
                                                                  id_par{0}));
             auto update_expr = components::expressions::make_scalar_expression(
                 dispatcher->resource(),
@@ -467,8 +465,8 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify index after update");
     {
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 50, 0);
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 999, 1);
+        CHECK_FIND_COUNT(compare_type::eq, 50, 0);
+        CHECK_FIND_COUNT(compare_type::eq, 999, 1);
     }
 }
 

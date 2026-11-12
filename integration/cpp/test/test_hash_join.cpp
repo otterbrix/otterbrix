@@ -26,12 +26,12 @@
 
 using namespace components;
 using expressions::compare_type;
-using expressions::side_t;
 using logical_plan::join_type;
 using operators::operator_type;
 
 // rewrite_hash_joins stamps algo()==hash exactly for a single eq(left.key,right.key) on an inner/left/right/full
-// join (nested otherwise); nodes are hand-built already carrying side()+path(), the real post-validate state.
+// join (nested otherwise); nodes are hand-built already carrying path() and output_types(), the real post-validate
+// state. A key's path counts the right input's columns after the left's.
 namespace {
 
     vector::data_chunk_t build_two_int_chunk(std::pmr::memory_resource* res) {
@@ -45,12 +45,19 @@ namespace {
         return chunk;
     }
 
-    expressions::key_t make_key(std::pmr::memory_resource* res, const char* name, side_t side, size_t col) {
-        expressions::key_t k{res, name, side};
+    expressions::key_t make_key(std::pmr::memory_resource* res, const char* name, size_t col) {
+        expressions::key_t k{res, name};
         std::pmr::vector<size_t> path{res};
         path.push_back(col);
         k.set_path(std::move(path));
         return k;
+    }
+
+    logical_plan::node_ptr typed_input(std::pmr::memory_resource* res, vector::data_chunk_t chunk) {
+        auto types = chunk.types();
+        auto node = logical_plan::make_node_raw_data(res, std::move(chunk));
+        node->set_output_types(std::move(types));
+        return node;
     }
 
     // Two-column chunk with caller-chosen names/rows; distinct names let a test tell build from probe after a swap.
@@ -77,14 +84,17 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     compute::function_registry_t registry(res);
 
-    auto plan_type = [&](join_type jt, compare_type cmp, side_t ls, side_t rs) {
+    // Both inputs are two columns wide: 0 is the left input's key, 2 the right one's.
+    constexpr size_t left_key = 0;
+    constexpr size_t right_key = 2;
+    auto plan_type = [&](join_type jt, compare_type cmp, size_t l_column, size_t r_column) {
         auto cond = expressions::make_compare_expression(res,
                                                          cmp,
-                                                         expressions::param_storage{make_key(res, "l", ls, 0)},
-                                                         expressions::param_storage{make_key(res, "r", rs, 0)});
+                                                         expressions::param_storage{make_key(res, "l", l_column)},
+                                                         expressions::param_storage{make_key(res, "r", r_column)});
         auto join = logical_plan::make_node_join(res, jt);
-        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
-        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
+        join->append_child(typed_input(res, build_two_int_chunk(res)));
+        join->append_child(typed_input(res, build_two_int_chunk(res)));
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
         auto plan_planned =
@@ -97,34 +107,34 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
 
     INFO("equi-join (eq, left/right keys) is rewritten to hash_join");
     {
-        CHECK(plan_type(join_type::inner, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
-        CHECK(plan_type(join_type::left, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
-        CHECK(plan_type(join_type::right, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
-        CHECK(plan_type(join_type::full, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
-        CHECK(plan_type(join_type::inner, compare_type::eq, side_t::right, side_t::left) == operator_type::hash_join);
+        CHECK(plan_type(join_type::inner, compare_type::eq, left_key, right_key) == operator_type::hash_join);
+        CHECK(plan_type(join_type::left, compare_type::eq, left_key, right_key) == operator_type::hash_join);
+        CHECK(plan_type(join_type::right, compare_type::eq, left_key, right_key) == operator_type::hash_join);
+        CHECK(plan_type(join_type::full, compare_type::eq, left_key, right_key) == operator_type::hash_join);
+        CHECK(plan_type(join_type::inner, compare_type::eq, right_key, left_key) == operator_type::hash_join);
     }
 
     INFO("non-equi conditions keep the nested-loop join");
     {
-        CHECK(plan_type(join_type::inner, compare_type::gt, side_t::left, side_t::right) == operator_type::join);
-        CHECK(plan_type(join_type::inner, compare_type::ne, side_t::left, side_t::right) == operator_type::join);
-        CHECK(plan_type(join_type::inner, compare_type::eq, side_t::left, side_t::left) == operator_type::join);
+        CHECK(plan_type(join_type::inner, compare_type::gt, left_key, right_key) == operator_type::join);
+        CHECK(plan_type(join_type::inner, compare_type::ne, left_key, right_key) == operator_type::join);
+        CHECK(plan_type(join_type::inner, compare_type::eq, left_key, left_key) == operator_type::join);
     }
 
     INFO("cross join is never a hash join");
-    { CHECK(plan_type(join_type::cross, compare_type::eq, side_t::left, side_t::right) == operator_type::join); }
+    { CHECK(plan_type(join_type::cross, compare_type::eq, left_key, right_key) == operator_type::join); }
 
     INFO("nested-field equi-join (multi-element path) keeps the nested-loop join");
     {
         // A multi-element path addresses a nested struct field; the hash probe only understands a top-level column.
-        auto lk = make_key(res, "l", side_t::left, 0);
+        auto lk = make_key(res, "l", left_key);
         std::pmr::vector<size_t> lp{res};
-        lp.push_back(0);
+        lp.push_back(left_key);
         lp.push_back(1); // (col 0).field 1 — two-element path
         lk.set_path(std::move(lp));
-        auto rk = make_key(res, "r", side_t::right, 0);
+        auto rk = make_key(res, "r", right_key);
         std::pmr::vector<size_t> rp{res};
-        rp.push_back(0);
+        rp.push_back(right_key);
         rp.push_back(1);
         rk.set_path(std::move(rp));
 
@@ -133,8 +143,8 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
                                                          expressions::param_storage{std::move(lk)},
                                                          expressions::param_storage{std::move(rk)});
         auto join = logical_plan::make_node_join(res, join_type::inner);
-        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
-        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
+        join->append_child(typed_input(res, build_two_int_chunk(res)));
+        join->append_child(typed_input(res, build_two_int_chunk(res)));
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
         auto plan_planned =
@@ -154,21 +164,21 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
                                            to_double,
                                            casts::cast_type::explicit_only);
         REQUIRE(cast.has_value());
-        auto widened = [&](const char* name, side_t side) {
+        auto widened = [&](const char* name, size_t column) {
             return expressions::param_storage{expressions::expression_ptr(
                 expressions::make_cast_expression(res,
-                                                  expressions::param_storage{make_key(res, name, side, 0)},
+                                                  expressions::param_storage{make_key(res, name, column)},
                                                   to_double,
                                                   *cast,
                                                   casts::cast_kind::cast))};
         };
         auto cond = expressions::make_compare_expression(res,
                                                          compare_type::eq,
-                                                         widened("l", side_t::left),
-                                                         widened("r", side_t::right));
+                                                         widened("l", left_key),
+                                                         widened("r", right_key));
         auto join = logical_plan::make_node_join(res, join_type::inner);
-        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
-        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
+        join->append_child(typed_input(res, build_two_int_chunk(res)));
+        join->append_child(typed_input(res, build_two_int_chunk(res)));
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
         auto plan_planned =
@@ -365,14 +375,13 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
             context.row_counts[r] = right_rows;
         }
 
-        auto cond =
-            expressions::make_compare_expression(res,
-                                                 compare_type::eq,
-                                                 expressions::param_storage{make_key(res, "lk", side_t::left, 0)},
-                                                 expressions::param_storage{make_key(res, "rk", side_t::right, 0)});
+        auto cond = expressions::make_compare_expression(res,
+                                                         compare_type::eq,
+                                                         expressions::param_storage{make_key(res, "lk", 0)},
+                                                         expressions::param_storage{make_key(res, "rk", 2)});
         auto join = logical_plan::make_node_join(res, jt);
-        auto left_child = logical_plan::make_node_raw_data(res, build_named_chunk(res, "lk", "lv", left_rows));
-        auto right_child = logical_plan::make_node_raw_data(res, build_named_chunk(res, "rk", "rv", right_rows));
+        auto left_child = typed_input(res, build_named_chunk(res, "lk", "lv", left_rows));
+        auto right_child = typed_input(res, build_named_chunk(res, "rk", "rv", right_rows));
         left_child->set_table_oid(l);
         right_child->set_table_oid(r);
         join->append_child(left_child);
@@ -583,26 +592,26 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         context.row_counts[big_oid] = big_rows;
         context.row_counts[tiny_oid] = tiny_rows;
 
-        auto big_table = logical_plan::make_node_raw_data(res, build_named_chunk(res, "bk", "bv", 100));
+        auto big_table = typed_input(res, build_named_chunk(res, "bk", "bv", 100));
         big_table->set_table_oid(big_oid);
-        // Mimics pushdown_filter's wrapper shape: an oid-less aggregate{source, match}; the WHERE is never executed.
-        auto where =
-            expressions::make_compare_expression(res,
-                                                 compare_type::gt,
-                                                 expressions::param_storage{make_key(res, "bv", side_t::left, 1)},
-                                                 expressions::param_storage{make_key(res, "bk", side_t::left, 0)});
+        // Mimics pushdown_filter's wrapper shape: an oid-less aggregate{source, match} passing its source's columns
+        // through; the WHERE is never executed.
+        auto where = expressions::make_compare_expression(res,
+                                                          compare_type::gt,
+                                                          expressions::param_storage{make_key(res, "bv", 1)},
+                                                          expressions::param_storage{make_key(res, "bk", 0)});
         auto wrapper = logical_plan::make_node_aggregate(res, qualified_name_t{});
+        wrapper->set_output_types(big_table->output_types());
         wrapper->append_child(big_table);
         wrapper->append_child(logical_plan::make_node_match(res, qualified_name_t{}, where));
 
-        auto tiny = logical_plan::make_node_raw_data(res, build_named_chunk(res, "rk", "rv", 2));
+        auto tiny = typed_input(res, build_named_chunk(res, "rk", "rv", 2));
         tiny->set_table_oid(tiny_oid);
 
-        auto cond =
-            expressions::make_compare_expression(res,
-                                                 compare_type::eq,
-                                                 expressions::param_storage{make_key(res, "bk", side_t::left, 0)},
-                                                 expressions::param_storage{make_key(res, "rk", side_t::right, 0)});
+        auto cond = expressions::make_compare_expression(res,
+                                                         compare_type::eq,
+                                                         expressions::param_storage{make_key(res, "bk", 0)},
+                                                         expressions::param_storage{make_key(res, "rk", 2)});
         auto join = logical_plan::make_node_join(res, join_type::inner);
         join->append_child(wrapper);
         join->append_child(tiny);

@@ -441,7 +441,7 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_depend, std::move(dep_row))));
 
         // Emits PHYSICAL_DELETE only when it finds a matching live row (the one just appended).
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, auto_ctx(), pg_depend, std::int64_t{1}, dep_objid);
+        disk_test_helpers::delete_rows_ok(fx, auto_ctx(), pg_depend, std::int64_t{1}, dep_objid);
 
         auto idx_row = catalog::build_pg_index_row(&fx.resource,
                                                    idx_oid,

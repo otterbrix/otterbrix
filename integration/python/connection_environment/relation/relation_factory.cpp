@@ -1,10 +1,12 @@
 #include "relation_factory.hpp"
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/clone_expression.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/planner/optimizer/rules/conjunct_utils.hpp>
 #include <cstdint>
 #include <integration/cpp/otterbrix.hpp>
 #include <memory>
@@ -319,11 +321,27 @@ namespace otterbrix {
                                                        const std::vector<expression_wrapper_t>& exprs,
                                                        components::logical_plan::join_type type) {
         auto* resource = &arena_->resource;
+        const auto left_element = ++source_element_counter_;
+        const auto right_element = ++source_element_counter_;
+        struct name_inputs_t {
+            expressions::source_element_id_t left_element;
+            expressions::source_element_id_t right_element;
+            void column(expressions::key_t& key) {
+                if (key.source_element() == left_input_marker) {
+                    key.set_source_element(left_element);
+                } else if (key.source_element() == right_input_marker) {
+                    key.set_source_element(right_element);
+                }
+            }
+            void call(const expressions::function_expression_t&) {}
+        } name_inputs{left_element, right_element};
         std::pmr::vector<expressions::expression_ptr> conditions(resource);
         for (const auto& expr : exprs) {
             if (expr.is_expression()) {
                 if (expr.expression()->group() == expressions::expression_group::compare) {
-                    conditions.push_back(expr.expression());
+                    auto condition = expressions::clone_expression(resource, expr.expression());
+                    components::planner::optimizer::walk_columns(condition, name_inputs);
+                    conditions.push_back(std::move(condition));
                 } else {
                     throw std::runtime_error("Undefined expression type for sort relation");
                 }
@@ -335,6 +353,8 @@ namespace otterbrix {
         }
 
         auto join_node = make_node_join(resource, type);
+        relation.node->set_source_element(left_element);
+        other.node->set_source_element(right_element);
         join_node->append_child(relation.node);
         join_node->append_child(other.node);
         if (!exprs.empty()) {

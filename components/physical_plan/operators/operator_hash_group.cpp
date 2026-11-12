@@ -61,7 +61,6 @@ namespace components::operators {
                                                     computed_keys_,
                                                     pipeline_context->parameters,
                                                     *chunk,
-                                                    0,
                                                     &computed_keys_graph_);
                 error.contains_error()) {
                 return error;
@@ -108,7 +107,6 @@ namespace components::operators {
                 // unresolved one here is a broken invariant rather than a query the engine refuses.
                 assert(!source.path().empty() && "group key reached the operator with no resolved column path");
                 field.set_path(std::pmr::vector<size_t>{source.path().begin(), source.path().end(), resource_});
-                field.set_side(source.side());
             } else {
                 std::pmr::vector<size_t> path(resource_);
                 path.push_back(computed_key_base_ + computed_index);

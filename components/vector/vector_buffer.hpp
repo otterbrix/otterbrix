@@ -57,25 +57,6 @@ namespace components::vector {
         virtual ~vector_auxiliary_data_t() = default;
 
         vector_auxiliary_type type_;
-
-    public:
-        template<class TARGET>
-        TARGET& cast() {
-            if (type_ != TARGET::TYPE) {
-                assert(false && "Failed to cast vector auxiliary data to type - type mismatch");
-                std::abort();
-            }
-            return reinterpret_cast<TARGET&>(*this);
-        }
-
-        template<class TARGET>
-        const TARGET& cast() const {
-            if (type_ != TARGET::TYPE) {
-                assert(false && "Failed to cast vector auxiliary data to type - type mismatch");
-                std::abort();
-            }
-            return reinterpret_cast<const TARGET&>(*this);
-        }
     };
 
     class vector_buffer_t {

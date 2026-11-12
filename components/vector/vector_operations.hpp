@@ -5,13 +5,6 @@
 
 namespace components::vector::vector_ops {
 
-    void generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment);
-    void generate_sequence(vector_t& result,
-                           uint64_t count,
-                           const indexing_vector_t& indexing,
-                           int64_t start,
-                           int64_t increment);
-
     void copy(const vector_t& source,
               vector_t& target,
               uint64_t source_count,

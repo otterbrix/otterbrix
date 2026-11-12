@@ -36,18 +36,18 @@ namespace services::dispatcher::validation {
         named_schema merged(resource);
         merged.reserve(lhs.size() + rhs.size());
         for (auto&& type : lhs) {
-            if (type.side == side_t::undefined) {
-                type.side = side_t::left;
-            }
             merged.emplace_back(std::move(type));
         }
         for (auto&& type : rhs) {
-            if (type.side == side_t::undefined) {
-                type.side = side_t::right;
-            }
             merged.emplace_back(std::move(type));
         }
         return merged;
+    }
+
+    bool of_relation(const type_from_t& column, source_element_id_t relation) {
+        return column.source_element == relation ||
+               std::find(column.joined_inputs.begin(), column.joined_inputs.end(), relation) !=
+                   column.joined_inputs.end();
     }
 
     static core::result_wrapper_t<type_paths>
@@ -87,10 +87,16 @@ namespace services::dispatcher::validation {
             }
             return result;
         }
+
+        const auto source_element = key.source_element();
+        auto in_relation = [source_element](const type_from_t& entry, const std::pmr::string& relation) {
+            return source_element != NO_SOURCE_ELEMENT ? of_relation(entry, source_element)
+                                                       : core::pmr::operator==(entry.result_alias, relation);
+        };
         if (key.storage().size() >= 2 && key.storage().back() == "*") {
             const auto& table_part = key.storage()[key.storage().size() - 2];
             for (size_t i = 0; i < schema.size(); i++) {
-                if (core::pmr::operator==(schema[i].result_alias, table_part)) {
+                if (in_relation(schema[i], table_part)) {
                     result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
                 }
             }
@@ -104,12 +110,11 @@ namespace services::dispatcher::validation {
             truncated_key.storage().resize(truncated_key.storage().size() - 1);
         }
         std::pmr::list<type_match_t> matches(resource);
-        // A qualified reference (m.v) resolves against that one table. `side` can't do this: it is
-        // binary, but a chained JOIN puts three tables on two sides, so only the qualifier tells
-        // the middle table from the leftmost one.
-        if (truncated_key.has_qualifier()) {
+        // A qualified reference (m.v), or a USING column naming its join input, resolves against that one relation.
+        const bool names_relation = source_element != NO_SOURCE_ELEMENT || truncated_key.has_qualifier();
+        if (names_relation) {
             for (size_t i = 0; i < schema.size(); i++) {
-                if (core::pmr::operator==(schema[i].result_alias, truncated_key.qualifier()) &&
+                if (in_relation(schema[i], truncated_key.qualifier()) &&
                     core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[0])) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
                 }
@@ -123,9 +128,9 @@ namespace services::dispatcher::validation {
         // a same-named column elsewhere. schema_knows_qualifier is computed once, before the loop, so
         // per-iteration matches.empty() checks can't stop at the first hit and hide ambiguity.
         const bool schema_knows_qualifier =
-            truncated_key.has_qualifier() &&
-            std::any_of(schema.begin(), schema.end(), [&truncated_key](const type_from_t& entry) {
-                return core::pmr::operator==(entry.result_alias, truncated_key.qualifier());
+            names_relation &&
+            std::any_of(schema.begin(), schema.end(), [&in_relation, &truncated_key](const type_from_t& entry) {
+                return in_relation(entry, truncated_key.qualifier());
             });
         const bool match_by_name = matches.empty() && !schema_knows_qualifier;
         for (size_t i = 0; match_by_name && i < schema.size(); i++) {
@@ -139,20 +144,6 @@ namespace services::dispatcher::validation {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
             } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[0])) {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
-            }
-        }
-
-        // Only filters by side when there's more than one match: a single legitimate match in a
-        // chained JOIN can have a side that disagrees, since inner-merge sides don't align with it.
-        if (matches.size() > 1 && key.side() != side_t::undefined) {
-            for (auto it = matches.begin(); it != matches.end();) {
-                size_t schema_idx = it->path.empty() ? 0 : it->path[0];
-                if (schema_idx < schema.size() && schema[schema_idx].side != side_t::undefined &&
-                    schema[schema_idx].side != key.side()) {
-                    it = matches.erase(it);
-                } else {
-                    ++it;
-                }
             }
         }
 
@@ -277,17 +268,30 @@ namespace services::dispatcher::validation {
                                                     const named_schema* schema_right,
                                                     column_uses_t* uses) {
         if (schema_right == nullptr) {
-            auto resolved = find_types(resource, key, *schema_left, uses);
-            if (!resolved.has_error() && key.side() == side_t::undefined) {
-                key.set_side(side_t::left);
-            }
-            return resolved;
-        }
-        if (key.side() == side_t::left) {
             return find_types(resource, key, *schema_left, uses);
         }
-        if (key.side() == side_t::right) {
-            return find_types(resource, key, *schema_right, uses);
+        auto after_left = [&key, left_width = schema_left->size()](core::result_wrapper_t<type_paths> found) {
+            if (found.has_error()) {
+                return found;
+            }
+            key.path().front() += left_width;
+            for (auto& type_path : found.value()) {
+                type_path.path.front() += left_width;
+            }
+            return found;
+        };
+        const auto relation = key.source_element();
+        auto holds_relation = [relation](const named_schema& schema) {
+            return relation != NO_SOURCE_ELEMENT &&
+                   std::any_of(schema.begin(), schema.end(), [relation](const type_from_t& column) {
+                       return of_relation(column, relation);
+                   });
+        };
+        if (holds_relation(*schema_left)) {
+            return find_types(resource, key, *schema_left, uses);
+        }
+        if (holds_relation(*schema_right)) {
+            return after_left(find_types(resource, key, *schema_right, uses));
         }
         // find_types sets a path, but if both left and right are valid, this will be an error and won't matter
         auto column_path_left = find_types(resource, key, *schema_left, uses);
@@ -305,10 +309,8 @@ namespace services::dispatcher::validation {
             return ambiguous_key(resource, key);
         }
         if (column_path_left.has_error()) {
-            key.set_side(side_t::right);
-            return column_path_right;
+            return after_left(std::move(column_path_right));
         }
-        key.set_side(side_t::left);
         return column_path_left;
     }
 

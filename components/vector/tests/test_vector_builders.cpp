@@ -604,7 +604,7 @@ TEST_CASE("indexed flatten of a CONSTANT past the default capacity keeps every r
 
     SECTION("NULL") {
         auto built = make_null(&resource, bigint());
-        built.flatten(zeros, rows);
+        built.flatten(rows);
         REQUIRE(built.validity().count() >= rows);
         for (uint64_t row = 0; row < rows; row++) {
             REQUIRE(built.is_null(row));
@@ -615,7 +615,7 @@ TEST_CASE("indexed flatten of a CONSTANT past the default capacity keeps every r
     }
     SECTION("non-NULL") {
         auto built = make_scalar<int64_t>(&resource, 7);
-        built.flatten(zeros, rows);
+        built.flatten(rows);
         REQUIRE(built.validity().count() >= rows);
         built.set_null(rows - 1, true);
         REQUIRE(built.is_null(rows - 1));

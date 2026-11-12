@@ -282,18 +282,18 @@ namespace components::sql::transform {
         core::result_wrapper_t<expressions::key_t> resolve_jsonb_scalar_key(A_Expr* node,
                                                                             const name_collection_t& names);
         // Recursive worker: appends this chain's path segments (in order) and
-        // sets `side` from the base operand. Accepts any nav operator.
+        // sets `source_element` from the base operand. Accepts any nav operator.
         core::error_t collect_jsonb_path(A_Expr* node,
                                          const name_collection_t& names,
                                          std::pmr::vector<std::pmr::string>& segments,
-                                         expressions::side_t& side);
+                                         expressions::source_element_id_t& source_element);
         // Resolve the base (left-most) operand of a jsonb chain into its path
-        // segments + side. A bare table name yields no segments (document root);
+        // segments + FROM element. A bare table name yields no segments (document root);
         // a column yields its name.
         core::error_t resolve_jsonb_base(Node* lexpr,
                                          const name_collection_t& names,
                                          std::pmr::vector<std::pmr::string>& segments,
-                                         expressions::side_t& side);
+                                         expressions::source_element_id_t& source_element);
 
         // Table-valued jsonb operators ('->','#>' expand; '-','#-' delete).
         // Collapse the chain into a single slash-joined prefix key (e.g. 'a/b').
@@ -398,6 +398,7 @@ namespace components::sql::transform {
         std::pmr::vector<vector::data_chunk_t> parameter_insert_rows_;
         std::vector<deferred_limit_t> deferred_limits_;
         size_t aggregate_counter_{0};
+        expressions::source_element_id_t source_element_counter_{expressions::NO_SOURCE_ELEMENT};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
         std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
         std::pmr::unordered_map<std::string, SelectStmt*> recursive_cte_queries_{resource_};
@@ -424,6 +425,13 @@ namespace components::sql::transform {
         }
         void register_types(std::span<const qualified_name_t> type_names) {
             register_catalog_resolve_types(resource_, &catalog_resolves_, type_names);
+        }
+
+        expressions::source_element_id_t next_source_element() { return ++source_element_counter_; }
+
+        expressions::source_element_id_t number_source_element(logical_plan::node_t& element) {
+            element.set_source_element(next_source_element());
+            return element.source_element();
         }
 
         // The node keeps every slot of `written`; a CREATE without a database or schema is completed with the

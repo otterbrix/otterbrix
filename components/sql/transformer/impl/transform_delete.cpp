@@ -39,6 +39,7 @@ namespace components::sql::transform {
         name_collection_t names;
         names.left_name = rangevar_to_qualified_name(node.relation);
         names.left_alias = construct_alias(node.relation->alias);
+        names.left_element = next_source_element();
         // DELETE ... USING: build the USING clause as a source sub-plan (a table, a
         // join tree, a table function, or a — possibly LATERAL — derived table) that
         // becomes the RIGHT side of the delete join. target = left, source = right for
@@ -50,6 +51,7 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(source_child, transform_from_source(node.usingClause, source_names, plan));
             names.right_name = source_names.left_name;
             names.right_alias = source_names.left_alias;
+            names.right_element = number_source_element(*source_child);
         }
         // No WHERE with a USING clause: the cross join of target and source is the
         // filter, so match every target row (all_true) and let the semi-join keep only
@@ -64,6 +66,7 @@ namespace components::sql::transform {
         auto del = logical_plan::make_node_delete(resource_,
                                                   logical_plan::make_node_match(resource_, names.left_name, where_expr),
                                                   del_limit);
+        del->set_source_element(names.left_element);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
         set_target(*del, names.left_name, target_slots::relation);

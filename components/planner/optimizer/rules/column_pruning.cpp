@@ -338,23 +338,10 @@ namespace components::planner::optimizer {
             if (!row_keys(aggregate, parts, above, &passes_row) || passes_row) {
                 return;
             }
-            key_refs_t on[2]{key_refs_t(aggregate.resource()), key_refs_t(aggregate.resource())};
+            key_refs_t on(aggregate.resource());
             for (auto& expression : join.expressions()) {
-                key_refs_t keys(aggregate.resource());
-                if (!collect_expression(expression.get(), keys)) {
+                if (!collect_expression(expression.get(), on)) {
                     return;
-                }
-                for (auto* key : keys) {
-                    switch (key->side()) {
-                        case ex::side_t::left:
-                            on[0].push_back(key);
-                            break;
-                        case ex::side_t::right:
-                            on[1].push_back(key);
-                            break;
-                        default:
-                            return;
-                    }
                 }
             }
 
@@ -377,7 +364,7 @@ namespace components::planner::optimizer {
                 }
                 std::vector<size_t> used;
                 add_used(above, side == 0 ? 0 : widths[0], widths[side], used);
-                add_used(on[side], 0, widths[side], used);
+                add_used(on, side == 0 ? 0 : widths[0], widths[side], used);
                 add_used(inside[side], 0, widths[side], used);
                 auto narrowing = narrowing_of(widths[side], std::move(used));
                 if (narrowing.kept.empty() || !narrowing.narrows()) {
@@ -396,7 +383,6 @@ namespace components::planner::optimizer {
                 }
                 auto& child = static_cast<lp::node_aggregate_t&>(*join.children()[side]);
                 rebase(inside[side], [&](size_t old) { return narrowings[side].remap(old); });
-                rebase(on[side], [&](size_t old) { return narrowings[side].remap(old); });
                 child.set_output_types(narrowed_types(child.output_types(), narrowings[side]));
                 child.set_projected_cols(narrowings[side].kept);
             }
@@ -412,24 +398,11 @@ namespace components::planner::optimizer {
             }
             narrowing_t joined{joined_width, std::move(joined_kept)};
             rebase(above, [&](size_t old) { return joined.remap(old); });
+            rebase(on, [&](size_t old) { return joined.remap(old); });
             narrow_group_input(parts, joined);
             if (join.output_types().size() == joined_width) {
                 join.set_output_types(narrowed_types(join.output_types(), joined));
             }
-        }
-
-        // The keys of `expression` that read the DELETE target: with USING, a right-side key reads the source.
-        bool target_keys(const ex::expression_ptr& expression, key_refs_t& keys) {
-            key_refs_t all(keys.get_allocator().resource());
-            if (!collect_expression(expression.get(), all)) {
-                return false;
-            }
-            for (auto* key : all) {
-                if (key->side() != ex::side_t::right) {
-                    keys.push_back(key);
-                }
-            }
-            return true;
         }
 
         // A DELETE's scan reads what its WHERE / USING condition and RETURNING name, the key columns its index
@@ -451,13 +424,13 @@ namespace components::planner::optimizer {
                     continue;
                 }
                 for (const auto& expression : child->expressions()) {
-                    if (!target_keys(expression, keys)) {
+                    if (!collect_expression(expression.get(), keys)) {
                         return;
                     }
                 }
             }
             for (const auto& expression : node.returning()) {
-                if (!target_keys(expression, keys)) {
+                if (!collect_expression(expression.get(), keys)) {
                     return;
                 }
             }

@@ -108,10 +108,7 @@ TEST_CASE("optimizer::scalar_fold_add") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
     auto result = components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
@@ -140,10 +137,7 @@ TEST_CASE("optimizer::scalar_fold_subtract") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -170,10 +164,7 @@ TEST_CASE("optimizer::scalar_fold_multiply") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -200,10 +191,7 @@ TEST_CASE("optimizer::scalar_fold_divide") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -230,10 +218,7 @@ TEST_CASE("optimizer::scalar_fold_mod") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -285,10 +270,8 @@ TEST_CASE("optimizer::execution_slot_is_not_folded") {
         scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
         scalar->append_param(id0);
         scalar->append_param(id1);
-        auto comp = make_compare_expression(&resource,
-                                            compare_type::eq,
-                                            key(&resource, "field", side_t::left),
-                                            expression_ptr(scalar));
+        auto comp =
+            make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
         auto node = make_match_with_expr(&resource, comp);
         components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
         REQUIRE(static_cast<scalar_expression_t*>(scalar.get())->params().size() == 2);
@@ -493,7 +476,7 @@ TEST_CASE("optimizer::no_fold_key_param") {
     auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
                                      components::vector::parameter_kind::literal);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left), id0);
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), id0);
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -515,10 +498,7 @@ TEST_CASE("optimizer::no_fold_null_param") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -561,10 +541,7 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -594,10 +571,7 @@ TEST_CASE("optimizer::div_by_zero_skip") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -637,10 +611,7 @@ TEST_CASE("optimizer::cast_of_a_constant_folds_into_a_new_id") {
                                      target,
                                      test_cast(bigint_type(), double_type()),
                                      components::casts::cast_kind::cast);
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(cast));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -664,10 +635,7 @@ TEST_CASE("optimizer::cast_of_an_execution_slot_is_not_folded") {
                                      components::types::complex_logical_type(components::types::logical_type::DOUBLE),
                                      test_cast(bigint_type(), double_type()),
                                      components::casts::cast_kind::cast);
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(cast));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -689,10 +657,7 @@ TEST_CASE("optimizer::cast_the_kernel_refuses_is_left_for_the_runtime") {
                                      target,
                                      test_cast(bigint_type(), target),
                                      components::casts::cast_kind::cast);
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(cast));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -711,10 +676,7 @@ TEST_CASE("optimizer::cast_of_a_null_constant_is_not_folded") {
                                      components::types::complex_logical_type(components::types::logical_type::DOUBLE),
                                      test_cast(bigint_type(), double_type()),
                                      components::casts::cast_kind::cast);
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(cast));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -733,10 +695,7 @@ namespace {
         auto scalar = make_scalar_expression(resource, scalar_type::unary_minus);
         scalar->set_result_type(result_type);
         scalar->append_param(id);
-        comp_out = make_compare_expression(resource,
-                                           compare_type::eq,
-                                           key(resource, "field", side_t::left),
-                                           expression_ptr(scalar));
+        comp_out = make_compare_expression(resource, compare_type::eq, key(resource, "field"), expression_ptr(scalar));
         auto node = make_match_with_expr(resource, comp_out);
         components::planner::optimize(resource, node, params, test_execution_context(), no_indexes());
     }
@@ -808,10 +767,7 @@ TEST_CASE("optimizer::try_cast_that_answers_null_is_not_folded") {
                                      smallint,
                                      test_cast(bigint, smallint),
                                      components::casts::cast_kind::try_cast);
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(cast));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(cast));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -829,10 +785,7 @@ TEST_CASE("optimizer::unary_minus_of_a_constant_folds_into_a_new_id") {
     auto scalar = make_scalar_expression(&resource, scalar_type::unary_minus);
     scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -855,7 +808,7 @@ TEST_CASE("optimizer::union_and_fold") {
                                      components::vector::parameter_kind::literal);
 
     auto child1 = make_compare_expression(&resource, compare_type::eq, id0, id1);
-    auto child2 = make_compare_expression(&resource, compare_type::gt, key(&resource, "field", side_t::left), id2);
+    auto child2 = make_compare_expression(&resource, compare_type::gt, key(&resource, "field"), id2);
 
     auto union_and = make_compare_union_expression(&resource, compare_type::union_and);
     union_and->append_child(child1);
@@ -920,10 +873,7 @@ TEST_CASE("optimizer::deep_nested_scalar") {
     outer->append_param(expression_ptr(inner));
     outer->append_param(id2);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(outer));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(outer));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -966,10 +916,8 @@ TEST_CASE("optimizer::triple_nested_scalar") {
     add_outer->append_param(expression_ptr(mul_mid));
     add_outer->append_param(id3);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(add_outer));
+    auto comp =
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(add_outer));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -1000,10 +948,7 @@ TEST_CASE("optimizer::scalar_fold_double") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -1032,10 +977,7 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
 
@@ -1203,8 +1145,7 @@ TEST_CASE("optimizer::param_copy_survives") {
     REQUIRE(moved.at(id0).get_value<int64_t>(0) == 5);
 }
 
-// Unqualified comma-join columns get merged with ambiguous side=left stamps that detect_equi_columns can't
-// use; promote_cross_joins reclassifies them by path range instead, onto a fresh INNER join.
+// A comma join's WHERE equi conjunct moves onto a fresh INNER join, classified by path range.
 namespace {
     // Left unstamped on purpose: validate_schema derives output_types() from the data chunk.
     static node_ptr make_promote_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
@@ -1268,22 +1209,17 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto* jn = static_cast<node_join_t*>(agg->children()[0].get());
     REQUIRE(jn->type() == join_type::inner);
     REQUIRE(jn->algo() == node_join_t::join_algo::hash);
+    // The ON counts b's columns after a's two.
     REQUIRE(on_left_col(jn) == 0);
-    REQUIRE(on_right_col(jn) == 0);
+    REQUIRE(on_right_col(jn) == 2);
 
     REQUIRE(jn->expressions().size() == 1);
     auto* on = static_cast<compare_expression_t*>(jn->expressions()[0].get());
     REQUIRE(on->type() == compare_type::eq);
     REQUIRE(is_key(on->left()));
     REQUIRE(is_key(on->right()));
-    const auto& lk = as_key(on->left());
-    const auto& rk = as_key(on->right());
-    REQUIRE(lk.side() == side_t::left);
-    REQUIRE(lk.path().size() == 1);
-    REQUIRE(lk.path()[0] == 0);
-    REQUIRE(rk.side() == side_t::right);
-    REQUIRE(rk.path().size() == 1);
-    REQUIRE(rk.path()[0] == 0);
+    REQUIRE(as_key(on->left()).path().size() == 1);
+    REQUIRE(as_key(on->right()).path().size() == 1);
 
     REQUIRE(agg->children()[1]->type() == node_type::match_t);
     auto residual_match = agg->children()[1];
@@ -1339,8 +1275,9 @@ namespace {
     core::schema_t pdb() { return core::schema_t{std::string{prune_db}}; }
     core::relname_t prel() { return core::relname_t{std::string{prune_rel}}; }
 
-    key pruned_key(std::pmr::memory_resource* r, const char* name, size_t idx, side_t side = side_t::undefined) {
-        key k(r, name, side);
+    // `idx` counts a join's right input after its left one, as an ON key does.
+    key pruned_key(std::pmr::memory_resource* r, const char* name, size_t idx) {
+        key k(r, name);
         std::pmr::vector<size_t> p{r};
         p.push_back(idx);
         k.set_path(std::move(p));
@@ -1479,8 +1416,8 @@ TEST_CASE("optimizer::column_pruning") {
         join->append_child(agg_t2);
         auto on = make_compare_expression(&resource,
                                           compare_type::eq,
-                                          pruned_key(&resource, "k", 1, side_t::left),
-                                          pruned_key(&resource, "k", 0, side_t::right));
+                                          pruned_key(&resource, "k", 1),
+                                          pruned_key(&resource, "k", 3));
         join->append_expression(on);
         join->set_output_types(bigints(&resource, 6));
 
@@ -1505,7 +1442,7 @@ TEST_CASE("optimizer::column_pruning") {
         REQUIRE(join->output_types().size() == 4);
         auto* on_compare = static_cast<compare_expression_t*>(on.get());
         REQUIRE(as_key(on_compare->left()).path().front() == 1);
-        REQUIRE(as_key(on_compare->right()).path().front() == 0);
+        REQUIRE(as_key(on_compare->right()).path().front() == 2);
         REQUIRE(own_column(sel->expressions()[0]) == 0);
         REQUIRE(own_column(sel->expressions()[1]) == 3);
     }
@@ -1717,11 +1654,11 @@ TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side")
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
                                                     compare_type::eq,
-                                                    pruned_key(&resource, "k", 1, side_t::left),
-                                                    pruned_key(&resource, "k", 3, side_t::right)));
+                                                    pruned_key(&resource, "k", 1),
+                                                    pruned_key(&resource, "k", 3)));
 
-    auto c1 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 0, side_t::left), p5);
-    auto c2 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 2, side_t::right), p7);
+    auto c1 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 0), p5);
+    auto c2 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 2), p7);
     auto where = make_compare_union_expression(&resource, compare_type::union_and);
     where->append_child(c1);
     where->append_child(c2);
@@ -1758,11 +1695,11 @@ TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_r
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
                                                     compare_type::eq,
-                                                    pruned_key(&resource, "k", 1, side_t::left),
-                                                    pruned_key(&resource, "k", 3, side_t::right)));
+                                                    pruned_key(&resource, "k", 1),
+                                                    pruned_key(&resource, "k", 3)));
 
-    auto c1 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 0, side_t::left), p5);
-    auto c2 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 2, side_t::right), p7);
+    auto c1 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 0), p5);
+    auto c2 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 2), p7);
     auto where = make_compare_union_expression(&resource, compare_type::union_and);
     where->append_child(c1);
     where->append_child(c2);
@@ -1813,10 +1750,10 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") 
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
                                                     compare_type::eq,
-                                                    pruned_key(&resource, "k", 1, side_t::left),
-                                                    pruned_key(&resource, "k2", 1, side_t::right)));
+                                                    pruned_key(&resource, "k", 1),
+                                                    pruned_key(&resource, "k2", 3)));
 
-    auto where = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k", 1, side_t::left), p5);
+    auto where = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k", 1), p5);
 
     auto outer = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
     outer->append_child(join);
@@ -1867,10 +1804,10 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation")
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
                                                     compare_type::eq,
-                                                    pruned_key(&resource, "k", 1, side_t::left),
-                                                    pruned_key(&resource, "k2", 1, side_t::right)));
+                                                    pruned_key(&resource, "k", 1),
+                                                    pruned_key(&resource, "k2", 3)));
 
-    auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "k", 1, side_t::left), p5);
+    auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "k", 1), p5);
 
     auto outer = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
     outer->append_child(join);
@@ -1908,10 +1845,10 @@ TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
                                                     compare_type::eq,
-                                                    pruned_key(&resource, "k", 1, side_t::left),
-                                                    pruned_key(&resource, "k2", 1, side_t::right)));
+                                                    pruned_key(&resource, "k", 1),
+                                                    pruned_key(&resource, "k2", 3)));
 
-    auto where = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k", 1, side_t::left), p5);
+    auto where = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k", 1), p5);
 
     auto outer = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
     outer->append_child(join);
@@ -2054,8 +1991,6 @@ TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_not_subset") {
 
 // eager_aggregation pushes a MIN/MAX partial onto the single join side owning every group key and aggregate arg.
 namespace { namespace eag {
-    using components::expressions::side_t;
-
     std::pmr::vector<size_t> path1(std::pmr::memory_resource* r, size_t i) {
         std::pmr::vector<size_t> p{r};
         p.push_back(i);
@@ -2076,8 +2011,8 @@ namespace { namespace eag {
         return a;
     }
 
-    key col(std::pmr::memory_resource* r, const char* name, size_t path, side_t side = side_t::undefined) {
-        key k(r, name, side);
+    key col(std::pmr::memory_resource* r, const char* name, size_t path) {
+        key k(r, name);
         k.set_path(path1(r, path));
         return k;
     }
@@ -2092,10 +2027,8 @@ namespace { namespace eag {
         auto join = make_node_join(r, join_type::inner);
         join->append_child(a);
         join->append_child(b);
-        join->append_expression(make_compare_expression(r,
-                                                        compare_type::eq,
-                                                        param_storage{col(r, "k", 1, side_t::left)},
-                                                        param_storage{col(r, "k", 0, side_t::right)}));
+        join->append_expression(
+            make_compare_expression(r, compare_type::eq, param_storage{col(r, "k", 1)}, param_storage{col(r, "k", 3)}));
         if (hash) {
             join->set_algo(node_join_t::join_algo::hash);
         }
@@ -2149,7 +2082,8 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
 
     auto* join = static_cast<node_join_t*>(outer->children()[0].get());
     CHECK(on_left_col(join) == 1);
-    CHECK(on_right_col(join) == 0);
+    // The partial [g, k, m] is as wide as a was, so b.k still counts after three columns.
+    CHECK(on_right_col(join) == 3);
 
     node_group_t* final_group = nullptr;
     for (const auto& c : outer->children()) {
@@ -2245,10 +2179,7 @@ TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_decli
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource,
-                                        compare_type::eq,
-                                        key(&resource, "field", side_t::left),
-                                        expression_ptr(scalar));
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field"), expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
     components::planner::optimize(&resource, node, params.get(), test_execution_context(), no_indexes());
@@ -2274,10 +2205,7 @@ namespace {
         scalar->set_result_type(result);
         scalar->append_param(left);
         scalar->append_param(right);
-        auto comp = make_compare_expression(resource,
-                                            compare_type::eq,
-                                            key(resource, "field", side_t::left),
-                                            expression_ptr(scalar));
+        auto comp = make_compare_expression(resource, compare_type::eq, key(resource, "field"), expression_ptr(scalar));
         auto node = make_match_with_expr(resource, comp);
         components::planner::optimize(resource, node, params.get(), test_execution_context(), no_indexes());
         return boost::intrusive_ptr<scalar_expression_t>(static_cast<scalar_expression_t*>(scalar.get()));
@@ -2451,9 +2379,7 @@ namespace { namespace cast_key {
     }
 
     // CAST(k AS BIGINT) over the left input's column 1
-    param_storage widened_k(std::pmr::memory_resource* r) {
-        return param_storage{widened(r, pruned_key(r, "k", 1, side_t::left))};
-    }
+    param_storage widened_k(std::pmr::memory_resource* r) { return param_storage{widened(r, pruned_key(r, "k", 1))}; }
 
     const key& key_under_cast(const param_storage& operand) {
         REQUIRE(is_expr(operand));
@@ -2487,7 +2413,7 @@ TEST_CASE("optimizer::hash_join::cast_key_operand_is_hashed") {
                                         make_compare_expression(&resource,
                                                                 compare_type::eq,
                                                                 cast_key::widened_k(&resource),
-                                                                pruned_key(&resource, "k2", 1, side_t::right)));
+                                                                pruned_key(&resource, "k2", 3)));
         auto out = components::planner::optimizer::rewrite_hash_joins(&resource, join);
         REQUIRE(out == join);
         CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
@@ -2500,14 +2426,14 @@ TEST_CASE("optimizer::hash_join::on_is_normalised_left_operand_first") {
                                     join_type::inner,
                                     make_compare_expression(&resource,
                                                             compare_type::eq,
-                                                            pruned_key(&resource, "k2", 1, side_t::right),
+                                                            pruned_key(&resource, "k2", 3),
                                                             cast_key::widened_k(&resource)));
     components::planner::optimizer::rewrite_hash_joins(&resource, join);
     REQUIRE(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
     auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
-    CHECK(cast_key::key_under_cast(on->left()).side() == side_t::left);
+    CHECK(cast_key::key_under_cast(on->left()).path()[0] == 1);
     REQUIRE(is_key(on->right()));
-    CHECK(as_key(on->right()).side() == side_t::right);
+    CHECK(as_key(on->right()).path()[0] == 3);
 }
 
 TEST_CASE("optimizer::hash_join::keys_from_one_side_stay_nested") {
@@ -2517,7 +2443,7 @@ TEST_CASE("optimizer::hash_join::keys_from_one_side_stay_nested") {
                                     make_compare_expression(&resource,
                                                             compare_type::eq,
                                                             cast_key::widened_k(&resource),
-                                                            pruned_key(&resource, "a", 0, side_t::left)));
+                                                            pruned_key(&resource, "a", 0)));
     components::planner::optimizer::rewrite_hash_joins(&resource, join);
     CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::nested);
 }
@@ -2583,14 +2509,13 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_on_narrow_key_becomes_inner
     auto* on = static_cast<compare_expression_t*>(jn->expressions()[0].get());
     REQUIRE(on->type() == compare_type::eq);
     const auto& lk = cast_key::key_under_cast(on->left());
-    CHECK(lk.side() == side_t::left);
     REQUIRE(lk.path().size() == 1);
     CHECK(lk.path()[0] == 0);
     REQUIRE(is_key(on->right()));
     const auto& rk = as_key(on->right());
-    CHECK(rk.side() == side_t::right);
     REQUIRE(rk.path().size() == 1);
-    CHECK(rk.path()[0] == 0);
+    // b's column counts after a's two.
+    CHECK(rk.path()[0] == 2);
 
     REQUIRE(agg->children()[1]->type() == node_type::match_t);
     auto* residual = static_cast<compare_expression_t*>(agg->children()[1]->expressions()[0].get());
@@ -2639,7 +2564,7 @@ namespace { namespace one_sided {
     }
 }} // namespace ::one_sided
 
-// Any operand that reads one side only is a join key, as in PostgreSQL; its columns are re-stamped side-local.
+// Any operand that reads one side only is a join key, as in PostgreSQL; its columns keep their merged paths.
 TEST_CASE("optimizer::promote_cross_join::function_of_one_side_is_a_join_key") {
     auto resource = core::pmr::otterbrix_resource();
     auto from =
@@ -2654,15 +2579,14 @@ TEST_CASE("optimizer::promote_cross_join::function_of_one_side_is_a_join_key") {
     REQUIRE(join->expressions().size() == 1);
     auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
     REQUIRE(is_key(on->left()));
-    CHECK(as_key(on->left()).side() == side_t::right);
     REQUIRE(as_key(on->left()).path().size() == 1);
-    CHECK(as_key(on->left()).path()[0] == 0);
+    // bk counts after a's two columns.
+    CHECK(as_key(on->left()).path()[0] == 2);
     REQUIRE(is_expr(on->right()));
     REQUIRE(as_expr(on->right())->group() == expression_group::function);
     const auto& args = static_cast<function_expression_t*>(as_expr(on->right()).get())->args();
     REQUIRE(args.size() == 1);
     REQUIRE(is_key(args[0]));
-    CHECK(as_key(args[0]).side() == side_t::left);
     REQUIRE(as_key(args[0]).path().size() == 1);
     CHECK(as_key(args[0]).path()[0] == 0);
 }
@@ -2685,10 +2609,9 @@ TEST_CASE("optimizer::promote_cross_join::operand_over_both_sides_is_not_a_join_
 namespace { namespace cast_key {
     // ON cast(k) = k2 over [a, k] x [b, k2]; the WHERE is in merged coordinates.
     node_ptr filtered_join(std::pmr::memory_resource* r, node_ptr& join, const expression_ptr& where) {
-        join = join_over(
-            r,
-            join_type::inner,
-            make_compare_expression(r, compare_type::eq, widened_k(r), pruned_key(r, "k2", 1, side_t::right)));
+        join = join_over(r,
+                         join_type::inner,
+                         make_compare_expression(r, compare_type::eq, widened_k(r), pruned_key(r, "k2", 3)));
         auto outer = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
         outer->append_child(join);
         outer->append_child(make_node_match(r, qualified_name_t{pdb(), prel()}, where));
@@ -2809,11 +2732,11 @@ TEST_CASE("optimizer::pushdown_filter::bare_key_does_not_propagate_through_narro
         &resource,
         compare_type::eq,
         param_storage{expression_ptr(make_cast_expression(&resource,
-                                                          param_storage{pruned_key(&resource, "k", 1, side_t::left)},
+                                                          param_storage{pruned_key(&resource, "k", 1)},
                                                           cast_key::int_type(),
                                                           test_cast(bigint_type(), cast_key::int_type()),
                                                           components::casts::cast_kind::cast))},
-        pruned_key(&resource, "k2", 1, side_t::right)));
+        pruned_key(&resource, "k2", 3)));
     auto outer = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
     outer->append_child(join);
     outer->append_child(
@@ -2845,9 +2768,8 @@ TEST_CASE("optimizer::eager_aggregation::cast_join_key_is_pushed") {
     auto join = make_node_join(r, join_type::inner);
     join->append_child(a);
     join->append_child(b);
-    const param_storage cast_k{cast_key::widened(r, eag::col(r, "k", 2, side_t::left))};
-    join->append_expression(
-        make_compare_expression(r, compare_type::eq, cast_k, param_storage{eag::col(r, "k", 0, side_t::right)}));
+    const param_storage cast_k{cast_key::widened(r, eag::col(r, "k", 2))};
+    join->append_expression(make_compare_expression(r, compare_type::eq, cast_k, param_storage{eag::col(r, "k", 3)}));
     components::planner::optimizer::rewrite_hash_joins(r, join);
     REQUIRE(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
 

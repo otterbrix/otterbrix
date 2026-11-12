@@ -54,12 +54,14 @@ namespace components::sql::transform {
             }
         }
 
-        expressions::expression_ptr using_predicate(std::pmr::memory_resource* resource, PGList* using_clause) {
-            auto equate = [resource](const char* column) {
-                return make_compare_expression(resource,
-                                               compare_type::eq,
-                                               expressions::key_t{resource, column, expressions::side_t::left},
-                                               expressions::key_t{resource, column, expressions::side_t::right});
+        expressions::expression_ptr
+        using_predicate(std::pmr::memory_resource* resource, PGList* using_clause, const name_collection_t& names) {
+            auto equate = [resource, &names](const char* column) {
+                expressions::key_t left{resource, column};
+                left.set_source_element(names.left_element);
+                expressions::key_t right{resource, column};
+                right.set_source_element(names.right_element);
+                return make_compare_expression(resource, compare_type::eq, std::move(left), std::move(right));
             };
             if (using_clause->lst.size() == 1) {
                 return equate(strVal(using_clause->lst.front().data));
@@ -262,18 +264,21 @@ namespace components::sql::transform {
         if (nodeTag(join->larg) == T_JoinExpr) {
             name_collection_t inner;
             RETURN_IF_ERROR(join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, inner, plan));
-            auto carry = [&](const qualified_name_t& nm, const std::string& alias) {
+            auto carry = [&](const qualified_name_t& nm,
+                             const std::string& alias,
+                             expressions::source_element_id_t source_element) {
                 if (!nm.collection.t.empty() || !alias.empty()) {
-                    names.extra_left.push_back({nm, alias});
+                    names.extra_left.push_back({nm, alias, source_element});
                 }
             };
-            carry(inner.left_name, inner.left_alias);
-            carry(inner.right_name, inner.right_alias);
+            carry(inner.left_name, inner.left_alias, inner.left_element);
+            carry(inner.right_name, inner.right_alias, inner.right_element);
             for (const auto& element : inner.extra_left) {
-                carry(element.name, element.alias);
+                carry(element.name, element.alias, element.source_element);
             }
 
             auto prev = node_join;
+            names.left_element = number_source_element(*prev);
             node_join = logical_plan::make_node_join(resource, j_type);
             node_join->append_child(prev);
         } else {
@@ -286,6 +291,7 @@ namespace components::sql::transform {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"left side of a join lowered to an empty plan", resource});
             }
+            names.left_element = number_source_element(*left);
             node_join->append_child(left);
         }
 
@@ -296,6 +302,7 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"right side of a join lowered to an empty plan", resource});
         }
+        names.right_element = number_source_element(*right);
         node_join->append_child(right);
 
         RETURN_IF_ERROR(names.refuse_indistinguishable_elements(resource_));
@@ -304,9 +311,13 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto expr, transform_predicate(join->quals, names, plan));
             node_join->append_expression(expr);
         } else if (join->usingClause && !join->usingClause->lst.empty()) {
-            node_join->append_expression(using_predicate(resource, join->usingClause));
+            node_join->append_expression(using_predicate(resource, join->usingClause, names));
             for (const auto& column : join->usingClause->lst) {
-                names.using_columns.push_back({strVal(column.data), jointype_to_ql(join)});
+                const auto join_kind = jointype_to_ql(join);
+                names.using_columns.push_back(
+                    {strVal(column.data),
+                     join_kind,
+                     join_kind == logical_plan::join_type::right ? names.right_element : names.left_element});
             }
         } else {
             node_join->append_expression(make_compare_expression(resource, compare_type::all_true));
@@ -364,6 +375,7 @@ namespace components::sql::transform {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"FROM element lowered to an empty plan", resource_});
             }
+            names.left_element = number_source_element(*element);
             if (element->type() == logical_plan::node_type::aggregate_t) {
                 agg = logical_plan::node_aggregate_ptr(static_cast<logical_plan::node_aggregate_t*>(element.get()));
             } else {
@@ -838,16 +850,14 @@ namespace components::sql::transform {
                                         core::error_code_t::sql_parse_error,
                                         std::pmr::string{"a column alias cannot be given to '*'", resource_});
                                 }
-                                // The qualification picked a side; the expansion must stay on it.
                                 expressions::key_t star_key{std::move(star_path)};
-                                star_key.set_side(col.field.side());
+                                star_key.set_source_element(col.field.source_element());
                                 select_node->append_expression(
                                     make_scalar_expression(resource_, scalar_type::star_expand, std::move(star_key)));
                                 break;
                             }
                             if (res->name) {
                                 expressions::key_t out_key{resource_, res->name};
-                                out_key.set_side(col.field.side());
                                 select_node->append_expression(make_scalar_expression(resource_,
                                                                                       scalar_type::get_field,
                                                                                       std::move(out_key),
@@ -959,20 +969,16 @@ namespace components::sql::transform {
                                     VALUE_OR_RETURN(auto rhs_res, get_str_value(a_expr->rexpr));
                                     const std::string& rhs = rhs_res;
                                     if (rhs.size() >= 2 && rhs.front() == '{' && rhs.back() == '}') {
-                                        expressions::side_t side = expressions::side_t::undefined;
+                                        auto source_element = expressions::NO_SOURCE_ELEMENT;
                                         std::pmr::vector<std::pmr::string> base(resource_);
-                                        RETURN_IF_ERROR(resolve_jsonb_base(a_expr->lexpr, names, base, side));
-                                        if (side == expressions::side_t::undefined && names.right_name.empty() &&
-                                            names.right_alias.empty()) {
-                                            side = expressions::side_t::left;
-                                        }
+                                        RETURN_IF_ERROR(resolve_jsonb_base(a_expr->lexpr, names, base, source_element));
                                         auto del = make_scalar_expression(resource_, scalar_type::jsonb_delete);
                                         for (auto& k : jsonb_path::split_operand(rhs, resource_)) {
                                             std::pmr::vector<std::pmr::string> segs(base);
                                             segs.emplace_back(std::move(k));
-                                            del->append_param(expressions::key_t(resource_,
-                                                                                 jsonb_path::flatten(segs, resource_),
-                                                                                 side));
+                                            expressions::key_t deleted(resource_, jsonb_path::flatten(segs, resource_));
+                                            deleted.set_source_element(source_element);
+                                            del->append_param(std::move(deleted));
                                         }
                                         select_node->append_expression(del);
                                         break;

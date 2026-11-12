@@ -351,9 +351,10 @@ namespace services::disk {
                     if (entry != nullptr) {
                         auto cp_r = entry->table_storage.checkpoint();
                         if (cp_r.has_error()) {
-                            warn(log_,
-                                 "manager_disk bootstrap: catalog self-row checkpoint failed for oid={}",
-                                 static_cast<unsigned>(tbl_oid));
+                            error(log_,
+                                  "manager_disk bootstrap: catalog self-row checkpoint failed for oid={}",
+                                  static_cast<unsigned>(tbl_oid));
+                            return cp_r.error();
                         }
                     }
                 }
@@ -368,7 +369,8 @@ namespace services::disk {
                 if (entry != nullptr) {
                     auto cp_r = entry->table_storage.checkpoint();
                     if (cp_r.has_error()) {
-                        warn(log_, "manager_disk bootstrap: pg_settings checkpoint failed (rules 2/9)");
+                        error(log_, "manager_disk bootstrap: pg_settings checkpoint failed (rules 2/9)");
+                        return cp_r.error();
                     }
                 }
             }
@@ -448,9 +450,10 @@ namespace services::disk {
             if (entry != nullptr) {
                 auto cp_r = entry->table_storage.checkpoint();
                 if (cp_r.has_error()) {
-                    warn(log_,
-                         "manager_disk bootstrap: catalog table oid={} checkpoint failed (rules 2/9)",
-                         static_cast<unsigned>(tbl_oid));
+                    error(log_,
+                          "manager_disk bootstrap: catalog table oid={} checkpoint failed (rules 2/9)",
+                          static_cast<unsigned>(tbl_oid));
+                    return cp_r.error();
                 }
             }
         }

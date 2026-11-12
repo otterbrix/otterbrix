@@ -144,7 +144,7 @@ struct test_wal_manager {
         return std::move(fut);
     }
 
-    actor_zeta::unique_future<services::wal::id_t> send_current_wal_id() {
+    actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>> send_current_wal_id() {
         auto [ns, fut] = actor_zeta::otterbrix::send(address(),
                                                      &manager_wal_replicate_t::current_wal_id,
                                                      session_id_t::generate_uid());
@@ -256,7 +256,9 @@ TEST_CASE("wal_manager::truncate_all") {
     env.send_commit(500);
 
     auto fut_checkpoint = env.send_current_wal_id();
-    auto checkpoint_id = await_ready(fut_checkpoint);
+    auto checkpoint_r = await_ready(fut_checkpoint);
+    REQUIRE_FALSE(checkpoint_r.has_error());
+    const auto checkpoint_id = checkpoint_r.value();
     REQUIRE(checkpoint_id > 0);
 
     env.send_insert(kTestTableOidA, /*txn_id=*/501, /*row_count=*/3);
@@ -284,7 +286,8 @@ TEST_CASE("wal_manager::current_wal_id") {
 
     auto fut_cur_id = env.send_current_wal_id();
     auto cur_id = await_ready(fut_cur_id);
-    REQUIRE(cur_id >= 3);
+    REQUIRE_FALSE(cur_id.has_error());
+    REQUIRE(cur_id.value() >= 3);
 }
 
 TEST_CASE("wal_manager::rewire_dispatcher_address") {
@@ -322,7 +325,8 @@ TEST_CASE("wal_manager::auto_checkpoint_triggers_on_byte_threshold") {
 
     auto fut_cur = env.send_current_wal_id();
     auto cur_id = await_ready(fut_cur);
-    REQUIRE(cur_id > 0);
+    REQUIRE_FALSE(cur_id.has_error());
+    REQUIRE(cur_id.value() > 0);
 
     // With no disk manager wired, this must take the early-return path without crashing.
     auto fut_ckpt = env.send_run_auto_checkpoint();

@@ -607,23 +607,6 @@ TEST_CASE("components::vector::make_null: an ARRAY NULL row, whatever its elemen
     }
 }
 
-TEST_CASE("components::vector::vector: get_value on a dictionary over a sequence reads the sequence") {
-    using namespace components;
-    auto resource = core::pmr::otterbrix_resource();
-
-    vector::vector_t source(&resource, types::complex_logical_type(types::logical_type::BIGINT), 4);
-    source.sequence(100, 10, 4);
-
-    vector::indexing_vector_t selection(&resource, 2);
-    selection.set_index(0, 2);
-    selection.set_index(1, 0);
-    vector::vector_t sliced(&resource, types::complex_logical_type(types::logical_type::BIGINT), 4);
-    sliced.slice(source, selection, 2);
-
-    REQUIRE(sliced.get_value<int64_t>(0) == 120);
-    REQUIRE(sliced.get_value<int64_t>(1) == 100);
-}
-
 TEST_CASE("components::vector::vector: slicing a small vector allocates no payload for the dictionary") {
     using namespace components;
     core::pmr::otterbrix_resource upstream;

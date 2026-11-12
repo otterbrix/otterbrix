@@ -32,7 +32,6 @@
 using namespace test_helpers;
 using namespace components;
 using expressions::compare_type;
-using expressions::side_t;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
@@ -115,7 +114,7 @@ namespace {
         auto match = logical_plan::make_node_match(
             resource,
             target,
-            make_compare_expression(resource, compare_type::eq, key{resource, "id", side_t::left}, id_par{0}));
+            make_compare_expression(resource, compare_type::eq, key{resource, "id"}, id_par{0}));
         auto set =
             expressions::make_scalar_expression(resource, expressions::scalar_type::constant, key{resource, column});
         set->append_param(id_par{1});
@@ -145,7 +144,7 @@ namespace {
                 logical_plan::make_node_match(
                     resource,
                     target,
-                    make_compare_expression(resource, compare_type::eq, key{resource, "id", side_t::left}, id_par{0})),
+                    make_compare_expression(resource, compare_type::eq, key{resource, "id"}, id_par{0})),
                 logical_plan::make_node_limit(resource, logical_plan::limit_t::all())),
             database,
             core::relname_t{rel});

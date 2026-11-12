@@ -113,6 +113,7 @@ namespace services::collection::executor {
         // only a prefix of the members has to keep compiling.
         std::optional<explain_plan_node> captured_explain_ir{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        std::vector<components::table::dropped_object_t> dropped_objects{};
         // written() of the plan root; the cursor reports it only for an INSERT / UPDATE / DELETE.
         uint64_t written{0};
         // Storages that kept state of the statement's transaction (a host's backends it read or wrote).
@@ -160,6 +161,7 @@ namespace services::collection::executor {
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        std::vector<components::table::dropped_object_t> dropped_objects{};
 
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};

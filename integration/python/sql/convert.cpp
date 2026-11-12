@@ -66,7 +66,6 @@ using components::expressions::compare_type;
 using components::expressions::get_compare_type;
 using components::expressions::make_compare_expression;
 using components::expressions::make_compare_union_expression;
-using components::expressions::side_t;
 
 using components::expressions::aggregate_expression_t;
 using components::expressions::make_aggregate_expression;
@@ -123,7 +122,7 @@ void parse_find_condition_(std::pmr::memory_resource* resource,
         parse_find_condition_array_(resource, parent_condition, condition, real_key, aggregate, params);
     } else {
         auto value = params->add_parameter(to_value(resource, condition), parameter_kind::literal);
-        auto sub_condition = make_compare_expression(resource, type, ex_key_t(resource, real_key, side_t::left), value);
+        auto sub_condition = make_compare_expression(resource, type, ex_key_t(resource, real_key), value);
         if (sub_condition->is_union()) {
             parse_find_condition_(resource, sub_condition.get(), condition, real_key, std::string(), aggregate, params);
         }

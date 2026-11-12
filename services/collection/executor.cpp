@@ -2343,17 +2343,16 @@ namespace services::collection::executor {
                         return;
                     }
                     // The place's connection is its database's own: it is there while the database is.
-                    const bool exists = place != nullptr && (database || connection ? place->database_oid
-                                                                                    : place->namespace_oid) !=
-                                                                components::catalog::INVALID_OID;
+                    const bool exists =
+                        place != nullptr && (database || connection ? place->database_oid : place->namespace_oid) !=
+                                                components::catalog::INVALID_OID;
                     const auto& value = connection ? resolves.place.connection.t
                                         : database ? resolves.place.database.t
                                                    : resolves.place.schema.t;
-                    auto bound =
-                        exists ? components::vector::make_scalar(resource, std::string_view{value})
-                               : components::vector::make_null(resource,
-                                                               components::types::complex_logical_type{
-                                                                   components::types::logical_type::TEXT});
+                    auto bound = exists ? components::vector::make_scalar(resource, std::string_view{value})
+                                        : components::vector::make_null(resource,
+                                                                        components::types::complex_logical_type{
+                                                                            components::types::logical_type::TEXT});
                     call.args().emplace_back(
                         parameters.add_parameter(std::move(bound), components::vector::parameter_kind::literal));
                 }
@@ -2382,8 +2381,7 @@ namespace services::collection::executor {
                 if (assignment.id != components::catalog::setting_id::search_path || assignment.is_default) {
                     continue;
                 }
-                VALUE_OR_RETURN(auto canonical,
-                                components::catalog::canonical_search_path(assignment.value, resource));
+                VALUE_OR_RETURN(auto canonical, components::catalog::canonical_search_path(assignment.value, resource));
                 if (canonical.empty()) {
                     return set_place_t{true, components::catalog::place_t{}};
                 }
@@ -4128,6 +4126,7 @@ namespace services::collection::executor {
             payload.created_storage_oids = std::move(exec_result.created_storage_oids);
             payload.created_indexes = std::move(exec_result.created_indexes);
             payload.referenced_deletes = std::move(exec_result.referenced_deletes);
+            payload.dropped_objects = std::move(exec_result.dropped_objects);
             payload.participants = exec_result.participants;
             trace(log_,
                   "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
@@ -5115,6 +5114,10 @@ namespace services::collection::executor {
             result_tracking.referenced_deletes.push_back(std::move(rows));
         }
         pipeline_context.referenced_deletes.clear();
+        for (const auto& object : pipeline_context.dropped_objects) {
+            result_tracking.dropped_objects.push_back(object);
+        }
+        pipeline_context.dropped_objects.clear();
         for (auto& dropped : pipeline_context.dropped_functions) {
             result_tracking.dropped_functions.push_back(std::move(dropped));
         }
@@ -5277,6 +5280,7 @@ namespace services::collection::executor {
                              std::move(result.applied_settings)};
         out.captured_explain_ir = std::move(captured_ir);
         out.referenced_deletes = std::move(result.referenced_deletes);
+        out.dropped_objects = std::move(result.dropped_objects);
         out.written = result.written;
         out.participants = std::move(result.participants);
         out.host_rows = std::move(result.host_rows);

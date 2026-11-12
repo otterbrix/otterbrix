@@ -924,8 +924,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subt
     check_value_position_refusal(d, "SELECT m -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
 }
 
-// Triggered by 3+ joins sharing a column name — a join-resolution bug, not a jsonb one.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_leftmost_value") {
+// 3+ joins sharing a column name: the path reads the table it names, not the leftmost one (OTTERBRIX-121).
+TEST_CASE("integration::cpp::test_jsonb_support::three_table_join_path_on_the_middle_table") {
     auto config = make_test_config(fixture_dir("join3"));
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -939,6 +939,5 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_left
 
     auto cur = exec(d, "SELECT m #>> 'v' AS v FROM jp.l JOIN jp.m ON l.k = m.k JOIN jp.n ON m.k = n.k;");
     REQUIRE(cur->is_success());
-    // correct: {10, 20} (the values of m). We get l's values instead.
-    CHECK(i64_set(cur, "v") == std::set<int64_t>{100, 200});
+    CHECK(i64_set(cur, "v") == std::set<int64_t>{10, 20});
 }

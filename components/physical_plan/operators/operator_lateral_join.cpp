@@ -158,11 +158,7 @@ namespace components::operators {
             merged_types.reserve(outer_count + inner_count);
             merged_types.insert(merged_types.end(), outer_schema_.begin(), outer_schema_.end());
             merged_types.insert(merged_types.end(), inner_schema_.begin(), inner_schema_.end());
-            auto built = expressions::build_condition_graph(res,
-                                                            ctx->parameters,
-                                                            on_expression_.get(),
-                                                            merged_types,
-                                                            outer_count);
+            auto built = expressions::build_condition_graph(res, ctx->parameters, on_expression_.get(), merged_types);
             if (built.has_error()) {
                 co_return built.error();
             }

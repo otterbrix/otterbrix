@@ -3,7 +3,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <services/wal/wal_page.hpp>
+
 #include <cstddef>
+#include <filesystem>
+#include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -32,6 +37,27 @@ namespace {
         }
         return cur->size();
     }
+
+    class second_open_refusal_t final : public services::wal::wal_file_interposer_t {
+    public:
+        second_open_refusal_t() { services::wal::dev_set_wal_file_interposer(this); }
+        ~second_open_refusal_t() override { services::wal::dev_set_wal_file_interposer(nullptr); }
+
+        second_open_refusal_t(const second_open_refusal_t&) = delete;
+        second_open_refusal_t& operator=(const second_open_refusal_t&) = delete;
+
+        std::map<std::filesystem::path, int> opens;
+        int refusals{0};
+
+        std::unique_ptr<core::filesystem::file_handle_t>
+        wrap(const std::filesystem::path& path, std::unique_ptr<core::filesystem::file_handle_t> inner) override {
+            if (++opens[path] == 2) {
+                ++refusals;
+                return nullptr;
+            }
+            return inner;
+        }
+    };
 } // namespace
 
 TEST_CASE("integration::cpp::replay_floor::reopening twice must not replay an absorbed tail") {
@@ -64,6 +90,47 @@ TEST_CASE("integration::cpp::replay_floor::reopening twice must not replay an ab
     }
 
     INFO("run C: reopen again -- the tail must not be replayed a second time");
+    {
+        auto config = test_create_config(fixture);
+        config.log.level = log_t::level::off;
+
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        CHECK(count_rows(d) == static_cast<std::size_t>(kRows));
+    }
+}
+
+// A run whose WAL cannot read its journal
+TEST_CASE("integration::cpp::replay_floor::a_run_with_a_wal_recovery_error") {
+    const auto fixture = integration_fixture_path("test_replay_floor_recovery_error/db");
+
+    INFO("run A: seed rows, clean shutdown");
+    {
+        auto config = test_create_config(fixture);
+        test_clear_directory(config);
+        config.log.level = log_t::level::off;
+
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        REQUIRE(test_helpers::exec(d, "CREATE SCHEMA adb;")->is_success());
+        REQUIRE(test_helpers::exec(d, "CREATE TABLE adb.t (id BIGINT);")->is_success());
+        for (int i = 1; i <= kRows; ++i) {
+            REQUIRE(test_helpers::exec(d, "INSERT INTO adb.t (id) VALUES (" + std::to_string(i) + ");")->is_success());
+        }
+        REQUIRE(count_rows(d) == static_cast<std::size_t>(kRows));
+    }
+
+    INFO("run B: the WAL manager cannot read its journal; open and close without a statement");
+    {
+        auto config = test_create_config(fixture);
+        config.log.level = log_t::level::off;
+
+        second_open_refusal_t fault;
+        { test_spaces space(config); }
+        REQUIRE(fault.refusals > 0);
+    }
+
+    INFO("run C: reopen normally -- nothing the storage already holds may be replayed");
     {
         auto config = test_create_config(fixture);
         config.log.level = log_t::level::off;

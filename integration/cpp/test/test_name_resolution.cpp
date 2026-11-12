@@ -21,31 +21,62 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
 
 using namespace components;
-using expressions::side_t;
 
 namespace {
     std::string to_std(const std::pmr::string& str) { return std::string(str.data(), str.size()); }
 
-    std::string side_name(side_t side) {
-        switch (side) {
-            case side_t::left:
-                return "left";
-            case side_t::right:
-                return "right";
-            default:
-                return "undefined";
+    // A FROM element as the plan spells it: its alias, else the name as written; a nested join has none.
+    using element_names_t = std::map<expressions::source_element_id_t, std::string>;
+
+    std::string element_name(const logical_plan::node_t& node) {
+        if (!node.result_alias().empty()) {
+            return node.result_alias();
+        }
+        if (!node.target().collection.t.empty()) {
+            return node.target().to_string();
+        }
+        if (node.type() == logical_plan::node_type::join_t) {
+            return "join";
+        }
+        // A derived table or a CTE carries its alias on the body it wraps.
+        if (!node.children().empty() && !node.children().front()->result_alias().empty()) {
+            return node.children().front()->result_alias();
+        }
+        return "?";
+    }
+
+    void collect_element_names(const logical_plan::node_ptr& node, element_names_t& out) {
+        if (!node) {
+            return;
+        }
+        if (node->source_element() != expressions::NO_SOURCE_ELEMENT) {
+            out.emplace(node->source_element(), element_name(*node));
+        }
+        for (const auto& child : node->children()) {
+            collect_element_names(child, out);
         }
     }
 
+    // The element a key resolved to; empty when it resolved to none.
+    std::string element_of(const element_names_t& names, expressions::source_element_id_t element) {
+        if (element == expressions::NO_SOURCE_ELEMENT) {
+            return {};
+        }
+        const auto found = names.find(element);
+        return found == names.end() ? std::string{"?"} : found->second;
+    }
+
     struct found_key_t {
-        side_t side{side_t::undefined};
+        expressions::source_element_id_t source_element{expressions::NO_SOURCE_ELEMENT};
         std::string path;
         std::string qualifier;
+        std::string element;
     };
 
     std::string last_segment(const std::string& path) {
@@ -56,7 +87,7 @@ namespace {
     void collect_keys(const expressions::expression_ptr& expr, std::vector<found_key_t>& out);
 
     void take_key(const expressions::key_t& key, std::vector<found_key_t>& out) {
-        out.push_back({key.side(), key.as_string(), to_std(key.qualifier())});
+        out.push_back({key.source_element(), key.as_string(), to_std(key.qualifier()), {}});
     }
 
     void collect_param(const expressions::param_storage& param, std::vector<found_key_t>& out) {
@@ -152,7 +183,8 @@ namespace {
         }
     }
 
-    void collect_joins(const logical_plan::node_ptr& node, std::vector<std::string>& out) {
+    void
+    collect_joins(const logical_plan::node_ptr& node, const element_names_t& names, std::vector<std::string>& out) {
         if (!node) {
             return;
         }
@@ -171,12 +203,12 @@ namespace {
             std::string text{kind};
             text += "(";
             for (size_t i = 0; i < keys.size(); ++i) {
-                text += (i ? " " : "") + keys[i].path + ":" + side_name(keys[i].side);
+                text += (i ? " " : "") + keys[i].path + ":" + element_of(names, keys[i].source_element);
             }
             out.push_back(text + ")");
         }
         for (const auto& child : node->children()) {
-            collect_joins(child, out);
+            collect_joins(child, names, out);
         }
     }
 
@@ -235,13 +267,16 @@ namespace {
             return out;
         }
         const auto& root = plan.value().sub_queries.back();
+        element_names_t names;
+        collect_element_names(root, names);
         collect_join_arities(root, out.join_arities);
-        collect_joins(root, out.joins);
+        collect_joins(root, names, out.joins);
         std::vector<found_key_t> keys;
         collect_keys(root, keys);
-        for (const auto& key : keys) {
+        for (auto& key : keys) {
             // An empty name asks for every key, for cases that watch a statement's shape, not one reference.
             if (column.empty() || last_segment(key.path) == column) {
+                key.element = element_of(names, key.source_element);
                 out.matches.push_back(key);
             }
         }
@@ -274,24 +309,27 @@ namespace {
             text << "\n    join: " << join;
         }
         for (const auto& key : probe.matches) {
-            text << "\n    key path \"" << key.path << "\", side " << side_name(key.side) << ", qualifier \""
+            text << "\n    key path \"" << key.path << "\", element \"" << key.element << "\", qualifier \""
                  << key.qualifier << "\"";
         }
         return text.str();
     }
 
-    void
-    require_resolved_path(const probe_t& probe, side_t side, const std::string& qualifier, const std::string& path) {
+    // `element` is the FROM element the key resolved to, as element_name spells it; empty for none.
+    void require_resolved_path(const probe_t& probe,
+                               const std::string& element,
+                               const std::string& qualifier,
+                               const std::string& path) {
         INFO(describe(probe));
         REQUIRE_FALSE(probe.rejected);
         REQUIRE(probe.matches.size() == 1);
         CHECK(probe.matches.front().path == path);
-        CHECK(side_name(probe.matches.front().side) == side_name(side));
+        CHECK(probe.matches.front().element == element);
         CHECK(probe.matches.front().qualifier == qualifier);
     }
 
-    void require_resolved(const probe_t& probe, side_t side, const std::string& qualifier) {
-        require_resolved_path(probe, side, qualifier, probe.column);
+    void require_resolved(const probe_t& probe, const std::string& element, const std::string& qualifier) {
+        require_resolved_path(probe, element, qualifier, probe.column);
     }
 
     void require_rejected(const probe_t& probe, core::error_code_t code) {
@@ -368,12 +406,12 @@ namespace {
 
 TEST_CASE("name_resolution::column_ref::bare_column_stays_undefined") {
     auto result = probe("SELECT id FROM t;", "id");
-    require_resolved(result, side_t::undefined, "");
+    require_resolved(result, "", "");
 }
 
 TEST_CASE("name_resolution::column_ref::relname_qualifier") {
     auto result = probe("SELECT t.id FROM t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "t", "t");
 }
 
 TEST_CASE("name_resolution::qualification::empty_element_slot_is_not_wildcard") {
@@ -383,12 +421,12 @@ TEST_CASE("name_resolution::qualification::empty_element_slot_is_not_wildcard") 
 
 TEST_CASE("name_resolution::qualification::two_part_from_answers_bare_relname") {
     auto result = probe("SELECT t.id FROM d.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "d.t", "t");
 }
 
 TEST_CASE("name_resolution::qualification::two_part_from_answers_schema_qualifier") {
     auto result = probe("SELECT d.t.id FROM d.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "d.t", "t");
 }
 
 TEST_CASE("name_resolution::qualification::wrong_schema_is_rejected") {
@@ -403,7 +441,7 @@ TEST_CASE("name_resolution::qualification::schema_filled_in_reference_only") {
 
 TEST_CASE("name_resolution::qualification::three_part_from_answers_bare_relname") {
     auto result = probe("SELECT t.id FROM d.s.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "d.s.t", "t");
 }
 
 // Counted from the right: two qualifiers are schema.table, so a database in the schema slot answers nothing.
@@ -414,27 +452,27 @@ TEST_CASE("name_resolution::qualification::no_middle_slot_is_skipped") {
 
 TEST_CASE("name_resolution::qualification::schema_qualifies") {
     auto result = probe("SELECT s.t.id FROM d.s.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "d.s.t", "t");
 }
 
 TEST_CASE("name_resolution::qualification::schema_qualifies_under_connection") {
     auto result = probe("SELECT s.t.id FROM u.d.s.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "u.d.s.t", "t");
 }
 
 TEST_CASE("name_resolution::column_ref::four_part_column_reference") {
     auto result = probe("SELECT d.s.t.id FROM d.s.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "d.s.t", "t");
 }
 
 TEST_CASE("name_resolution::column_ref::four_part_reference_under_uid_element") {
     auto result = probe("SELECT d.s.t.id FROM u.d.s.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "u.d.s.t", "t");
 }
 
 TEST_CASE("name_resolution::column_ref::five_part_column_reference") {
     auto result = probe("SELECT u.d.s.t.id FROM u.d.s.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "u.d.s.t", "t");
 }
 
 TEST_CASE("name_resolution::column_ref::six_part_column_reference_rejected") {
@@ -497,19 +535,19 @@ TEST_CASE("name_resolution::ambiguity::left_out_database_made_it_ambiguous") {
     require_rejected(result, core::error_code_t::ambiguous_alias);
 }
 
-TEST_CASE("name_resolution::ambiguity::database_qualifier_picks_a_side") {
+TEST_CASE("name_resolution::ambiguity::database_qualifier_picks_the_first_table") {
     auto result = probe("SELECT d1.t.id FROM d1.t CROSS JOIN d2.t;", "id");
-    require_resolved(result, side_t::left, "t");
+    require_resolved(result, "d1.t", "t");
 }
 
-TEST_CASE("name_resolution::ambiguity::database_qualifier_picks_the_right_side") {
+TEST_CASE("name_resolution::ambiguity::database_qualifier_picks_the_second_table") {
     auto result = probe("SELECT d2.t.id FROM d1.t CROSS JOIN d2.t;", "id");
-    require_resolved(result, side_t::right, "t");
+    require_resolved(result, "d2.t", "t");
 }
 
 TEST_CASE("name_resolution::alias::alias_answers") {
     auto result = probe("SELECT x.id FROM d.t AS x;", "id");
-    require_resolved(result, side_t::left, "x");
+    require_resolved(result, "x", "x");
 }
 
 TEST_CASE("name_resolution::alias::relname_hidden_by_alias") {
@@ -529,7 +567,7 @@ TEST_CASE("name_resolution::alias::alias_cannot_be_qualified") {
 
 TEST_CASE("name_resolution::from_element::subquery_alias_answers") {
     auto result = probe("SELECT s.c FROM (SELECT * FROM d.inner_t) s;", "c");
-    require_resolved(result, side_t::left, "s");
+    require_resolved(result, "s", "s");
 }
 
 TEST_CASE("name_resolution::from_element::subquery_alias_cannot_be_qualified") {
@@ -545,12 +583,12 @@ TEST_CASE("name_resolution::from_element::subquery_without_alias_rejected") {
 
 TEST_CASE("name_resolution::from_element::cte_answers_its_name") {
     auto result = probe("WITH w AS (SELECT * FROM d.inner_t) SELECT w.c FROM w;", "c");
-    require_resolved(result, side_t::left, "w");
+    require_resolved(result, "w", "w");
 }
 
 TEST_CASE("name_resolution::from_element::cte_name_is_not_qualifiable") {
     auto result = probe("WITH w AS (SELECT * FROM d.inner_t) SELECT w.c FROM d.w;", "c");
-    require_resolved(result, side_t::left, "w");
+    require_resolved(result, "d.w", "w");
     INFO(describe(result));
     CHECK(std::find(result.catalog_targets.begin(), result.catalog_targets.end(), "table:d.w") !=
           result.catalog_targets.end());
@@ -596,18 +634,18 @@ TEST_CASE("name_resolution::field_access::around_an_unqualified_column") {
 
 TEST_CASE("name_resolution::field_access::around_a_qualified_column") {
     auto result = probe("SELECT (t.custom_type).f3.f1 FROM d.t;", "f1");
-    require_resolved_path(result, side_t::left, "t", "custom_type/f3/f1");
+    require_resolved_path(result, "d.t", "t", "custom_type/f3/f1");
 }
 
 TEST_CASE("name_resolution::field_access::nested_pairs_reach_the_same_field") {
     auto result = probe("SELECT ((t.custom_type).f3).f1 FROM d.t;", "f1");
-    require_resolved_path(result, side_t::left, "t", "custom_type/f3/f1");
+    require_resolved_path(result, "d.t", "t", "custom_type/f3/f1");
 }
 
 TEST_CASE("name_resolution::field_access::same_field_from_a_predicate") {
     // WHERE reads the reference through a different code path than the select list does.
     auto result = probe("SELECT id FROM d.t WHERE (t.custom_type).f3.f1 = 1;", "f1");
-    require_resolved_path(result, side_t::left, "t", "custom_type/f3/f1");
+    require_resolved_path(result, "d.t", "t", "custom_type/f3/f1");
 }
 
 TEST_CASE("name_resolution::star::qualified_star") {
@@ -643,7 +681,7 @@ TEST_CASE("name_resolution::order_and_group::group_by_resolves_through_the_alias
     REQUIRE_FALSE(result.matches.empty());
     for (const auto& key : result.matches) {
         CHECK(key.path == "id");
-        CHECK(side_name(key.side) == side_name(side_t::left));
+        CHECK(key.element == "x");
     }
 }
 
@@ -667,7 +705,7 @@ TEST_CASE("name_resolution::using::equates_the_two_sides") {
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
     REQUIRE(result.joins.size() == 1);
-    CHECK(result.joins.front() == "inner(id:left id:right)");
+    CHECK(result.joins.front() == "inner(id:a id:b)");
 }
 
 TEST_CASE("name_resolution::using::several_columns") {
@@ -675,7 +713,7 @@ TEST_CASE("name_resolution::using::several_columns") {
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
     REQUIRE(result.joins.size() == 1);
-    CHECK(result.joins.front() == "inner(id:left id:right k:left k:right)");
+    CHECK(result.joins.front() == "inner(id:a id:b k:a k:b)");
 }
 
 TEST_CASE("name_resolution::using::left_join_keeps_its_type") {
@@ -684,16 +722,16 @@ TEST_CASE("name_resolution::using::left_join_keeps_its_type") {
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
     REQUIRE(result.joins.size() == 1);
-    CHECK(result.joins.front() == "left(id:left id:right)");
+    CHECK(result.joins.front() == "left(id:a id:b)");
 }
 
 TEST_CASE("name_resolution::using::composite_left_side") {
-    // The predicate is built by side, not by name: the left side here is itself a join with no name.
+    // The predicate names the join's inputs, not a table: the left input here is itself a join with no name.
     auto result = transform_only("SELECT a.v FROM d.a a JOIN d.b b ON a.jk = b.jk JOIN d.c c USING (id);");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
     REQUIRE(result.joins.size() == 2);
-    CHECK(result.joins.front() == "inner(id:left id:right)");
+    CHECK(result.joins.front() == "inner(id:join id:c)");
 }
 
 TEST_CASE("name_resolution::using::star_is_refused") {
@@ -716,7 +754,7 @@ TEST_CASE("name_resolution::using::plain_on_join_unchanged") {
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
     REQUIRE(result.joins.size() == 1);
-    CHECK(result.joins.front() == "inner(id:left id:right)");
+    CHECK(result.joins.front() == "inner(id:a id:b)");
 }
 
 TEST_CASE("name_resolution::using::cross_join_still_has_no_predicate") {
@@ -937,7 +975,7 @@ TEST_CASE("name_resolution::validator::ambiguous_column_says_it_is_ambiguous") {
 }
 
 TEST_CASE("name_resolution::quoted::quoted_alias_answers_as_written") {
-    require_resolved(probe("SELECT \"X\".id FROM d.t AS \"X\";", "id"), side_t::left, "X");
+    require_resolved(probe("SELECT \"X\".id FROM d.t AS \"X\";", "id"), "X", "X");
 }
 
 TEST_CASE("name_resolution::quoted::unquoted_reference_misses_a_quoted_alias") {
@@ -946,7 +984,7 @@ TEST_CASE("name_resolution::quoted::unquoted_reference_misses_a_quoted_alias") {
 }
 
 TEST_CASE("name_resolution::quoted::quoted_db_qualifier") {
-    require_resolved(probe("SELECT \"MyDb\".t.id FROM \"MyDb\".t;", "id"), side_t::left, "t");
+    require_resolved(probe("SELECT \"MyDb\".t.id FROM \"MyDb\".t;", "id"), "MyDb.t", "t");
 }
 
 TEST_CASE("name_resolution::quoted::unquoted_db_qualifier_misses_a_quoted_one") {
@@ -955,7 +993,7 @@ TEST_CASE("name_resolution::quoted::unquoted_db_qualifier_misses_a_quoted_one") 
 
 TEST_CASE("name_resolution::quoted::quoted_relname_in_a_mixed_name") {
     // Only the quoted segment keeps its case; `d` folds as usual.
-    require_resolved(probe("SELECT \"MyTable\".id FROM d.\"MyTable\";", "id"), side_t::left, "MyTable");
+    require_resolved(probe("SELECT \"MyTable\".id FROM d.\"MyTable\";", "id"), "d.MyTable", "MyTable");
 }
 
 TEST_CASE("name_resolution::quoted::quoted_column_keeps_its_case") {
@@ -1003,6 +1041,74 @@ TEST_CASE("name_resolution::regression::chained_join_reads_the_middle_table") {
     auto cell1 = cur->get<int32_t>(0, 0);
     REQUIRE_FALSE(cell1.has_error());
     CHECK(cell1.value() == 200);
+}
+
+namespace {
+    // Joined on d1.t.v = d2.t.jk: (d1.t.jk, d1.t.v, d2.t.jk, d2.t.v) = (1,10,10,1) (2,20,20,7) (3,30,30,8).
+    // Against x.k = {7,8,2}: d1.t.jk matches once, d1.t.v and d2.t.jk never, d2.t.v twice.
+    void seed_same_named_chain(database_t& db) {
+        db.seed({"CREATE SCHEMA d1;",
+                 "CREATE SCHEMA d2;",
+                 "CREATE TABLE d1.t (jk INT, v INT);",
+                 "CREATE TABLE d2.t (jk INT, v INT);",
+                 "CREATE TABLE d1.x (k INT);",
+                 "INSERT INTO d1.t (jk, v) VALUES (1,10),(2,20),(3,30);",
+                 "INSERT INTO d2.t (jk, v) VALUES (10,1),(20,7),(30,8);",
+                 "INSERT INTO d1.x (k) VALUES (7),(8),(2);"});
+    }
+
+    // The first column, sorted: join output order is unspecified.
+    std::vector<int32_t> sorted_first_column(database_t& db, const std::string& sql) {
+        auto cur = run_ok(db, sql);
+        std::vector<int32_t> values;
+        for (size_t row = 0; row < cur->size(); ++row) {
+            auto cell = cur->get<int32_t>(0, row);
+            REQUIRE_FALSE(cell.has_error());
+            values.push_back(cell.value());
+        }
+        std::sort(values.begin(), values.end());
+        return values;
+    }
+} // namespace
+
+TEST_CASE("name_resolution::regression::chained_join_over_same_named_tables") {
+    database_t db(integration_fixture_path("test_name_resolution/same_named_chain"));
+    seed_same_named_chain(db);
+
+    CHECK(sorted_first_column(db, "SELECT d2.t.v FROM d1.t JOIN d2.t ON d1.t.v = d2.t.jk JOIN d1.x ON d2.t.v = x.k;") ==
+          std::vector<int32_t>{7, 8});
+    CHECK(
+        sorted_first_column(db, "SELECT d1.t.jk FROM d1.t JOIN d2.t ON d1.t.v = d2.t.jk JOIN d1.x ON d1.t.jk = x.k;") ==
+        std::vector<int32_t>{2});
+    std::ignore = run_refused(db, "SELECT * FROM d1.t JOIN d2.t ON d1.t.v = d2.t.jk JOIN d1.x ON t.v = x.k;");
+}
+
+// The same chain read through the other places a reference meets its table: each would read d1.t's
+// column if the reference were matched by its bare table name.
+TEST_CASE("name_resolution::regression::same_named_tables_across_clauses") {
+    database_t db(integration_fixture_path("test_name_resolution/same_named_clauses"));
+    seed_same_named_chain(db);
+
+    SECTION("an ON reading both same-named tables") {
+        CHECK(sorted_first_column(db,
+                                  "SELECT d1.t.jk FROM d1.t JOIN d2.t ON d1.t.v = d2.t.jk "
+                                  "JOIN d1.x ON d2.t.v = x.k AND d1.t.jk > 2;") == std::vector<int32_t>{3});
+    }
+    SECTION("select list") {
+        CHECK(sorted_first_column(db,
+                                  "SELECT d2.t.v FROM d1.t JOIN d2.t ON d1.t.v = d2.t.jk "
+                                  "JOIN d1.x ON d1.t.jk = x.k;") == std::vector<int32_t>{7});
+    }
+    SECTION("where") {
+        CHECK(sorted_first_column(db,
+                                  "SELECT d2.t.jk FROM d1.t JOIN d2.t ON d1.t.v = d2.t.jk "
+                                  "JOIN d1.x ON d1.t.jk = x.k WHERE d2.t.v = 7;") == std::vector<int32_t>{20});
+    }
+    SECTION("comma from") {
+        CHECK(sorted_first_column(db,
+                                  "SELECT d2.t.v FROM d1.t, d2.t, d1.x "
+                                  "WHERE d1.t.v = d2.t.jk AND d2.t.v = x.k;") == std::vector<int32_t>{7, 8});
+    }
 }
 
 TEST_CASE("name_resolution::regression::cross_database_join_is_not_a_cross_product") {
@@ -1158,6 +1264,18 @@ TEST_CASE("name_resolution::star::qualified_star_keeps_its_side") {
     auto cell3 = left->get<int64_t>(1, 0);
     REQUIRE_FALSE(cell3.has_error());
     CHECK(cell3.value() == 10);
+}
+
+TEST_CASE("name_resolution::star::qualified_star_in_a_chain_of_same_named_tables") {
+    database_t db(integration_fixture_path("test_name_resolution/same_named_chain_star"));
+    seed_same_named_chain(db);
+
+    auto cur = run_ok(db, "SELECT d2.t.* FROM d1.t JOIN d2.t ON d1.t.v = d2.t.jk JOIN d1.x ON d1.t.jk = x.k;");
+    REQUIRE(cur->size() == 1);
+    REQUIRE(cur->column_count() == 2);
+    auto cell = cur->get<int32_t>(1, 0);
+    REQUIRE_FALSE(cell.has_error());
+    CHECK(cell.value() == 7);
 }
 
 TEST_CASE("name_resolution::alter::alter_table_if_exists_on_a_missing_table_is_a_no_op") {

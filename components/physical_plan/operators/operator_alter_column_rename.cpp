@@ -222,7 +222,12 @@ namespace components::operators {
                                                     pg_attr,
                                                     std::int64_t{0},
                                                     attoid);
-        co_await std::move(df);
+        // Refused while another transaction renames the column too
+        if (auto deleted = co_await std::move(df); deleted.has_error()) {
+            set_error(deleted.error());
+            mark_failed();
+            co_return;
+        }
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr);
 

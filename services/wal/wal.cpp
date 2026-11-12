@@ -162,9 +162,12 @@ namespace services::wal {
         }
     }
 
-    wal_worker_t::unique_future<wal::id_t> wal_worker_t::current_wal_id(session_id_t session) {
+    wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>> wal_worker_t::current_wal_id(session_id_t session) {
         trace(log_, "wal_worker::current_wal_id , session : {}", session.data());
-        co_return id_.load(std::memory_order_relaxed);
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
+        }
+        co_return core::result_wrapper_t<wal::id_t>{id_.load(std::memory_order_relaxed)};
     }
 
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>

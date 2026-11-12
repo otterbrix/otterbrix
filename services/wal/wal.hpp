@@ -130,7 +130,7 @@ namespace services::wal {
         // Refuses rather than deleting: an unreadable segment reads as 'empty', and unlinking on that would destroy it.
         unique_future<core::error_t> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
-        unique_future<wal::id_t> current_wal_id(session_id_t session);
+        unique_future<core::result_wrapper_t<wal::id_t>> current_wal_id(session_id_t session);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_insert(session_id_t session,

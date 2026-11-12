@@ -152,18 +152,10 @@ TEST_CASE("services::disk::mvcc::uncommitted_delete_invisible_to_other_readers")
         constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  fx.txn_ctx(uncommitted),
-                  pg_class,
-                  std::int64_t{0},
-                  table_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  fx.txn_ctx(uncommitted),
-                  pg_attr,
-                  std::int64_t{1},
-                  table_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, table_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, table_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_class, std::int64_t{0}, table_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_attr, std::int64_t{1}, table_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, table_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, table_oid);
     }
     auto rr = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("doomed"));
     REQUIRE(rr.found);
@@ -177,21 +169,9 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
     {
         constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  fx.txn_ctx(uncommitted),
-                  pg_ns,
-                  std::int64_t{0},
-                  drop_ns_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  fx.txn_ctx(uncommitted),
-                  pg_dep,
-                  std::int64_t{1},
-                  drop_ns_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
-                  fx.txn_ctx(uncommitted),
-                  pg_dep,
-                  std::int64_t{3},
-                  drop_ns_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_ns, std::int64_t{0}, drop_ns_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, drop_ns_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, drop_ns_oid);
     }
 
     auto kept = test_probe::probe_namespace(fx, fx.auto_ctx(), std::string("kept_ns"));
@@ -218,10 +198,10 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
         constexpr catalog::oid_t pg_idx = catalog::well_known_oid::pg_index_table;
         constexpr catalog::oid_t pg_cls = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_idx, std::int64_t{0}, index_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_cls, std::int64_t{0}, index_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, index_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, index_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_idx, std::int64_t{0}, index_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_cls, std::int64_t{0}, index_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, index_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, index_oid);
     }
     auto rr = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("idx_doomed"));
     REQUIRE(rr.found);
@@ -235,9 +215,9 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_type_invisible") {
     {
         constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_type, std::int64_t{0}, type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, type_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_type, std::int64_t{0}, type_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, type_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, type_oid);
     }
     auto rr = test_probe::probe_type(fx, fx.auto_ctx(), ns_oid, std::string("widget"));
     REQUIRE(rr.found);
@@ -304,9 +284,9 @@ TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_rea
     {
         constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_ns, std::int64_t{0}, ns_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, ns_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, ns_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_ns, std::int64_t{0}, ns_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, ns_oid);
+        disk_test_helpers::delete_rows_ok(fx, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, ns_oid);
     }
     auto rt_after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("t"));
     auto idx_after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("child_idx"));

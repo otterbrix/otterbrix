@@ -16,6 +16,11 @@
 #include <unordered_map>
 
 namespace otterbrix {
+
+    // placeholders
+    inline constexpr components::expressions::source_element_id_t left_input_marker = UINT32_MAX - 1;
+    inline constexpr components::expressions::source_element_id_t right_input_marker = UINT32_MAX;
+
     //! R14: hand-written tagged union replacing the former
     //! std::variant<parameter_id_t, key_t, expression_ptr>. The three states are genuinely
     //! distinct (a constant parameter slot, a bare column reference, or an already-built engine

@@ -82,7 +82,6 @@ namespace components::vector {
         FLAT,
         CONSTANT,
         DICTIONARY,
-        SEQUENCE
     };
 
     class vector_t {
@@ -133,11 +132,8 @@ namespace components::vector {
         void slice(const indexing_vector_t& indexing, uint64_t count, indexing_cache_t& cache);
 
         void flatten(uint64_t count);
-        void flatten(const indexing_vector_t& indexing, uint64_t count);
         void to_unified_format(uint64_t count, unified_vector_format& data);
         static void recursive_to_unified_format(vector_t& input, uint64_t count, recursive_unified_vector_format& data);
-
-        void sequence(int64_t start, int64_t increment, uint64_t count);
 
         void set_auxiliary(std::shared_ptr<vector_buffer_t> new_buffer) { auxiliary_ = std::move(new_buffer); }
 
@@ -190,9 +186,6 @@ namespace components::vector {
         bool is_null(uint64_t index = 0) const;
         bool is_null(const std::pmr::vector<size_t>& path) const;
 
-        void get_sequence(int64_t& start, int64_t& increment, int64_t& sequence_count) const;
-        void get_sequence(int64_t& start, int64_t& increment) const;
-
         // Walk a nested path
         const vector_t* resolve_nested_location(const std::pmr::vector<uint64_t>& path,
                                                 uint64_t* leaf_index,
@@ -237,18 +230,6 @@ namespace components::vector {
         if (!vector) {
             assert(false && "vector does not have data");
             return {};
-        }
-        if (vector->get_vector_type() == vector_type::SEQUENCE) {
-            // Sequence vectors only ever hold arithmetic values; the branch is dead for other T but
-            // still instantiated, so guard sequence_entry<T> (which needs numeric_limits<T>).
-            if constexpr (std::is_arithmetic_v<T>) {
-                int64_t start, increment;
-                vector->get_sequence(start, increment);
-                return sequence_entry<T>(start + increment * static_cast<int64_t>(index));
-            } else {
-                assert(false && "sequence vector requires an arithmetic value type");
-                return {};
-            }
         }
 
         if constexpr (is_vector<T>) {

@@ -69,12 +69,10 @@ TEST_CASE("components::planner::drop_collection") {
 
 TEST_CASE("components::planner::match") {
     auto resource = core::pmr::otterbrix_resource();
-    auto node_match = make_node_match(&resource,
-                                      qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
-                                      make_compare_expression(&resource,
-                                                              compare_type::eq,
-                                                              key(&resource, "key", side_t::left),
-                                                              core::parameter_id_t(1)));
+    auto node_match = make_node_match(
+        &resource,
+        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "key"), core::parameter_id_t(1)));
     REQUIRE(node_match->to_string() == R"_($match: {"key": {$eq: #1}})_");
 }
 
@@ -136,13 +134,10 @@ TEST_CASE("components::planner::aggregate") {
         make_node_aggregate(&resource,
                             qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
 
-    aggregate->append_child(
-        make_node_match(&resource,
-                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
-                        make_compare_expression(&resource,
-                                                compare_type::eq,
-                                                key(&resource, "key", side_t::left),
-                                                core::parameter_id_t(1))));
+    aggregate->append_child(make_node_match(
+        &resource,
+        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "key"), core::parameter_id_t(1))));
 
     {
         std::vector<expression_ptr> expressions;
@@ -194,11 +189,9 @@ TEST_CASE("components::planner::aggregate_having") {
     }
 
     // $having: SUM(x) > #1  (compare carried at expressions()[0], mirroring node_match)
-    aggregate->append_child(make_node_having(&resource,
-                                             make_compare_expression(&resource,
-                                                                     compare_type::gt,
-                                                                     key(&resource, "sum_x", side_t::left),
-                                                                     core::parameter_id_t(1))));
+    aggregate->append_child(make_node_having(
+        &resource,
+        make_compare_expression(&resource, compare_type::gt, key(&resource, "sum_x"), core::parameter_id_t(1))));
 
     // $sort: ORDER BY k
     {
@@ -364,12 +357,10 @@ TEST_CASE("components::planner::row_cap_t") {
 
 TEST_CASE("components::planner::delete") {
     auto resource = core::pmr::otterbrix_resource();
-    auto match = make_node_match(&resource,
-                                 qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
-                                 make_compare_expression(&resource,
-                                                         compare_type::eq,
-                                                         key(&resource, "key", side_t::left),
-                                                         core::parameter_id_t(1)));
+    auto match = make_node_match(
+        &resource,
+        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "key"), core::parameter_id_t(1)));
     components::logical_plan::storage_parameters parameters{&resource};
     {
         auto node = make_node_delete(&resource, match, make_node_limit(&resource, limit_t::all()));
@@ -387,12 +378,10 @@ TEST_CASE("components::planner::delete") {
 
 TEST_CASE("components::planner::update") {
     auto resource = core::pmr::otterbrix_resource();
-    auto match = make_node_match(&resource,
-                                 qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
-                                 make_compare_expression(&resource,
-                                                         compare_type::eq,
-                                                         key(&resource, "key", side_t::left),
-                                                         core::parameter_id_t(1)));
+    auto match = make_node_match(
+        &resource,
+        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "key"), core::parameter_id_t(1)));
 
     // SET count = $0 — the value expression's own key names the target column.
     expression_ptr update =

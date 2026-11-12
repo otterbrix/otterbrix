@@ -142,6 +142,25 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::interleaved", "[interle
         });
     }
 
+    SECTION("a column an open transaction renamed is refused to another") {
+        std::string second_ddl;
+        SECTION("renamed") { second_ddl = "ALTER TABLE db.t RENAME COLUMN v TO c;"; }
+        SECTION("set NOT NULL") { second_ddl = "ALTER TABLE db.t ALTER COLUMN v SET NOT NULL;"; }
+        interleaved({
+            {first, "BEGIN;"},
+            {second, "BEGIN;"},
+            {first, "ALTER TABLE db.t RENAME COLUMN v TO b;"},
+            {second, second_ddl, fails},
+            {first, "COMMIT;"},
+            {second, "COMMIT;", succeeds, ends_idle},
+            {second, "SELECT c FROM db.t;", fails},
+            {second, "SELECT v FROM db.t;", fails},
+        });
+        CHECK(column<int64_t>(second.run("SELECT b FROM db.t ORDER BY id;")) == ints{10, 20, 30});
+        CHECK(column<int64_t>(second.run("SELECT count(*) FROM pg_catalog.pg_attribute WHERE attname = 'b' OR "
+                                         "attname = 'c';")) == ints{1});
+    }
+
     SECTION("a dropped column's name") {
         SECTION("is free to the transaction that dropped it") {
             interleaved({
@@ -178,6 +197,73 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::interleaved", "[interle
             {second, "DROP TABLE db.t;"},
             {first, "COMMIT;", fails, ends_idle},
             {second, "SELECT v FROM db.t;", fails},
+        });
+    }
+
+    SECTION("a table created inside an object dropped beside it") {
+        std::string table;
+        std::string drop;
+        SECTION("database") {
+            require_ok(first, "CREATE DATABASE outer_db;");
+            table = "outer_db.public.fresh";
+            drop = "DROP DATABASE outer_db;";
+        }
+        SECTION("schema") {
+            require_ok(first, "CREATE SCHEMA outer_ns;");
+            table = "outer_ns.fresh";
+            drop = "DROP SCHEMA outer_ns CASCADE;";
+        }
+        const auto drop_commits_first = GENERATE(true, false);
+        if (drop_commits_first) {
+            interleaved({
+                {first, "BEGIN;"},
+                {first, "CREATE TABLE " + table + " (id bigint);"},
+                {second, drop},
+                {first, "COMMIT;", fails, ends_idle},
+            });
+        } else {
+            interleaved({
+                {second, "BEGIN;"},
+                {second, drop},
+                {first, "CREATE TABLE " + table + " (id bigint);"},
+                {first, "INSERT INTO " + table + " (id) VALUES (1);"},
+                {second, "COMMIT;", succeeds, ends_idle},
+                {first, "SELECT id FROM " + table + ";", fails},
+            });
+        }
+        CHECK(first.run("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'fresh';")->size() == 0);
+    }
+
+    SECTION("a schema created inside a database dropped beside it") {
+        require_ok(first, "CREATE DATABASE outer_db;");
+        require_ok(first, "SET search_path = 'outer_db.public';");
+        const auto drop_commits_first = GENERATE(true, false);
+        if (drop_commits_first) {
+            interleaved({
+                {first, "BEGIN;"},
+                {first, "CREATE SCHEMA inner_ns;"},
+                {second, "DROP DATABASE outer_db;"},
+                {first, "COMMIT;", fails, ends_idle},
+            });
+        } else {
+            interleaved({
+                {second, "BEGIN;"},
+                {second, "DROP DATABASE outer_db;"},
+                {first, "CREATE SCHEMA inner_ns;"},
+                {second, "COMMIT;", succeeds, ends_idle},
+            });
+        }
+        CHECK(second.run("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'inner_ns';")->size() == 0);
+    }
+
+    SECTION("a RESTRICT drop is refused at COMMIT by a table created inside it") {
+        require_ok(first, "CREATE SCHEMA emptied;");
+        interleaved({
+            {second, "BEGIN;"},
+            {second, "DROP SCHEMA emptied;"},
+            {first, "CREATE TABLE emptied.fresh (id bigint);"},
+            {second, "COMMIT;", fails, ends_idle},
+            {first, "SELECT id FROM emptied.fresh;"},
         });
     }
 

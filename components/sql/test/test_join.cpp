@@ -145,7 +145,7 @@ TEST_CASE("components::sql::join") {
     // WHERE clause stays as a sibling match_t on the aggregate root, where it
     // filters the cross-product output (operator_match feeds the merged chunk
     // in as both left and right operands, so column refs resolve correctly
-    // against the join's merged schema regardless of side_t).
+    // against the join's merged schema).
     // ----------------------------------------------------------------------
     SECTION("comma join (SQL-89)") {
         // Two-table comma-join with a single equality predicate. The

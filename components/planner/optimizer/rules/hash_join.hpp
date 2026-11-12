@@ -10,7 +10,7 @@ namespace components::planner::optimizer {
     // to operator_hash_join_t, which evaluates the two operands as the probe and build keys; any join the
     // rule leaves as nested keeps the nested-loop operator_join_t.
     //
-    // Must run AFTER validate_schema, which stamps key.side()/key.path() and each call's volatility.
+    // Must run AFTER validate_schema, which stamps key.path() and each call's volatility.
     //
     // Returns the root; the join nodes are annotated in place.
     logical_plan::node_ptr rewrite_hash_joins(std::pmr::memory_resource* resource, logical_plan::node_ptr root);

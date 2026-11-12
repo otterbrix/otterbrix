@@ -39,7 +39,7 @@ namespace components::operators {
         if (join_type_ == type::semi || join_type_ == type::anti) {
             res_types_ = probe_front.types();
         } else {
-            // Nested-loop is never swapped: it evaluates its ON via key.side(), so the
+            // Nested-loop is never swapped: its ON reads the left-then-right layout, so the
             // probe is always logical-left and the build always logical-right.
             join_detail::compute_join_layout(probe_front,
                                              build_chunks.front(),
@@ -57,11 +57,8 @@ namespace components::operators {
             const auto build_types = build_chunks.front().types();
             merged_types.insert(merged_types.end(), build_types.begin(), build_types.end());
 
-            auto built = expressions::build_condition_graph(resource_,
-                                                            context->parameters,
-                                                            expression_.get(),
-                                                            merged_types,
-                                                            probe_front.column_count());
+            auto built =
+                expressions::build_condition_graph(resource_, context->parameters, expression_.get(), merged_types);
             if (built.has_error()) {
                 return built.error();
             }

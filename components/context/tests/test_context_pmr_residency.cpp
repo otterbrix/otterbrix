@@ -243,7 +243,7 @@ TEST_CASE("components::expressions::key_t::a copy placed on the destination aren
         std::pmr::vector<size_t> original_path{&source};
         original_path.push_back(3);
         original.set_path(std::move(original_path));
-        original.set_side(expr::side_t::left);
+        original.set_source_element(7);
         REQUIRE(original.resource() == &source);
 
         copy = new (copy_storage) expr::key_t(original, &destination);
@@ -269,7 +269,7 @@ TEST_CASE("components::expressions::key_t::a copy placed on the destination aren
     CHECK(qualifier == std::string(long_qualifier));
     REQUIRE(copy->path().size() == 1);
     CHECK(copy->path().front() == 3);
-    CHECK(copy->side() == expr::side_t::left);
+    CHECK(copy->source_element() == 7);
 
     // Safe to destroy here (unlike above): everything this copy owns is on `destination`, which is still alive.
     copy->~key_t();

@@ -109,7 +109,11 @@ namespace components::operators {
                                                     pg_attr,
                                                     static_cast<std::int64_t>(col::attoid),
                                                     attoid_);
-        co_await std::move(df);
+        if (auto deleted = co_await std::move(df); deleted.has_error()) {
+            set_error(deleted.error());
+            mark_failed();
+            co_return;
+        }
         if (ctx->txn.transaction_id != 0) {
             ctx->pg_catalog_delete_tables.insert(pg_attr);
         }

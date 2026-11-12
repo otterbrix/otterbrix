@@ -22,7 +22,7 @@ namespace components::planner {
         }
         // Single post-planner pass. Order matters: fold constants on parameter
         // expressions, push filters down, then select hash joins. Hash-join
-        // selection reads key.side()/key.path() stamped by validate_schema,
+        // selection reads key.path() stamped by validate_schema,
         // which has already run. All rules are safe here — the planner wraps
         // DML on top and lowers DDL to sequences, leaving the
         // match_t/join_t/aggregate_t these rules target intact.
@@ -78,9 +78,9 @@ namespace components::planner {
 
         // Column pruning runs LAST — after pushdown_filter has relocalized any
         // single-table filters below the join and rewrite_hash_joins has settled the
-        // join shape (equi-key stamp + localized ON keys). Running it earlier would
-        // race those restructurings, which shift merged schemas and the per-side
-        // column indices this rule rewrites. At this point key.side()/key.path() are
+        // join shape (equi-key stamp). Running it earlier would
+        // race those restructurings, which shift merged schemas and the
+        // column indices this rule rewrites. At this point key.path() is
         // final, so the narrowed scans and the keys rebased onto them stay consistent.
         optimizer::prune_columns(node);
 

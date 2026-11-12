@@ -108,8 +108,10 @@ namespace components::operators {
                     entry.database_oid = owner.database_oid;
                     where =
                         catalog::place_t{owner.table_md->connection, owner.table_md->database, owner.table_md->schema};
-                    auto found = co_await lookup_relation_oid(
-                        resource_, ctx, owner.table_md->namespace_oid, entry.written.collection);
+                    auto found = co_await lookup_relation_oid(resource_,
+                                                              ctx,
+                                                              owner.table_md->namespace_oid,
+                                                              entry.written.collection);
                     if (found.has_error()) {
                         set_error(found.error());
                         co_return;
@@ -140,8 +142,10 @@ namespace components::operators {
                     }
                     where->connection = schema.value().connection;
                     where->database = schema.value().database;
-                    auto found = co_await lookup_relation_oid(
-                        resource_, ctx, schema.value().namespace_oid, entry.written.collection);
+                    auto found = co_await lookup_relation_oid(resource_,
+                                                              ctx,
+                                                              schema.value().namespace_oid,
+                                                              entry.written.collection);
                     if (found.has_error()) {
                         set_error(found.error());
                         co_return;

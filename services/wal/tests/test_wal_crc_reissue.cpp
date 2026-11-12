@@ -384,7 +384,9 @@ TEST_CASE("wal::reissue::current_wal_id_counts_the_segments_after_a_broken_one")
     {
         wal_env_t env(path);
         auto fut = env.send_current_wal_id();
-        reported = await_ready(fut);
+        auto reported_r = await_ready(fut);
+        REQUIRE_FALSE(reported_r.has_error());
+        reported = reported_r.value();
     }
 
     INFO("current_wal_id answered " << reported << " over a journal holding " << on_disk);

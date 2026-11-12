@@ -28,11 +28,12 @@ namespace components::logical_plan {
             return copies;
         }
 
-        // What every class keeps: the name as written, the alias, the table's oid and the output types.
+        // What every class keeps: name as written, alias, table's oid, source element and output types.
         void copy_base(const node_t& from, node_t& to) {
             to.set_target(from.target());
             to.set_result_alias(from.result_alias());
             to.set_table_oid(from.table_oid());
+            to.set_source_element(from.source_element());
             to.set_output_types(std::pmr::vector<types::complex_logical_type>{from.output_types().begin(),
                                                                               from.output_types().end(),
                                                                               to.resource()});

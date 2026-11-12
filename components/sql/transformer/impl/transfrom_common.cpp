@@ -377,10 +377,10 @@ namespace components::sql::transform {
                         std::pmr::vector<std::pmr::string> star_path{resource_};
                         star_path.emplace_back(std::pmr::string{star_col.table.collection.t, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
-                        return param_storage{
-                            expression_ptr{make_scalar_expression(resource_,
-                                                                  scalar_type::star_expand,
-                                                                  expressions::key_t{std::move(star_path)})}};
+                        expressions::key_t star_key{std::move(star_path)};
+                        star_key.set_source_element(star_col.field.source_element());
+                        return param_storage{expression_ptr{
+                            make_scalar_expression(resource_, scalar_type::star_expand, std::move(star_key))}};
                     }
                 }
                 if (auto corr = try_lateral_correlate(col_ref, names)) {
@@ -1233,13 +1233,6 @@ namespace components::sql::transform {
         VALUE_OR_RETURN(auto called, called_function(resource_, node->funcname));
         std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
-        // create_value_getter rejects a still-undefined side, so default to left when there's no right table.
-        const bool no_right_side = names.right_name.empty() && names.right_alias.empty();
-        auto pin_side_to_left_if_unset = [no_right_side](expressions::key_t& field) {
-            if (no_right_side && field.side() == expressions::side_t::undefined) {
-                field.set_side(expressions::side_t::left);
-            }
-        };
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
                 if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(arg.data), names)) {
@@ -1247,11 +1240,9 @@ namespace components::sql::transform {
                     continue;
                 }
                 VALUE_OR_RETURN(auto key, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names));
-                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_A_Indirection) {
                 VALUE_OR_RETURN(auto key, indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names));
-                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_FuncCall) {
                 VALUE_OR_RETURN(auto call, transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data), names, plan));
@@ -1295,22 +1286,20 @@ namespace components::sql::transform {
     core::error_t transformer::resolve_jsonb_base(Node* lexpr,
                                                   const name_collection_t& names,
                                                   std::pmr::vector<std::pmr::string>& segments,
-                                                  expressions::side_t& side) {
+                                                  expressions::source_element_id_t& source_element) {
         if (nodeTag(lexpr) == T_ColumnRef) {
             auto* ref = pg_ptr_cast<ColumnRef>(lexpr);
             auto& lst = ref->fields->lst;
             if (lst.size() == 1 && nodeTag(lst.back().data) == T_String) {
                 std::string base_name = strVal(lst.back().data);
-                if (names.is_left_table(base_name)) {
-                    side = expressions::side_t::left; // bare table name -> document root
-                } else if (names.is_right_table(base_name)) {
-                    side = expressions::side_t::right;
+                if (names.is_left_table(base_name) || names.is_right_table(base_name)) {
+                    source_element = names.element_named(base_name); // bare table name -> document root
                 } else {
                     segments.emplace_back(std::pmr::string{base_name.c_str(), resource_});
                 }
             } else {
                 VALUE_OR_RETURN(auto cr, columnref_to_field(resource_, ref, names));
-                side = cr.field.side();
+                source_element = cr.field.source_element();
                 for (const auto& s : cr.field.storage()) {
                     segments.emplace_back(s);
                 }
@@ -1319,7 +1308,7 @@ namespace components::sql::transform {
         }
         if (nodeTag(lexpr) == T_A_Indirection) {
             VALUE_OR_RETURN(auto cr, indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(lexpr), names));
-            side = cr.field.side();
+            source_element = cr.field.source_element();
             for (const auto& s : cr.field.storage()) {
                 segments.emplace_back(s);
             }
@@ -1332,7 +1321,7 @@ namespace components::sql::transform {
     core::error_t transformer::collect_jsonb_path(A_Expr* node,
                                                   const name_collection_t& names,
                                                   std::pmr::vector<std::pmr::string>& segments,
-                                                  expressions::side_t& side) {
+                                                  expressions::source_element_id_t& source_element) {
         auto op = std::string_view(strVal(node->name->lst.front().data));
         if (!node->lexpr || !node->rexpr) {
             return core::error_t(
@@ -1345,12 +1334,12 @@ namespace components::sql::transform {
             auto* sub = pg_ptr_cast<A_Expr>(lexpr);
             if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
                 is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
-                RETURN_IF_ERROR(collect_jsonb_path(sub, names, segments, side));
+                RETURN_IF_ERROR(collect_jsonb_path(sub, names, segments, source_element));
             } else {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"unsupported left operand in jsonb operator chain", resource_});
             }
-        } else if (auto err = resolve_jsonb_base(lexpr, names, segments, side); err.contains_error()) {
+        } else if (auto err = resolve_jsonb_base(lexpr, names, segments, source_element); err.contains_error()) {
             return err;
         }
 
@@ -1382,15 +1371,13 @@ namespace components::sql::transform {
     core::result_wrapper_t<expressions::key_t> transformer::resolve_jsonb_prefix_key(A_Expr* node,
                                                                                      const name_collection_t& names) {
         std::pmr::vector<std::pmr::string> segments(resource_);
-        expressions::side_t side = expressions::side_t::undefined;
-        RETURN_IF_ERROR(collect_jsonb_path(node, names, segments, side));
+        expressions::source_element_id_t source_element = expressions::NO_SOURCE_ELEMENT;
+        RETURN_IF_ERROR(collect_jsonb_path(node, names, segments, source_element));
         if (segments.empty()) {
             return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"empty jsonb path", resource_});
         }
-        expressions::key_t out_key(resource_, jsonb_path::flatten(segments, resource_), side);
-        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
-            out_key.set_side(expressions::side_t::left);
-        }
+        expressions::key_t out_key(resource_, jsonb_path::flatten(segments, resource_));
+        out_key.set_source_element(source_element);
         return out_key;
     }
 
@@ -1412,7 +1399,7 @@ namespace components::sql::transform {
                                                                                logical_plan::parameter_node_t* params,
                                                                                std::string_view op) {
         std::pmr::vector<std::pmr::string> prefix(resource_);
-        expressions::side_t side = expressions::side_t::undefined;
+        expressions::source_element_id_t source_element = expressions::NO_SOURCE_ELEMENT;
         if (!node->lexpr || !node->rexpr) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
@@ -1423,12 +1410,12 @@ namespace components::sql::transform {
             auto* sub = pg_ptr_cast<A_Expr>(lexpr);
             if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
                 is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
-                RETURN_IF_ERROR(collect_jsonb_path(sub, names, prefix, side));
+                RETURN_IF_ERROR(collect_jsonb_path(sub, names, prefix, source_element));
             } else {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"unsupported left operand for jsonb '?'", resource_});
             }
-        } else if (auto err = resolve_jsonb_base(lexpr, names, prefix, side); err.contains_error()) {
+        } else if (auto err = resolve_jsonb_base(lexpr, names, prefix, source_element); err.contains_error()) {
             return err;
         }
 
@@ -1467,14 +1454,11 @@ namespace components::sql::transform {
                                            op == "?&" ? compare_type::all_true : compare_type::all_false);
         }
 
-        expressions::side_t use_side = side;
-        if (use_side == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
-            use_side = expressions::side_t::left;
-        }
         auto build_exists = [&](const std::pmr::string& k) -> compare_expression_ptr {
             std::pmr::vector<std::pmr::string> segments(prefix);
             segments.emplace_back(k);
-            expressions::key_t key(resource_, jsonb_path::flatten(segments, resource_), use_side);
+            expressions::key_t key(resource_, jsonb_path::flatten(segments, resource_));
+            key.set_source_element(source_element);
             // A key naming no column is legally absent (yields false), not a hard error.
             key.set_absent_ok(true);
             auto dummy = params->add_parameter(

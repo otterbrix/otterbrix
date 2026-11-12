@@ -146,10 +146,11 @@ namespace services::disk {
                               components::catalog::oid_t table_oid,
                               components::vector::data_chunk_t row);
 
-        unique_future<void> delete_pg_catalog_rows(execution_context_t ctx,
-                                                   components::catalog::oid_t table_oid,
-                                                   std::int64_t oid_col_idx,
-                                                   components::catalog::oid_t target_oid);
+        unique_future<core::result_wrapper_t<std::uint64_t>>
+        delete_pg_catalog_rows(execution_context_t ctx,
+                               components::catalog::oid_t table_oid,
+                               std::int64_t oid_col_idx,
+                               components::catalog::oid_t target_oid);
 
         // A zero count means "no row ctx.txn can see carried that oid" -- mixing a transaction-less read breaks that.
         unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>

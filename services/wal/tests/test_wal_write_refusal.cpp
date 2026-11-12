@@ -95,8 +95,10 @@ namespace {
         return "wal_" + std::to_string(static_cast<unsigned>(kMainDb)) + "_" + suffix;
     }
 
-    configuration::config_wal make_config(const std::filesystem::path& path, size_t max_segment_size) {
-        std::filesystem::remove_all(path);
+    configuration::config_wal make_config(const std::filesystem::path& path, size_t max_segment_size, bool wipe) {
+        if (wipe) {
+            std::filesystem::remove_all(path);
+        }
         std::filesystem::create_directories(path);
         configuration::config_wal config(path);
         if (max_segment_size != 0) {
@@ -106,11 +108,11 @@ namespace {
     }
 
     struct wal_env_t {
-        explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
+        explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0, bool wipe = true)
             : path_(path)
             , log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
-            , config_(make_config(path, max_segment_size))
+            , config_(make_config(path, max_segment_size, wipe))
             , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
                                                                   scheduler_.get(),
                                                                   config_,
@@ -239,7 +241,9 @@ TEST_CASE("wal::refusal::truncation_keeps_a_segment_it_cannot_read") {
     REQUIRE(std::filesystem::exists(db_dir / segment_name(1)));
 
     auto cur_fut = env.send_current_wal_id();
-    const auto checkpoint_id = await_ready(cur_fut);
+    auto checkpoint_r = await_ready(cur_fut);
+    REQUIRE_FALSE(checkpoint_r.has_error());
+    const auto checkpoint_id = checkpoint_r.value();
     REQUIRE(checkpoint_id > 0);
 
     fault.refuse_open_marker = segment_name(0);
@@ -494,4 +498,25 @@ TEST_CASE("wal::refusal::an_add_column_whose_attoids_do_not_match_its_columns_is
     }
     CHECK(committed_records_of(path, wal_record_type::PHYSICAL_ADD_COLUMN, 900) == 1);
     CHECK(committed_records_of(path, wal_record_type::PHYSICAL_ADD_COLUMN, 901) == 0);
+}
+
+TEST_CASE("wal::refusal::current_wal_id_under_a_recovery_error") {
+    const auto path = base_path() / "current_id_recovery_error";
+    {
+        wal_env_t env(path);
+        auto insert_fut = env.send_insert(/*txn_id=*/1000, /*rows=*/3);
+        REQUIRE_FALSE(await_ready(insert_fut).has_error());
+        auto commit_fut = env.send_commit(/*txn_id=*/1000, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit_fut).has_error());
+        auto cur_fut = env.send_current_wal_id();
+        auto written = await_ready(cur_fut);
+        REQUIRE_FALSE(written.has_error());
+        REQUIRE(written.value() > 0);
+    }
+
+    wal_fault_scope_t fault;
+    fault.refuse_open_marker = segment_name(0);
+    wal_env_t env(path, /*max_segment_size=*/0, /*wipe=*/false);
+    auto cur_fut = env.send_current_wal_id();
+    REQUIRE(await_ready(cur_fut).has_error());
 }

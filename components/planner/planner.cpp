@@ -3,6 +3,7 @@
 #include <catalog/catalog_codes.hpp>
 #include <catalog/catalog_oids.hpp>
 #include <catalog/ddl_metadata_builder.hpp>
+#include <catalog/information_schema.hpp>
 #include <catalog/oid_batch.hpp>
 #include <catalog/system_table_schemas.hpp>
 #include <logical_plan/node_alter_column.hpp>
@@ -178,13 +179,25 @@ namespace components::planner {
                                                                 database_oid);
             // A connection's database is created empty: its host registers the schemas its backend has.
             if (cd->target().connection.t.empty()) {
-                for (const std::string_view schema : {"public", "information_schema"}) {
-                    for (auto& w : catalog::build_create_namespace_writes(r,
-                                                                          std::string{schema},
-                                                                          oid_batch.allocate(),
-                                                                          database_oid)) {
-                        writes.push_back(std::move(w));
-                    }
+                for (auto& w : catalog::build_create_namespace_writes(r,
+                                                                      std::string{"public"},
+                                                                      oid_batch.allocate(),
+                                                                      database_oid)) {
+                    writes.push_back(std::move(w));
+                }
+                const catalog::oid_t information_schema_oid = oid_batch.allocate();
+                for (auto& w : catalog::build_create_namespace_writes(r,
+                                                                      std::string{"information_schema"},
+                                                                      information_schema_oid,
+                                                                      database_oid)) {
+                    writes.push_back(std::move(w));
+                }
+                for (auto& w : catalog::build_information_schema_writes(r,
+                                                                        cd->target().database.t,
+                                                                        database_oid,
+                                                                        information_schema_oid,
+                                                                        oid_batch)) {
+                    writes.push_back(std::move(w));
                 }
             }
 
@@ -833,9 +846,9 @@ namespace components::planner {
                 return need;
             }
             case nt::create_database_t:
-                // The database; a local one also its schema public and its information_schema.
+                // The database; a local one also its schema public and its information_schema with its views.
                 return static_cast<const logical_plan::node_create_database_t*>(node)->target().connection.t.empty()
-                           ? 3
+                           ? 3 + catalog::information_schema_oid_demand()
                            : 1;
             case nt::create_schema_t:
                 return 1;

@@ -4,6 +4,7 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/casts/default_casts.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/information_schema.hpp>
 #include <core/file/list_dir.hpp>
 
 #include <algorithm>
@@ -508,6 +509,33 @@ namespace services::disk {
                     seed_row(pg_cast_oid, def->name, row);
                 }
                 RETURN_IF_ERROR(require_seeded(pg_cast_oid, def->name, casts.size()));
+            }
+        }
+
+        // main's information_schema views, with the namespace that holds them; after the tables whose rows they add
+        // to have been seeded.
+        if (freshly_created.count(pg_namespace_oid_tbl)) {
+            const auto demand = catalog::information_schema_oid_demand();
+            std::vector<catalog::oid_t> view_oids;
+            view_oids.reserve(demand);
+            for (std::size_t index = 0; index < demand; ++index) {
+                view_oids.push_back(catalog::oid_t{static_cast<unsigned>(catalog::FIRST_INFORMATION_SCHEMA_OID) +
+                                                   static_cast<std::uint32_t>(index)});
+            }
+            VALUE_OR_RETURN(auto view_batch, catalog::oid_batch_t::make(resource(), std::move(view_oids), demand));
+            auto writes = catalog::build_information_schema_writes(resource(),
+                                                                   wk::main_database_name,
+                                                                   wk::main_database,
+                                                                   wk::information_schema_namespace,
+                                                                   view_batch);
+            std::unordered_map<catalog::oid_t, std::uint64_t> expected;
+            for (auto& write : writes) {
+                auto& rows = expected.try_emplace(write.table_oid, rows_in_sync(write.table_oid)).first->second;
+                rows += write.row.size();
+                seed_row(write.table_oid, catalog::find_system_table(write.table_oid)->name, write.row);
+            }
+            for (const auto& [table_oid, rows] : expected) {
+                RETURN_IF_ERROR(require_seeded(table_oid, catalog::find_system_table(table_oid)->name, rows));
             }
         }
 

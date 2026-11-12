@@ -7,6 +7,7 @@ set(SOURCE_${PROJECT_NAME}
         alter_column_validators.cpp
         dependency_walker.cpp
         helpers.cpp
+        information_schema.cpp
         place.cpp
         session_settings.cpp
         settings.cpp

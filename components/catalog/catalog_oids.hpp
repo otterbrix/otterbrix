@@ -38,6 +38,9 @@ namespace components::catalog {
     // genbki numbers its own pg_cast rows in (10000-11999).
     inline constexpr oid_t FIRST_BUILTIN_CAST_OID{10000};
 
+    // main's information_schema views
+    inline constexpr oid_t FIRST_INFORMATION_SCHEMA_OID{12001};
+
     // Well-known OIDs — built-in objects assigned at bootstrap.
     namespace well_known_oid {
         // Default database (pg_database.oid), PostgreSQL's "postgres". Otterbrix has no cluster-vs-database split, so

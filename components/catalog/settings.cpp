@@ -18,9 +18,18 @@ namespace components::catalog {
     namespace {
 
         constexpr std::array<setting_def_t, 3> known_settings{
-            setting_def_t{"timezone", "TimeZone", setting_id::timezone},
-            setting_def_t{"autocommit", "autocommit", setting_id::autocommit},
-            setting_def_t{"search_path", "search_path", setting_id::search_path}};
+            setting_def_t{"timezone",
+                          "TimeZone",
+                          setting_id::timezone,
+                          "Sets the time zone for displaying and interpreting time stamps."},
+            setting_def_t{"autocommit",
+                          "autocommit",
+                          setting_id::autocommit,
+                          "Sets whether a statement outside a transaction block commits by itself."},
+            setting_def_t{"search_path",
+                          "search_path",
+                          setting_id::search_path,
+                          "Sets the schema search order for names that are not schema-qualified."}};
 
         std::string to_lower(std::string_view text) {
             std::string lowered(text);

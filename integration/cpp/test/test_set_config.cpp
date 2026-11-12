@@ -107,3 +107,36 @@ TEST_CASE("integration::cpp::set_config::set_config") {
         CHECK(db.strings(session, current_search_path) == strings{"main.public"});
     }
 }
+
+TEST_CASE("integration::cpp::set_config::show") {
+    session_sql::fixture_t db("test_set_config/show");
+    const otterbrix::session_id_t session;
+    db.ok(session, "CREATE SCHEMA s;");
+
+    SECTION("a setting") {
+        db.ok(session, "SET search_path = 'main.s';");
+        auto shown = db.ok(session, "SHOW search_path;");
+        REQUIRE(shown->size() == 1);
+        CHECK(shown->chunks().front().data[0].type().alias() == "search_path");
+        CHECK(shown->chunks().front().get_value<std::string_view>(0, 0) == "main.s");
+        CHECK(db.strings(session, "SHOW timezone;") == db.strings(session, "SELECT current_setting('TimeZone');"));
+        CHECK(db.ok(session, "SHOW TIME ZONE;")->chunks().front().data[0].type().alias() == "TimeZone");
+    }
+
+    SECTION("an unknown name") { CHECK(db.refused(session, "SHOW no_such_setting;").type == code::undefined_object); }
+
+    SECTION("all") {
+        db.ok(session, "SET search_path = 'main.s';");
+        CHECK(db.strings(session, "SHOW ALL;") == strings{"autocommit", "search_path", "TimeZone"});
+        auto all = db.ok(session, "SHOW ALL;");
+        REQUIRE(all->size() == 3);
+        std::vector<std::string> settings;
+        for (const auto& chunk : all->chunks()) {
+            for (std::uint64_t row = 0; row < chunk.size(); ++row) {
+                settings.emplace_back(chunk.get_value<std::string_view>(1, row));
+                CHECK_FALSE(chunk.get_value<std::string_view>(2, row).empty());
+            }
+        }
+        CHECK(settings[1] == "main.s");
+    }
+}

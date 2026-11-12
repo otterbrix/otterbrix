@@ -1,6 +1,10 @@
 #include "../transformer.hpp"
 #include <components/catalog/settings.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
+#include <components/sql/parser/nodes/makefuncs.h>
+
+#include <algorithm>
+#include <cstring>
 
 namespace components::sql::transform {
 
@@ -101,6 +105,91 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_alter_system(AlterSystemStmt& node) {
         return transform_variable_set(*node.setstmt, catalog::setting_scope_t::system, resource_);
+    }
+
+    namespace {
+        char* text_on(std::pmr::memory_resource* arena, std::string_view text) {
+            auto* out = static_cast<char*>(arena->allocate(text.size() + 1, alignof(char)));
+            std::memcpy(out, text.data(), text.size());
+            out[text.size()] = '\0';
+            return out;
+        }
+
+        Node* string_constant(std::pmr::memory_resource* arena, std::string_view text) {
+            auto* constant = makeNode(arena, A_Const);
+            constant->val.type = T_String;
+            constant->val.val.str = text_on(arena, text);
+            constant->location = -1;
+            return pg_ptr_cast<Node>(constant);
+        }
+
+        // current_setting('<name>')
+        Node* current_setting_of(std::pmr::memory_resource* arena, std::string_view name) {
+            return pg_ptr_cast<Node>(
+                makeFuncCall(arena,
+                             list_make1(arena, makeString(arena, text_on(arena, "current_setting"))),
+                             list_make1(arena, string_constant(arena, name)),
+                             -1));
+        }
+
+        ResTarget* target_of(std::pmr::memory_resource* arena, Node* value, std::string_view name) {
+            auto* target = makeNode(arena, ResTarget);
+            target->name = text_on(arena, name);
+            target->val = value;
+            target->location = -1;
+            return target;
+        }
+
+        SelectStmt* select_of(std::pmr::memory_resource* arena, List* targets) {
+            auto* select = makeNode(arena, SelectStmt);
+            select->targetList = targets;
+            return select;
+        }
+    } // namespace
+
+    // SHOW name is SELECT current_setting('name'), its one column named as the setting is (PostgreSQL 18 GetPGVariable);
+    // SHOW ALL is a row (name, setting, description) per setting, ordered by name.
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_show(VariableShowStmt& node,
+                                                                               logical_plan::execution_plan_t* plan) {
+        auto* arena = resource_;
+        const std::string_view name = node.name ? node.name : "";
+        if (name != "all") {
+            const auto* setting = catalog::find_setting_by_sql_name(name);
+            const std::string_view column = setting != nullptr ? setting->catalog_name : name;
+            auto* select =
+                select_of(arena, list_make1(arena, target_of(arena, current_setting_of(arena, name), column)));
+            return transform_select(*select, plan);
+        }
+        std::pmr::vector<const catalog::setting_def_t*> settings{arena};
+        for (const auto& known : catalog::all_settings()) {
+            settings.push_back(&known);
+        }
+        std::sort(settings.begin(), settings.end(), [](const auto* left, const auto* right) {
+            return std::lexicographical_compare(left->sql_name.begin(),
+                                                left->sql_name.end(),
+                                                right->sql_name.begin(),
+                                                right->sql_name.end());
+        });
+        SelectStmt* all = nullptr;
+        for (const auto* known : settings) {
+            auto* row =
+                select_of(arena,
+                          list_make3(arena,
+                                     target_of(arena, string_constant(arena, known->catalog_name), "name"),
+                                     target_of(arena, current_setting_of(arena, known->sql_name), "setting"),
+                                     target_of(arena, string_constant(arena, known->description), "description")));
+            if (all == nullptr) {
+                all = row;
+                continue;
+            }
+            auto* both = makeNode(arena, SelectStmt);
+            both->op = SETOP_UNION;
+            both->all = true;
+            both->larg = all;
+            both->rarg = row;
+            all = both;
+        }
+        return transform_select(*all, plan);
     }
 
 } // namespace components::sql::transform

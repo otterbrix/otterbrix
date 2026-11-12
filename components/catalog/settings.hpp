@@ -45,9 +45,11 @@ namespace components::catalog {
     struct setting_def_t {
         // What SET names it, matched case-insensitively.
         std::string_view sql_name;
-        // What the pg_settings row is keyed by.
+        // What the pg_settings row is keyed by, and what SHOW names the setting by.
         std::string_view catalog_name;
         setting_id id;
+        // What SHOW ALL describes it with.
+        std::string_view description;
     };
 
     [[nodiscard]] std::span<const setting_def_t> all_settings() noexcept;

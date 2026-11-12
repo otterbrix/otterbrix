@@ -147,6 +147,8 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_set_setting(VariableSetStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_alter_system(AlterSystemStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_show(VariableShowStmt& node,
+                                                                      logical_plan::execution_plan_t* plan);
         // PREPARE keeps its body as written; EXECUTE lowers each argument to a sub-plan SELECT <argument> whose value
         // fills the argument's slot; DEALLOCATE names one statement or ALL.
         core::result_wrapper_t<logical_plan::node_ptr> transform_prepare(PrepareStmt& node);

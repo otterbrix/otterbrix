@@ -219,6 +219,9 @@ namespace components::sql::transform {
             case T_VariableSetStmt:
                 log_node = transform_set_setting(pg_cast<VariableSetStmt>(node));
                 break;
+            case T_VariableShowStmt:
+                log_node = transform_show(pg_cast<VariableShowStmt>(node), plan);
+                break;
             case T_AlterSystemStmt:
                 log_node = transform_alter_system(pg_cast<AlterSystemStmt>(node));
                 break;

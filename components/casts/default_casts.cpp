@@ -332,6 +332,52 @@ namespace components::casts {
                           cast_function_t{&kernels::string_to_decimal_cast, &kernels::string_to_decimal_try_cast});
         }
 
+        void add_oid_casts(cast_registry_t& registry) {
+            const complex_logical_type oid{types::logical_type::OID};
+            const auto add =
+                [&registry](const complex_logical_type& source, const complex_logical_type& target, cast_entry entry) {
+                    [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
+                    assert(!error.contains_error() && "duplicate default cast registration");
+                };
+            const auto to_oid_cost = [&oid](uint32_t precision_loss) {
+                return cast_cost{.precision_loss = precision_loss, .footprint = static_cast<uint32_t>(oid.size())};
+            };
+            add(complex_logical_type{types::logical_type::SMALLINT},
+                oid,
+                cast_entry{cast_function_t{&kernels::numeric_cast<int16_t, uint32_t>, nullptr},
+                           to_oid_cost(signed_to_unsigned_loss),
+                           /*convertable_inplace*/ false});
+            add(complex_logical_type{types::logical_type::INTEGER},
+                oid,
+                cast_entry{cast_function_t{&kernels::numeric_cast<int32_t, uint32_t>, nullptr},
+                           to_oid_cost(signed_to_unsigned_loss),
+                           /*convertable_inplace*/ false});
+            add(complex_logical_type{types::logical_type::BIGINT},
+                oid,
+                cast_entry{cast_function_t{&kernels::integer_narrow_cast<int64_t, uint32_t>,
+                                           &kernels::integer_narrow_try_cast<int64_t, uint32_t>},
+                           to_oid_cost(numeric_precision_loss<int64_t, uint32_t>()),
+                           /*convertable_inplace*/ false});
+            add(oid,
+                complex_logical_type{types::logical_type::INTEGER},
+                cast_entry{cast_function_t{&kernels::numeric_cast<uint32_t, int32_t>, nullptr},
+                           cast_type::assignment,
+                           /*convertable_inplace*/ false});
+            add(oid,
+                complex_logical_type{types::logical_type::BIGINT},
+                cast_entry{cast_function_t{&kernels::numeric_cast<uint32_t, int64_t>, nullptr},
+                           cast_type::assignment,
+                           /*convertable_inplace*/ false});
+            add(oid,
+                string_type(),
+                cast_entry{cast_function_t{&kernels::number_to_string_cast<uint32_t>, nullptr},
+                           cast_type::assignment,
+                           /*convertable_inplace*/ false});
+            add_from_text(registry,
+                          oid,
+                          cast_function_t{&kernels::string_to_oid_cast, &kernels::string_to_oid_try_cast});
+        }
+
         template<typename From, typename To>
         void add_datetime_widening(cast_registry_t& registry) {
             complex_logical_type source{types::to_logical_type<From>()};
@@ -503,6 +549,8 @@ namespace components::casts {
                                types::uint128_t,
                                float,
                                double>(registry);
+
+        add_oid_casts(registry);
 
         add_decimal_floating<float>(registry);
         add_decimal_floating<double>(registry);

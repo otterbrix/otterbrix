@@ -163,6 +163,57 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
+    namespace {
+        // PostgreSQL ATAddForeignKeyConstraint's refusal, met here by a constraint whose column types changed since.
+        core::error_t incompatible_fk_key(std::pmr::memory_resource* resource,
+                                          const components::catalog::fk_info_t& fk,
+                                          std::size_t key) {
+            const auto& column = fk.key_columns[key];
+            return core::error_t(core::error_code_t::datatype_mismatch,
+                                 std::pmr::string{"foreign key constraint cannot be implemented: key columns \"" +
+                                                      fk.child_col_names[key] + "\" and \"" + fk.parent_col_names[key] +
+                                                      "\" are of incompatible types: " +
+                                                      components::catalog::format_type_be(column.child_type) + " and " +
+                                                      components::catalog::format_type_be(column.parent_type),
+                                                  resource});
+        }
+    } // namespace
+
+    core::error_t resolve_fk_key_casts(std::pmr::memory_resource* resource,
+                                       const components::casts::cast_registry_t& cast_registry,
+                                       catalog_resolves_t& resolves) {
+        if (!resolves.constraints) {
+            return core::error_t::no_error();
+        }
+        using components::casts::cast_type;
+        for (auto& entry : resolves.constraints->entries()) {
+            const bool referencing = entry.direction == components::logical_plan::resolve_direction::referencing;
+            for (auto& fk : entry.fks) {
+                for (std::size_t key = 0; key < fk.key_columns.size(); ++key) {
+                    auto& column = fk.key_columns[key];
+                    if (column.child_type == column.parent_type) {
+                        continue;
+                    }
+                    auto to_parent =
+                        cast_registry.resolve(column.child_type, column.parent_type, cast_type::assignment);
+                    if (!to_parent.has_value()) {
+                        return incompatible_fk_key(resource, fk, key);
+                    }
+                    column.to_parent = std::move(*to_parent);
+                    if (!referencing) {
+                        continue;
+                    }
+                    auto to_child = cast_registry.resolve(column.parent_type, column.child_type, cast_type::assignment);
+                    if (!to_child.has_value()) {
+                        return incompatible_fk_key(resource, fk, key);
+                    }
+                    column.to_child = std::move(*to_child);
+                }
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     namespace impl {
 
         components::expressions::expression_ptr

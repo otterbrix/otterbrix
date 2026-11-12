@@ -90,3 +90,50 @@ TEST_CASE("integration::cpp::register_cast::unregister_deletes") {
     CHECK_FALSE(dispatcher->unregister_cast(session, kSource, kTarget).contains_error());
     CHECK_FALSE(dispatcher->register_cast(session, kSource, kTarget, make_entry()).contains_error());
 }
+
+namespace {
+
+    std::size_t rows_of(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        auto cursor = dispatcher->execute_sql(otterbrix::session_id_t(), sql);
+        INFO(sql);
+        REQUIRE(cursor->is_success());
+        return cursor->size();
+    }
+
+} // namespace
+
+// pg_cast lists the built-in casts as the registry has them (castcontext from its level), not only registered ones;
+// casts to and from text are I/O conversions, which PostgreSQL does not list either.
+TEST_CASE("integration::cpp::register_cast::builtin_casts_in_pg_cast") {
+    auto config = test_create_config(integration_fixture_path("test_register_cast_builtin_rows"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    CHECK(rows_of(dispatcher, "SELECT oid FROM pg_catalog.pg_cast WHERE oid < 16384;") > 0);
+    CHECK(rows_of(dispatcher, "SELECT oid FROM pg_catalog.pg_cast WHERE oid >= 16384;") == 0);
+    // int4 -> int8 widens implicitly, int8 -> int4 narrows on assignment, int4 -> oid as PostgreSQL has it.
+    CHECK(rows_of(dispatcher,
+                  "SELECT oid FROM pg_catalog.pg_cast WHERE castsource = 23 AND casttarget = 20 "
+                  "AND castcontext = 'i';") == 1);
+    CHECK(rows_of(dispatcher,
+                  "SELECT oid FROM pg_catalog.pg_cast WHERE castsource = 20 AND casttarget = 23 "
+                  "AND castcontext = 'a';") == 1);
+    CHECK(rows_of(dispatcher,
+                  "SELECT oid FROM pg_catalog.pg_cast WHERE castsource = 23 AND casttarget = 26 "
+                  "AND castcontext = 'i';") == 1);
+    CHECK(rows_of(dispatcher, "SELECT oid FROM pg_catalog.pg_cast WHERE castsource = 25 OR casttarget = 25;") == 0);
+}
+
+// A built-in cast is required by the database system, as PostgreSQL refuses DROP CAST on a pinned one.
+TEST_CASE("integration::cpp::register_cast::builtin_cast_not_unregistered") {
+    auto config = test_create_config(integration_fixture_path("test_register_cast_builtin_drop"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    const complex_logical_type int4{logical_type::INTEGER};
+    const complex_logical_type int8{logical_type::BIGINT};
+    CHECK(dispatcher->unregister_cast(otterbrix::session_id_t(), int4, int8).contains_error());
+    CHECK(rows_of(dispatcher, "SELECT oid FROM pg_catalog.pg_cast WHERE castsource = 23 AND casttarget = 20;") == 1);
+}

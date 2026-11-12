@@ -65,14 +65,14 @@ namespace services::collection {
                 if (const auto* md = cs_->table_metadata_for(oid)) {
                     n.relation = relation_name(*md, mr_);
                 } else {
-                    n.relation = make_pmr_string("t" + std::to_string(oid), mr_);
+                    n.relation = make_pmr_string("t" + std::to_string(static_cast<unsigned>(oid)), mr_);
                 }
             } else {
                 auto it = names_.find(oid);
                 if (it != names_.end()) {
                     n.relation = it->second; // copy-assign keeps n.relation's allocator (mr_) — POCCA=false
                 } else {
-                    n.relation = make_pmr_string("t" + std::to_string(oid), mr_);
+                    n.relation = make_pmr_string("t" + std::to_string(static_cast<unsigned>(oid)), mr_);
                 }
             }
         }

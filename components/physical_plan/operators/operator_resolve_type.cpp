@@ -33,8 +33,7 @@ namespace components::operators {
     }
 
     namespace {
-        // pg_type columns, by the order system_table_schemas.cpp persists them:
-        //   0 oid, 1 typname, 2 typnamespace, 3 typdefspec.
+        // pg_type columns, by catalog::pg_type_col.
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
         read_pg_type(std::pmr::memory_resource* resource,
                      pipeline::context_t* ctx,
@@ -55,8 +54,24 @@ namespace components::operators {
             co_return co_await std::move(tf);
         }
 
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
+        read_pg_type_by_oid(std::pmr::memory_resource* resource, pipeline::context_t* ctx, catalog::oid_t type_oid) {
+            components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+            std::pmr::vector<std::uint64_t> keys(resource);
+            keys.emplace_back(catalog::pg_type_col::oid);
+            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::read_chunks_by_key,
+                                                        exec_ctx,
+                                                        catalog::well_known_oid::pg_type_table,
+                                                        std::move(keys),
+                                                        make_key_chunk(resource, type_oid),
+                                                        std::pmr::vector<std::uint64_t>{resource});
+            co_return co_await std::move(tf);
+        }
+
         bool holds_a_type(const std::pmr::vector<vector::data_chunk_t>& batches) {
-            return !batches.empty() && batches.front().size() != 0 && batches.front().column_count() >= 4;
+            return !batches.empty() && batches.front().size() != 0 &&
+                   batches.front().column_count() > catalog::pg_type_col::typndims;
         }
     } // namespace
 
@@ -115,9 +130,9 @@ namespace components::operators {
             }
 
             components::logical_plan::resolved_type_metadata_t md;
-            md.type_oid = static_cast<catalog::oid_t>(batch.get_value<std::uint32_t>(0, 0));
-            md.name = core::relname_t{std::string{batch.get_value<std::string_view>(1, 0)}};
-            md.namespace_oid = static_cast<catalog::oid_t>(batch.get_value<std::uint32_t>(2, 0));
+            md.type_oid = batch.get_value<catalog::oid_t>(catalog::pg_type_col::oid, 0);
+            md.name = core::relname_t{std::string{batch.get_value<std::string_view>(catalog::pg_type_col::typname, 0)}};
+            md.namespace_oid = batch.get_value<catalog::oid_t>(catalog::pg_type_col::typnamespace, 0);
             if (!batch.is_null(3, 0)) {
                 md.typdefspec = std::string(batch.get_value<std::string_view>(3, 0));
             }
@@ -130,11 +145,42 @@ namespace components::operators {
                     co_return;
                 }
                 md.type = std::move(md_type_r.value());
-            } else {
-                const auto lt = catalog::oid_to_builtin_type(md.type_oid);
-                if (lt != types::logical_type::UNKNOWN) {
-                    md.type = types::complex_logical_type{lt};
+            } else if (const auto typelem = batch.get_value<catalog::oid_t>(catalog::pg_type_col::typelem, 0);
+                       typelem != catalog::INVALID_OID) {
+                // An array type is a LIST of its element: a built-in, or a type its own row spells out.
+                const auto element = catalog::oid_to_builtin_type(typelem);
+                if (element != types::logical_type::UNKNOWN) {
+                    md.type = types::complex_logical_type::create_list(types::complex_logical_type{element});
+                } else {
+                    auto element_rows = co_await read_pg_type_by_oid(resource_, ctx, typelem);
+                    if (element_rows.has_error()) {
+                        set_error(element_rows.error());
+                        co_return;
+                    }
+                    const auto& rows = element_rows.value();
+                    if (!holds_a_type(rows) || rows.front().is_null(catalog::pg_type_col::typdefspec, 0)) {
+                        continue; // a relation's row type: no spec to build the element from
+                    }
+                    const auto& element_row = rows.front();
+                    const auto element_spec =
+                        element_row.get_value<std::string_view>(catalog::pg_type_col::typdefspec, 0);
+                    if (element_spec.empty()) {
+                        continue;
+                    }
+                    auto element_type = catalog::decode_type_spec(resource_, element_spec);
+                    if (element_type.has_error()) {
+                        set_error(element_type.error());
+                        co_return;
+                    }
+                    md.type = types::complex_logical_type::create_list(element_type.value());
                 }
+            } else {
+                // A row with neither a spec nor a built-in type (a relation's row type) names no column type yet.
+                const auto lt = catalog::oid_to_builtin_type(md.type_oid);
+                if (lt == types::logical_type::UNKNOWN) {
+                    continue;
+                }
+                md.type = types::complex_logical_type{lt};
             }
             entry.type_oid = md.type_oid;
             entry.type_md = std::move(md);

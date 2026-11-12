@@ -138,7 +138,7 @@ TEST_CASE("services::disk::error::duplicate_column_name_refused_at_write") {
                                                attoids[0],
                                                table_oid,
                                                std::string("id"),
-                                               well_known_oid::int64_type,
+                                               catalog::pg_attribute_type_t{well_known_oid::int64_type},
                                                /*attnum*/ 2,
                                                /*not_null*/ false,
                                                /*has_default*/ false,
@@ -262,7 +262,7 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
 
     INFO("an oid with no storage anywhere: the delete DID NOT HAPPEN, and says so");
     {
-        const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+        const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            nowhere,
@@ -273,7 +273,7 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
 
     INFO("asking for nothing is not a refusal, whatever the oid");
     {
-        const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+        const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            nowhere,
@@ -379,7 +379,7 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
     fixture fx;
     int64_t first_row = 0;
     const auto table_oid = make_one_column_table(fx, "nsfetch", 3, first_row);
-    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+    const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
 
     INFO("the fetch happened: three rows come back");
     {
@@ -435,7 +435,7 @@ TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
     fixture fx;
     int64_t first_row = 0;
     const auto table_oid = make_one_column_table(fx, "nsapp", 0, first_row);
-    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+    const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
 
     components::execution_context_t append_ctx{session_id_t{},
                                                components::table::transaction_data::committed(),
@@ -490,7 +490,7 @@ TEST_CASE("services::disk::error::update_refusal_is_not_a_zero_range") {
     fixture fx;
     int64_t first_row = 0;
     const auto table_oid = make_one_column_table(fx, "nsupd", 2, first_row);
-    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+    const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
 
     INFO("updating no rows is not a refusal, whatever the oid");
     {
@@ -525,7 +525,7 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
     fixture fx;
     int64_t first_row = 0;
     const auto table_oid = make_one_column_table(fx, "nsscan", 0, first_row);
-    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+    const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
 
     INFO("an OPEN over a real but EMPTY table drains, and that is a SUCCESS");
     {
@@ -559,7 +559,7 @@ TEST_CASE("services::disk::error::storage_types_refusal_is_not_an_empty_schema")
     fixture fx;
     int64_t first_row = 0;
     const auto table_oid = make_one_column_table(fx, "nstypes", 0, first_row);
-    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+    const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
 
     INFO("a real storage answers with its schema");
     {
@@ -579,7 +579,7 @@ TEST_CASE("services::disk::error::total_rows_refusal_is_not_a_zero_count") {
     fixture fx;
     int64_t first_row = 0;
     const auto table_oid = make_one_column_table(fx, "nsrows", 0, first_row);
-    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+    const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
 
     INFO("a real EMPTY table counts zero rows, and that is a SUCCESS");
     {
@@ -783,7 +783,7 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
                   cols,
                   /*is_computed=*/false)
             .has_error());
-    const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
+    const catalog::oid_t nowhere{static_cast<unsigned>(table_oid) + 4242};
 
     services::disk::reset_publish_revert_misses();
 

@@ -542,7 +542,7 @@ namespace host_actor {
             }
             disk::update_receipt_t reply{start_receipt(),
                                          std::pmr::vector<components::vector::data_chunk_t>{resource_},
-                                         std::pmr::vector<std::uint32_t>{resource_}};
+                                         std::pmr::vector<components::catalog::oid_t>{resource_}};
             std::size_t rows = 0;
             for (const auto& chunk : data) {
                 rows += chunk.size();
@@ -664,7 +664,7 @@ namespace host_actor {
                 const std::size_t count = std::max<std::size_t>(parameters_rows_, 1);
                 components::vector::data_chunk_t rows(resource_, types, count);
                 for (std::size_t i = 0; i < count; ++i) {
-                    rows.set_value(0, i, static_cast<int64_t>(oid));
+                    rows.set_value(0, i, static_cast<int64_t>(static_cast<unsigned>(oid)));
                     rows.set_value(1, i, std::string_view{table.name});
                 }
                 rows.set_cardinality(count);
@@ -696,7 +696,7 @@ namespace host_actor {
                 oid_calls_.push_back(oid_call_t{"drop", oids[i], components::catalog::INVALID_OID});
                 remember(ctx, undo_t{undo_t::kind_t::dropped, oids[i], {}, 0, *found});
                 tables_.erase(found);
-                dropped.push_back(static_cast<int64_t>(oids[i]));
+                dropped.push_back(static_cast<int64_t>(static_cast<unsigned>(oids[i])));
             }
             if (parameters_table_ != components::catalog::INVALID_OID) {
                 reply.rows.table = parameters_table_;
@@ -1696,7 +1696,8 @@ namespace host_actor {
         core::error_t missing(components::catalog::oid_t oid) const {
             return core::error_t{
                 core::error_code_t::table_not_exists,
-                std::pmr::string{"the test backend has no table of oid " + std::to_string(oid), resource_}};
+                std::pmr::string{"the test backend has no table of oid " + std::to_string(static_cast<unsigned>(oid)),
+                                 resource_}};
         }
         core::error_t refusal_of(const std::string& name) const {
             if (auto found = unreachable_.find(name); found != unreachable_.end()) {

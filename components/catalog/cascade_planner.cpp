@@ -8,7 +8,8 @@ namespace components::catalog {
 
     namespace {
         constexpr std::uint64_t object_key(oid_t cls, oid_t oid) noexcept {
-            return (static_cast<std::uint64_t>(cls) << 32) | static_cast<std::uint64_t>(oid);
+            return (static_cast<std::uint64_t>(static_cast<unsigned>(cls)) << 32) |
+                   static_cast<std::uint64_t>(static_cast<unsigned>(oid));
         }
 
         struct reached_t {
@@ -90,10 +91,21 @@ namespace components::catalog {
         std::pmr::string msg{"cannot drop ", resource};
         msg.append(target);
         msg.append(" because other objects depend on it\nDETAIL: object with oid ");
-        msg.append(std::to_string(blocking_oid));
+        msg.append(std::to_string(static_cast<unsigned>(blocking_oid)));
         msg.append(" depends on ");
         msg.append(target);
         msg.append("\nHINT: Use DROP ... CASCADE to drop the dependent objects too.");
+        return core::error_t{core::error_code_t::dependent_objects_still_exist, std::move(msg)};
+    }
+
+    core::error_t internal_part_error(std::pmr::memory_resource* resource, std::string_view target, oid_t owner_oid) {
+        std::pmr::string msg{"cannot drop ", resource};
+        msg.append(target);
+        msg.append(" because object with oid ");
+        msg.append(std::to_string(static_cast<unsigned>(owner_oid)));
+        msg.append(" requires it\nHINT: You can drop object with oid ");
+        msg.append(std::to_string(static_cast<unsigned>(owner_oid)));
+        msg.append(" instead.");
         return core::error_t{core::error_code_t::dependent_objects_still_exist, std::move(msg)};
     }
 

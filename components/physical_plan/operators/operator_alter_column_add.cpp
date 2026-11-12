@@ -97,7 +97,7 @@ namespace components::operators {
 
         // The planner gave the column its attoid with the statement's oid batch (a backend's add_storage_column
         // gets it before the row is written).
-        const auto attoid = static_cast<catalog::oid_t>(column_.attoid());
+        const auto attoid = column_.attoid();
         if (attoid == catalog::INVALID_OID) [[unlikely]] {
             std::fprintf(stderr, "operator_alter_column_add: column %s has no attoid\n", column_.name().c_str());
             assert(false && "operator_alter_column_add: the planner's oid allocation was skipped");
@@ -115,9 +115,8 @@ namespace components::operators {
                 co_return;
             }
         }
-        const catalog::oid_t atttypid = (column_.atttypid() != catalog::INVALID_OID)
-                                            ? column_.atttypid()
-                                            : catalog::builtin_type_to_oid(column_.type().type());
+        const auto att_type = catalog::pg_attribute_type_of(column_.type(), column_.atttypid());
+        const catalog::oid_t atttypid = att_type.atttypid;
         // commit_id columns are placeholder-0; a backfill marker (below) patches
         // them post-commit, since the commit_id isn't allocated until COMMIT
         // (see pg_catalog_swap.hpp). The row's own MVCC insert_id is still the
@@ -126,7 +125,7 @@ namespace components::operators {
                                                        attoid,
                                                        table_oid_,
                                                        std::string(column_.name()),
-                                                       atttypid,
+                                                       att_type,
                                                        next_attnum,
                                                        column_.is_not_null(),
                                                        column_.has_default_value(),
@@ -186,8 +185,8 @@ namespace components::operators {
                                                       column_.type(),
                                                       column_.is_not_null(),
                                                       std::move(stored_default)};
-        stored.set_attoid(static_cast<std::uint32_t>(attoid));
-        stored.set_atttypid(static_cast<std::uint32_t>(atttypid));
+        stored.set_attoid(attoid);
+        stored.set_atttypid(atttypid);
         components::execution_context_t add_ctx{ctx->session,
                                                 ctx->txn,
                                                 ctx->execution_context.timezone_offset,

@@ -174,6 +174,7 @@ namespace components::vector::arrow {
                 initialize_appender_templated<appender::arrow_scala_data<uint16_t>>(append_data);
                 return core::error_t::no_error();
             case logical_type::UINTEGER:
+            case logical_type::OID:
                 initialize_appender_templated<appender::arrow_scala_data<uint32_t>>(append_data);
                 return core::error_t::no_error();
             case logical_type::UBIGINT:

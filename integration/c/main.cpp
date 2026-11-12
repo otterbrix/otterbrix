@@ -205,7 +205,7 @@ extern "C" bool cursor_created_oid(cursor_ptr ptr, uint32_t* oid) noexcept {
     if (created == components::catalog::INVALID_OID) {
         return false;
     }
-    *oid = created;
+    *oid = static_cast<unsigned>(created);
     return true;
 }
 

@@ -192,7 +192,7 @@ namespace components::compute {
     // of a statement; an unscoped call reaches the built-ins only.
     struct function_scope_t {
         bool builtins{true};
-        std::uint32_t schema_oid{0};
+        types::oid_t schema_oid{};
     };
     namespace detail {
         template<typename KernelType>
@@ -377,11 +377,11 @@ namespace components::compute {
         // invalid_function_uid when there is none.
         [[nodiscard]] function_uid find_overload(std::string_view name,
                                                  const std::pmr::vector<types::complex_logical_type>& inputs,
-                                                 std::uint32_t schema_oid) const;
+                                                 types::oid_t schema_oid) const;
 
         // The schema (pg_namespace oid) a user function was registered in; 0 for a built-in.
-        void set_schema(function_uid uid, std::uint32_t schema_oid);
-        [[nodiscard]] std::uint32_t schema_of(function_uid uid) const noexcept;
+        void set_schema(function_uid uid, types::oid_t schema_oid);
+        [[nodiscard]] types::oid_t schema_of(function_uid uid) const noexcept;
         // Whether `scope` reaches the function `uid`.
         [[nodiscard]] bool reaches(const function_scope_t& scope, function_uid uid) const noexcept;
 
@@ -397,7 +397,7 @@ namespace components::compute {
 
         std::pmr::memory_resource* resource_;
         std::pmr::unordered_map<function_uid, function_ptr> functions_;
-        std::pmr::unordered_map<function_uid, std::uint32_t> schemas_;
+        std::pmr::unordered_map<function_uid, types::oid_t> schemas_;
         function_uid current_uid_{0};
         core::error_t builtin_error_{core::error_t::no_error()};
     };

@@ -44,7 +44,7 @@ namespace {
     using data_chunk_t = components::vector::data_chunk_t;
 
     constexpr auto kMainDb = catalog::well_known_oid::main_database;
-    constexpr catalog::oid_t kTestTableOid = 16700;
+    constexpr catalog::oid_t kTestTableOid{16700};
 
     std::filesystem::path base_path() {
         static std::filesystem::path p =
@@ -471,7 +471,8 @@ TEST_CASE("wal::refusal::an_add_column_whose_attoids_do_not_match_its_columns_is
         auto send_add_column = [&](uint64_t txn_id, size_t attoid_count) {
             column_attoids_t attoids(&env.resource_);
             for (size_t i = 0; i < attoid_count; i++) {
-                attoids.push_back(catalog::FIRST_USER_OID + 100 + static_cast<catalog::oid_t>(i));
+                attoids.push_back(catalog::oid_t{static_cast<unsigned>(catalog::FIRST_USER_OID) + 100 +
+                                                 static_cast<std::uint32_t>(i)});
             }
             auto [ns, fut] = actor_zeta::otterbrix::send(env.manager_->address(),
                                                          &manager_wal_replicate_t::write_physical_add_column,

@@ -106,7 +106,9 @@ namespace disk_test_helpers {
                                      const std::vector<components::table::column_definition_t>& cols,
                                      char relkind_char = catalog::relkind::regular,
                                      std::vector<components::table::column_definition_t>* stamped_out = nullptr) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + cols.size()});
+        // A table's row type and its array type take two oids more.
+        const std::size_t row_type_oids = relkind_char == catalog::relkind::regular ? 2 : 0;
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + row_type_oids + cols.size()});
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
@@ -196,7 +198,7 @@ namespace disk_test_helpers {
         for (std::size_t i = 0; i < col_attoids.size(); ++i) {
             if (i)
                 indkey += ',';
-            indkey += std::to_string(col_attoids[i]);
+            indkey += std::to_string(static_cast<unsigned>(col_attoids[i]));
         }
         auto valid_row =
             catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true, catalog::indtype::single);
@@ -220,11 +222,18 @@ namespace disk_test_helpers {
     }
 
     template<typename Fx>
-    catalog::oid_t
-    test_create_type(Fx& fx, catalog::oid_t ns_oid, const std::string& type_name, const std::string& type_spec = "") {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    catalog::oid_t test_create_type(Fx& fx, catalog::oid_t ns_oid, const std::string& type_name) {
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
         const catalog::oid_t type_oid = oids[0];
-        auto writes = catalog::build_create_type_writes(&fx.resource, type_name, ns_oid, type_oid, type_spec);
+        auto writes =
+            catalog::build_create_type_writes(&fx.resource,
+                                              type_name,
+                                              ns_oid,
+                                              type_oid,
+                                              components::types::complex_logical_type::create_enum(type_name, {}),
+                                              catalog::INVALID_OID,
+                                              oids[1],
+                                              {});
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -266,13 +275,18 @@ namespace disk_test_helpers {
     template<typename Fx>
     catalog::oid_t
     test_create_view(Fx& fx, catalog::oid_t ns_oid, const std::string& name, const std::string& body_sql = "") {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{4});
         const catalog::oid_t view_oid = oids[0];
         const catalog::oid_t rule_oid = oids[1];
         // Catalog rows only: no output columns, bindings or dependencies.
         catalog::oid_batch_t no_columns;
         std::vector<catalog::catalog_write_t> writes;
-        writes.push_back(catalog::build_view_class_row(&fx.resource, view_oid, name, ns_oid, catalog::relkind::view));
+        writes.push_back(
+            catalog::build_view_class_row(&fx.resource, view_oid, name, ns_oid, catalog::relkind::view, oids[2]));
+        auto row_type_writes = catalog::build_row_type_writes(&fx.resource, name, ns_oid, view_oid, oids[2], oids[3]);
+        writes.insert(writes.end(),
+                      std::make_move_iterator(row_type_writes.begin()),
+                      std::make_move_iterator(row_type_writes.end()));
         auto body_writes = catalog::build_view_body_writes(&fx.resource,
                                                            view_oid,
                                                            {},
@@ -514,10 +528,8 @@ namespace disk_test_helpers {
                 const auto v = chunk.data[5].template get_value<std::int64_t>(i);
                 if (v > max_version) {
                     max_version = v;
-                    latest_atttypid =
-                        chunk.is_null(3, i)
-                            ? catalog::INVALID_OID
-                            : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                    latest_atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
+                                                          : chunk.data[3].template get_value<catalog::oid_t>(i);
                 }
             }
         }
@@ -585,13 +597,10 @@ namespace disk_test_helpers {
                     continue;
                 if (v > max_version) {
                     max_version = v;
-                    live_attoid = chunk.is_null(1, i)
-                                      ? catalog::INVALID_OID
-                                      : static_cast<catalog::oid_t>(chunk.data[1].template get_value<std::uint32_t>(i));
-                    live_atttypid =
-                        chunk.is_null(3, i)
-                            ? catalog::INVALID_OID
-                            : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                    live_attoid = chunk.is_null(1, i) ? catalog::INVALID_OID
+                                                      : chunk.data[1].template get_value<catalog::oid_t>(i);
+                    live_atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
+                                                        : chunk.data[3].template get_value<catalog::oid_t>(i);
                     found_live = true;
                 }
             }
@@ -629,7 +638,7 @@ namespace disk_test_helpers {
                                                    attoid,
                                                    table_oid,
                                                    col_name,
-                                                   catalog::INVALID_OID,
+                                                   catalog::pg_attribute_type_t{},
                                                    attnum,
                                                    false,
                                                    false,

@@ -20,25 +20,28 @@ namespace {
 
         const otterbrix::session_id_t session;
 
-        std::uint32_t one_oid(const std::string& sql) {
+        components::catalog::oid_t one_oid(const std::string& sql) {
             const auto found = oids(session, sql);
             INFO(sql);
             REQUIRE(found.size() == 1);
             return found.front();
         }
 
-        std::uint32_t database_oid(const std::string& name) {
+        components::catalog::oid_t database_oid(const std::string& name) {
             return one_oid("SELECT oid FROM pg_catalog.pg_database WHERE datname = '" + name + "';");
         }
 
-        std::uint32_t schema_oid(const std::string& database, const std::string& schema) {
+        components::catalog::oid_t schema_oid(const std::string& database, const std::string& schema) {
             return one_oid("SELECT oid FROM pg_catalog.pg_namespace WHERE nspdatabase = " +
-                           std::to_string(database_oid(database)) + " AND nspname = '" + schema + "';");
+                           std::to_string(static_cast<unsigned>(database_oid(database))) + " AND nspname = '" + schema +
+                           "';");
         }
 
-        std::uint32_t relation_oid(const std::string& database, const std::string& schema, const std::string& rel) {
+        components::catalog::oid_t
+        relation_oid(const std::string& database, const std::string& schema, const std::string& rel) {
             return one_oid("SELECT oid FROM pg_catalog.pg_class WHERE relnamespace = " +
-                           std::to_string(schema_oid(database, schema)) + " AND relname = '" + rel + "';");
+                           std::to_string(static_cast<unsigned>(schema_oid(database, schema))) + " AND relname = '" +
+                           rel + "';");
         }
     };
 
@@ -146,7 +149,9 @@ TEST_CASE("integration::cpp::schema_level::drop_database_drops_its_schemas") {
     const auto d2 = db.database_oid("d2");
     db.ok(db.session, "DROP DATABASE d2;");
     check_missing_relation(db, "SELECT a FROM d2.public.t;", "d2.public.t");
-    CHECK(db.oids(db.session, "SELECT oid FROM pg_catalog.pg_namespace WHERE nspdatabase = " + std::to_string(d2) + ";")
+    CHECK(db.oids(db.session,
+                  "SELECT oid FROM pg_catalog.pg_namespace WHERE nspdatabase = " +
+                      std::to_string(static_cast<unsigned>(d2)) + ";")
               .empty());
     CHECK(db.strings(db.session, "SELECT datname FROM pg_catalog.pg_database WHERE datname = 'd2';").empty());
     CHECK(db.ints(db.session, "SELECT a FROM s.t;") == std::vector<std::int64_t>{1});
@@ -177,11 +182,12 @@ TEST_CASE("integration::cpp::schema_level::a_view_reads_another_database") {
     const auto view = db.relation_oid("main", "s", "v");
     const auto table = db.relation_oid("d2", "public", "t");
     CHECK(db.strings(db.session,
-                     "SELECT refkind FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + std::to_string(view) + ";") ==
-          std::vector<std::string>{"r"});
+                     "SELECT refkind FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " +
+                         std::to_string(static_cast<unsigned>(view)) + ";") == std::vector<std::string>{"r"});
     CHECK(db.oids(db.session,
-                  "SELECT refobjid FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + std::to_string(view) + ";") ==
-          std::vector<std::uint32_t>{table});
+                  "SELECT refobjid FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " +
+                      std::to_string(static_cast<unsigned>(view)) + ";") ==
+          std::vector<components::catalog::oid_t>{table});
 }
 
 TEST_CASE("integration::cpp::schema_level::names_and_oids_survive_a_restart") {
@@ -203,16 +209,16 @@ TEST_CASE("integration::cpp::schema_level::names_and_oids_survive_a_restart") {
     CHECK(db.ints(db.session, "SELECT a FROM main.s.t;") == std::vector<std::int64_t>{1});
 }
 
-// Fails on main too: bootstrap writes a system table's pg_attribute.attoid as relation_oid * 100 + attnum, while
-// system_column_attoids numbers every system column in a row from FIRST_SYSTEM_ATTOID. Old bug, fixed elsewhere.
-TEST_CASE("integration::cpp::schema_level::system_column_oids_agree", "[!shouldfail]") {
+// A system table's pg_attribute.attoid is the attoid its storage numbers the column by.
+TEST_CASE("integration::cpp::schema_level::system_column_oids_agree") {
     fixture_t db("r1_13");
     auto resource = core::pmr::otterbrix_resource();
-    const auto expected =
-        components::catalog::system_column_attoids(&resource, components::catalog::well_known_oid::pg_namespace_table);
-    const auto stored =
-        db.oids(db.session, "SELECT attoid FROM pg_catalog.pg_attribute WHERE attrelid = 10 ORDER BY attnum;");
-    CHECK(stored == std::vector<std::uint32_t>(expected.begin(), expected.end()));
+    constexpr auto pg_namespace = components::catalog::well_known_oid::pg_namespace_table;
+    const auto expected = components::catalog::system_column_attoids(&resource, pg_namespace);
+    const auto stored = db.oids(db.session,
+                                "SELECT attoid FROM pg_catalog.pg_attribute WHERE attrelid = " +
+                                    std::to_string(static_cast<unsigned>(pg_namespace)) + " ORDER BY attnum;");
+    CHECK(stored == std::vector<components::catalog::oid_t>(expected.begin(), expected.end()));
 }
 
 TEST_CASE("integration::cpp::schema_level::a_foreign_key_does_not_cross_databases") {

@@ -23,7 +23,7 @@ namespace components::operators {
                                   std::string function_name,
                                   std::pmr::vector<types::complex_logical_type> inputs,
                                   components::catalog::drop_behavior_t behavior,
-                                  std::uint32_t schema_oid);
+                                  components::catalog::oid_t schema_oid);
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -33,7 +33,7 @@ namespace components::operators {
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
         components::catalog::drop_behavior_t behavior_;
-        std::uint32_t schema_oid_;
+        components::catalog::oid_t schema_oid_;
     };
 
 } // namespace components::operators

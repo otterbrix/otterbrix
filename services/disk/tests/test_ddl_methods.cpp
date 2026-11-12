@@ -345,11 +345,11 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
                     if (rc > 0) {
                         ++rows_b_live;
                         b_live_v = v;
-                        observed_b_live_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                        observed_b_live_attoid = chunk.get_value<catalog::oid_t>(1, i);
                     } else {
                         ++rows_b_tomb;
                         b_tomb_v = v;
-                        observed_b_tomb_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                        observed_b_tomb_attoid = chunk.get_value<catalog::oid_t>(1, i);
                     }
                 }
             }
@@ -443,7 +443,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                 const auto rc = chunk.get_value<std::int64_t>(6, i);
                 if (rc <= 0) {
-                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)));
+                    dead_attoids.push_back(chunk.get_value<catalog::oid_t>(1, i));
                 }
             }
         }
@@ -563,7 +563,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.get_value<std::int64_t>(6, i) <= 0) {
-                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)));
+                    dead_attoids.push_back(chunk.get_value<catalog::oid_t>(1, i));
                 }
             }
         }
@@ -605,7 +605,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     }
 
     {
-        const catalog::oid_t missing_oid{FIRST_USER_OID + 9999};
+        const catalog::oid_t missing_oid{static_cast<unsigned>(FIRST_USER_OID) + 9999};
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), missing_oid, std::move(live));
         REQUIRE_FALSE(dropped.has_error());
@@ -966,13 +966,13 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_when_the_owner_has_no_sto
     }
     components::vector::data_chunk_t row(&fx.resource, types, 1);
     row.set_cardinality(1);
-    row.set_value(0, 0, static_cast<std::uint32_t>(FIRST_USER_OID + 900));
+    row.set_value(0, 0, catalog::oid_t{static_cast<unsigned>(FIRST_USER_OID) + 900});
     row.set_value(1, 0, std::string_view("nowhere"));
-    row.set_value(2, 0, static_cast<std::uint32_t>(FIRST_USER_OID + 1));
+    row.set_value(2, 0, catalog::oid_t{static_cast<unsigned>(FIRST_USER_OID) + 1});
     row.set_value(3, 0, std::string_view("r"));
     row.set_value(4, 0, std::string_view("d"));
 
-    const catalog::oid_t nowhere = FIRST_USER_OID + 4242;
+    const catalog::oid_t nowhere{static_cast<unsigned>(FIRST_USER_OID) + 4242};
     auto refused = fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.ctx(), nowhere, std::move(row));
     REQUIRE(refused.has_error());
     CHECK(refused.error().type == core::error_code_t::io_error);
@@ -1000,13 +1000,13 @@ TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_ra
     for (const auto& c : def->columns) {
         types.push_back(c.type());
     }
-    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 777;
+    constexpr catalog::oid_t probe_oid{static_cast<unsigned>(FIRST_USER_OID) + 777};
     types[0] = components::types::complex_logical_type{components::types::logical_type::DOUBLE};
     components::vector::data_chunk_t row(&fx.resource, types, 1);
     row.set_cardinality(1);
-    row.set_value(0, 0, static_cast<double>(probe_oid));
+    row.set_value(0, 0, static_cast<double>(static_cast<unsigned>(probe_oid)));
     row.set_value(1, 0, std::string_view("cast_probe"));
-    row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+    row.set_value(2, 0, ns_oid);
     row.set_value(3, 0, std::string_view("r"));
     row.set_value(4, 0, std::string_view("d"));
 
@@ -1033,13 +1033,13 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_string_cell_for_a_numer
     for (const auto& c : def->columns) {
         types.push_back(c.type());
     }
-    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 778;
+    constexpr catalog::oid_t probe_oid{static_cast<unsigned>(FIRST_USER_OID) + 778};
     types[0] = components::types::complex_logical_type{components::types::logical_type::TEXT};
     components::vector::data_chunk_t row(&fx.resource, types, 1);
     row.set_cardinality(1);
     row.set_value(0, 0, std::string_view(std::to_string(static_cast<unsigned>(probe_oid))));
     row.set_value(1, 0, std::string_view("str_cast_probe"));
-    row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+    row.set_value(2, 0, ns_oid);
     row.set_value(3, 0, std::string_view("r"));
     row.set_value(4, 0, std::string_view("d"));
 
@@ -1068,9 +1068,9 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_numeric_cell_that_does_
     types[0] = components::types::complex_logical_type{components::types::logical_type::UBIGINT};
     components::vector::data_chunk_t row(&fx.resource, types, 1);
     row.set_cardinality(1);
-    row.set_value(0, 0, (std::uint64_t{1} << 32) + std::uint64_t{FIRST_USER_OID + 779});
+    row.set_value(0, 0, (std::uint64_t{1} << 32) + std::uint64_t{static_cast<unsigned>(FIRST_USER_OID) + 779});
     row.set_value(1, 0, std::string_view("range_probe"));
-    row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+    row.set_value(2, 0, ns_oid);
     row.set_value(3, 0, std::string_view("r"));
     row.set_value(4, 0, std::string_view("d"));
 
@@ -1090,8 +1090,8 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_numeric_cell_that_does_
 TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_storage") {
     fixture fx;
 
-    const catalog::oid_t nowhere = FIRST_USER_OID + 4243;
-    const catalog::oid_t grown_attoid = FIRST_USER_OID + 4244;
+    const catalog::oid_t nowhere{static_cast<unsigned>(FIRST_USER_OID) + 4243};
+    const catalog::oid_t grown_attoid{static_cast<unsigned>(FIRST_USER_OID) + 4244};
     std::pmr::vector<std::int64_t> ids(&fx.resource);
     ids.push_back(0);
     const std::pmr::vector<catalog::oid_t> one_attoid({grown_attoid}, &fx.resource);

@@ -27,28 +27,28 @@ namespace components::logical_plan {
         boost::hash_combine(hash_value, if_exists_);
         switch (kind_) {
             case drop_target_kind::database:
-                boost::hash_combine(hash_value, static_cast<hash_t>(database_oid_));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(database_oid_)));
                 break;
             case drop_target_kind::schema:
-                boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(namespace_oid_)));
                 break;
             case drop_target_kind::collection:
-                boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));
-                boost::hash_combine(hash_value, static_cast<hash_t>(table_oid()));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(namespace_oid_)));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(table_oid())));
                 break;
             case drop_target_kind::type:
-                boost::hash_combine(hash_value, static_cast<hash_t>(type_oid_));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(type_oid_)));
                 break;
             case drop_target_kind::sequence:
             case drop_target_kind::view:
             case drop_target_kind::materialized_view:
             case drop_target_kind::macro:
-                boost::hash_combine(hash_value, static_cast<hash_t>(table_oid()));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(table_oid())));
                 break;
             case drop_target_kind::index:
-                boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));
-                boost::hash_combine(hash_value, static_cast<hash_t>(index_oid_));
-                boost::hash_combine(hash_value, static_cast<hash_t>(table_oid()));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(namespace_oid_)));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(index_oid_)));
+                boost::hash_combine(hash_value, static_cast<hash_t>(static_cast<unsigned>(table_oid())));
                 break;
         }
         return hash_value;
@@ -58,31 +58,31 @@ namespace components::logical_plan {
         std::stringstream stream;
         switch (kind_) {
             case drop_target_kind::database:
-                stream << "$drop_database: <oid:" << static_cast<std::uint64_t>(database_oid_) << ">";
+                stream << "$drop_database: <oid:" << static_cast<unsigned>(database_oid_) << ">";
                 break;
             case drop_target_kind::schema:
-                stream << "$drop_schema: <oid:" << static_cast<std::uint64_t>(namespace_oid_) << ">";
+                stream << "$drop_schema: <oid:" << static_cast<unsigned>(namespace_oid_) << ">";
                 break;
             case drop_target_kind::collection:
-                stream << "$drop_collection: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+                stream << "$drop_collection: <oid:" << static_cast<unsigned>(table_oid()) << ">";
                 break;
             case drop_target_kind::type:
-                stream << "$drop_type: <oid:" << static_cast<std::uint64_t>(type_oid_) << ">";
+                stream << "$drop_type: <oid:" << static_cast<unsigned>(type_oid_) << ">";
                 break;
             case drop_target_kind::sequence:
-                stream << "$drop_sequence: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+                stream << "$drop_sequence: <oid:" << static_cast<unsigned>(table_oid()) << ">";
                 break;
             case drop_target_kind::view:
-                stream << "$drop_view: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+                stream << "$drop_view: <oid:" << static_cast<unsigned>(table_oid()) << ">";
                 break;
             case drop_target_kind::materialized_view:
-                stream << "$drop_materialized_view: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+                stream << "$drop_materialized_view: <oid:" << static_cast<unsigned>(table_oid()) << ">";
                 break;
             case drop_target_kind::macro:
-                stream << "$drop_macro: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+                stream << "$drop_macro: <oid:" << static_cast<unsigned>(table_oid()) << ">";
                 break;
             case drop_target_kind::index:
-                stream << "$drop_index: <oid:" << static_cast<std::uint64_t>(index_oid_) << ">";
+                stream << "$drop_index: <oid:" << static_cast<unsigned>(index_oid_) << ">";
                 break;
         }
         return stream.str();

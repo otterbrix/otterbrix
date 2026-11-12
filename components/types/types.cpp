@@ -23,6 +23,7 @@ namespace components::types {
             t[uint8_t(logical_type::ENUM)] = physical_type::INT32;
             t[uint8_t(logical_type::INTEGER)] = physical_type::INT32;
             t[uint8_t(logical_type::UINTEGER)] = physical_type::UINT32;
+            t[uint8_t(logical_type::OID)] = physical_type::UINT32;
             t[uint8_t(logical_type::BIGINT)] = physical_type::INT64;
             t[uint8_t(logical_type::DATE)] = physical_type::INT32;
             t[uint8_t(logical_type::TIME)] = physical_type::INT64;

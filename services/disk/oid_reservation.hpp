@@ -8,7 +8,8 @@
 
 namespace services::disk {
 
-    inline constexpr components::catalog::oid_t OID_RESERVATION_BLOCK = 8192;
+    // How many oids one reservation hands out.
+    inline constexpr std::uint32_t OID_RESERVATION_BLOCK = 8192;
 
     std::filesystem::path oid_reservation_path(const std::filesystem::path& db_path);
 

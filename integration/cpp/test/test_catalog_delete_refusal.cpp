@@ -62,16 +62,16 @@ namespace {
         REQUIRE(cur->is_success());
         for (const auto& chunk : cur->chunks()) {
             if (chunk.size() != 0) {
-                return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
+                return chunk.get_value<catalog::oid_t>(0, 0);
             }
         }
         return catalog::INVALID_OID;
     }
 
     std::size_t pg_index_rows_for(otterbrix::wrapper_dispatcher_t* dispatcher, catalog::oid_t index_oid) {
-        auto cur = test_helpers::exec(
-            dispatcher,
-            "SELECT indexrelid FROM pg_catalog.pg_index WHERE indexrelid = " + std::to_string(index_oid) + ";");
+        auto cur = test_helpers::exec(dispatcher,
+                                      "SELECT indexrelid FROM pg_catalog.pg_index WHERE indexrelid = " +
+                                          std::to_string(static_cast<unsigned>(index_oid)) + ";");
         REQUIRE(cur->is_success());
         return cur->size();
     }
@@ -90,7 +90,8 @@ namespace {
         auto cur = test_helpers::exec(dispatcher,
                                       "SELECT attisdropped, added_at_commit_id, dropped_at_commit_id FROM "
                                       "pg_catalog.pg_attribute WHERE attrelid = " +
-                                          std::to_string(table_oid) + " AND attname = '" + std::string(attname) + "';");
+                                          std::to_string(static_cast<unsigned>(table_oid)) + " AND attname = '" +
+                                          std::string(attname) + "';");
         REQUIRE(cur->is_success());
         column_rows_t out{};
         for (const auto& chunk : cur->chunks()) {

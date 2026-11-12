@@ -213,7 +213,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_
                                                  "uq_stale_code",
                                                  components::logical_plan::constraint_kind::unique,
                                                  {"code"},
-                                                 {900001});
+                                                 {components::catalog::oid_t{900001}});
         INFO("planting result: " << (stale->is_error() ? stale->get_error().what : "accepted"));
         REQUIRE(stale->is_success());
     }

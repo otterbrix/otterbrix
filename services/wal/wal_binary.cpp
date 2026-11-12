@@ -57,7 +57,7 @@ namespace services::wal {
             write_le32(ptr, static_cast<uint32_t>(attoids.size()));
             ptr += 4;
             for (const auto attoid : attoids) {
-                write_le32(ptr, attoid);
+                write_le32(ptr, static_cast<uint32_t>(attoid));
                 ptr += 4;
             }
         }
@@ -73,7 +73,7 @@ namespace services::wal {
             }
             attoids->resize(count);
             for (uint32_t index = 0; index < count; ++index) {
-                (*attoids)[index] = read_le32(payload + 4 + index * 4);
+                (*attoids)[index] = components::catalog::oid_t{read_le32(payload + 4 + index * 4)};
             }
             return 4 + count * 4;
         }
@@ -445,7 +445,7 @@ namespace services::wal {
             return rec;
         }
 
-        rec.table_oid = static_cast<components::catalog::oid_t>(read_le32(ptr));
+        rec.table_oid = components::catalog::oid_t{read_le32(ptr)};
         ptr += 4;
         rec.sub_id = read_le64(ptr);
         ptr += 8;

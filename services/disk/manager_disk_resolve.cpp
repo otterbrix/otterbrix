@@ -84,10 +84,10 @@ namespace services::disk {
                 if (chunk.is_null(1, i) || chunk.is_null(2, i)) {
                     continue;
                 }
-                const auto castsource = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                const auto casttarget = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
+                const auto castsource = chunk.get_value<components::catalog::oid_t>(1, i);
+                const auto casttarget = chunk.get_value<components::catalog::oid_t>(2, i);
                 if (castsource == source_oid && casttarget == target_oid) {
-                    co_return static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    co_return chunk.get_value<components::catalog::oid_t>(0, i);
                 }
             }
         }
@@ -103,7 +103,7 @@ namespace services::disk {
         for (std::size_t i = 0; i < count; ++i) {
             const auto oid = oid_gen_.allocate();
             if (oid >= oid_reserved_until_) {
-                components::catalog::oid_t bound = oid + OID_RESERVATION_BLOCK;
+                const components::catalog::oid_t bound{static_cast<unsigned>(oid) + OID_RESERVATION_BLOCK};
                 if (auto persisted = persist_oid_reservation(resource(), config_.path, bound);
                     persisted.contains_error()) {
                     error(log_, "manager_disk_t::allocate_oids_batch: no oid is handed out: {}", persisted.what);

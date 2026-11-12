@@ -146,6 +146,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_decorrelation.cpp
         test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp
+        test_oid_type.cpp
         test_alter_add_column_reads.cpp
         test_alter_add_column_types.cpp
         test_typed_null_without_storage.cpp

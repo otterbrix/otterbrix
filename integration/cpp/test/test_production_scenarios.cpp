@@ -820,7 +820,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
             } catch (...) {
                 continue;
             }
-            if (db_oid < components::catalog::FIRST_USER_OID)
+            if (db_oid < static_cast<unsigned>(components::catalog::FIRST_USER_OID))
                 continue;
             for (const auto& tbl_dir : std::filesystem::directory_iterator(db_dir.path())) {
                 if (!tbl_dir.is_directory())

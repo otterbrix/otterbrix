@@ -52,15 +52,15 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
     columns.emplace_back("name", components::types::complex_logical_type(components::types::logical_type::TEXT));
 
     oid_batch_t oids;
-    for (oid_t i = 0; i < 64; ++i) {
-        oids.oids.push_back(static_cast<oid_t>(1000 + i));
+    for (std::uint32_t i = 0; i < 64; ++i) {
+        oids.oids.push_back(oid_t{1000 + i});
     }
 
-    auto writes = build_create_table_writes(&poison, "db", "t", columns, 100, oids);
+    auto writes = build_create_table_writes(&poison, "db", "t", columns, oid_t{100}, oids);
 
     const auto* schema = find_system_table(well_known_oid::pg_attribute_table);
     REQUIRE(schema != nullptr);
-    REQUIRE(schema->columns.size() == 12);
+    REQUIRE(schema->columns.size() == 14);
 
     bool saw_pg_attribute = false;
     for (const auto& w : writes) {
@@ -76,6 +76,9 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
             // A freshly created table's columns are visible to every snapshot and not dropped.
             CHECK(w.row.get_value<std::int64_t>(pg_attribute_col::added_at_commit_id, row) == 0);
             CHECK(w.row.get_value<std::int64_t>(pg_attribute_col::dropped_at_commit_id, row) == 0);
+            // Neither column has a type modifier or an array dimension.
+            CHECK(w.row.get_value<std::int32_t>(pg_attribute_col::atttypmod, row) == -1);
+            CHECK(w.row.get_value<std::int16_t>(pg_attribute_col::attndims, row) == 0);
         }
     }
     // Positive control: if no pg_attribute chunk was produced the loop above checked nothing.
@@ -112,20 +115,20 @@ TEST_CASE("catalog::ddl::create_table_writes_relstoragemode_disk_always") {
         std::vector<components::table::column_definition_t> columns;
         columns.emplace_back("id", components::types::complex_logical_type(components::types::logical_type::BIGINT));
         oid_batch_t oids;
-        for (oid_t i = 0; i < 8; ++i) {
-            oids.oids.push_back(static_cast<oid_t>(2000 + i));
+        for (std::uint32_t i = 0; i < 8; ++i) {
+            oids.oids.push_back(oid_t{2000 + i});
         }
-        check_pg_class_mode(build_create_table_writes(&poison, "db", "t_regular", columns, 100, oids));
+        check_pg_class_mode(build_create_table_writes(&poison, "db", "t_regular", columns, oid_t{100}, oids));
     }
 
     // Schemaless computed table (relkind='g') — no columns, still 'd'.
     {
         oid_batch_t oids;
-        oids.oids.push_back(static_cast<oid_t>(3000));
+        oids.oids.push_back(oid_t{3000});
         // The builder stamps allocated attoids back onto the column list, so it takes
         // a non-const lvalue. A schemaless table has none, but the list still has to be one.
         std::vector<components::table::column_definition_t> no_columns;
         check_pg_class_mode(
-            build_create_table_writes(&poison, "db", "t_computed", no_columns, 100, oids, relkind::computed));
+            build_create_table_writes(&poison, "db", "t_computed", no_columns, oid_t{100}, oids, relkind::computed));
     }
 }

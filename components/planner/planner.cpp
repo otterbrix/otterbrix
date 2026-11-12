@@ -387,7 +387,19 @@ namespace components::planner {
             const char relkind = cv->materialized() ? catalog::relkind::materialized_view : catalog::relkind::view;
             std::vector<catalog::catalog_write_t> writes;
             if (!replacing) {
-                writes.push_back(catalog::build_view_class_row(r, view_oid, cv->viewname().t, ns_oid, relkind));
+                const catalog::oid_t row_type_oid = oid_batch.allocate();
+                const catalog::oid_t row_array_oid = oid_batch.allocate();
+                writes.push_back(
+                    catalog::build_view_class_row(r, view_oid, cv->viewname().t, ns_oid, relkind, row_type_oid));
+                auto row_type_writes = catalog::build_row_type_writes(r,
+                                                                      std::string{cv->viewname().t},
+                                                                      ns_oid,
+                                                                      view_oid,
+                                                                      row_type_oid,
+                                                                      row_array_oid);
+                writes.insert(writes.end(),
+                              std::make_move_iterator(row_type_writes.begin()),
+                              std::make_move_iterator(row_type_writes.end()));
             }
             auto body_writes = catalog::build_view_body_writes(r,
                                                                view_oid,
@@ -480,20 +492,35 @@ namespace components::planner {
                                                             target_ns,
                                                             oid_batch,
                                                             catalog::relkind::composite_type);
-                auto spec = components::catalog::encode_type_spec(ct->type());
+                const catalog::oid_t array_oid = oid_batch.allocate();
                 auto type_writes = catalog::build_create_type_writes(r,
                                                                      std::string(ct->type().type_name()),
                                                                      target_ns,
                                                                      composite_oid,
-                                                                     spec);
+                                                                     ct->type(),
+                                                                     composite_oid,
+                                                                     array_oid,
+                                                                     {});
                 for (auto& w : type_writes) writes.push_back(std::move(w));
             } else {
                 const catalog::oid_t type_oid = oid_batch.allocate();
+                const catalog::oid_t array_oid = oid_batch.allocate();
+                std::pmr::vector<catalog::oid_t> label_oids(r);
+                if (const auto* enumeration =
+                        ct->type().extension_as<components::types::enum_logical_type_extension>()) {
+                    label_oids.reserve(enumeration->entries().size());
+                    for (std::size_t i = 0; i < enumeration->entries().size(); ++i) {
+                        label_oids.push_back(oid_batch.allocate());
+                    }
+                }
                 writes = catalog::build_create_type_writes(r,
                                                            std::string(ct->type().type_name()),
                                                            target_ns,
                                                            type_oid,
-                                                           components::catalog::encode_type_spec(ct->type()));
+                                                           ct->type(),
+                                                           catalog::INVALID_OID,
+                                                           array_oid,
+                                                           label_oids);
             }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
@@ -528,7 +555,7 @@ namespace components::planner {
                     qualified_name_t{ci->target().database, ci->target().schema, core::relname_t{ci->indexname().t}}
                         .to_string());
                 msg.append(" already exists (oid ");
-                msg.append(std::to_string(static_cast<std::uint64_t>(ci->name_conflict_oid())));
+                msg.append(std::to_string(static_cast<unsigned>(ci->name_conflict_oid())));
                 msg.append("); no index was created");
                 return core::error_t{core::error_code_t::table_already_exists, std::move(msg)};
             }
@@ -653,7 +680,7 @@ namespace components::planner {
                     auto add = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::add);
                     add->set_table_oid(table_oid);
                     auto column = sub.column;
-                    column.set_attoid(static_cast<std::uint32_t>(oid_batch.allocate()));
+                    column.set_attoid(oid_batch.allocate());
                     add->set_column(std::move(column));
                     seq->append_child(add);
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
@@ -791,9 +818,13 @@ namespace components::planner {
         }
         switch (node->type()) {
             case nt::create_collection_t: {
-                // pg_class + one per column + one per child constraint (rewrite_create_table allocates one each).
+                // pg_class + one per column + one per child constraint (rewrite_create_table allocates one each),
+                // and a table's row type and its array type (a computed table, without columns, has none).
                 const auto* cc = static_cast<const logical_plan::node_create_collection_t*>(node);
                 std::size_t need = std::size_t{1} + cc->column_definitions().size();
+                if (!cc->column_definitions().empty() || !cc->target().connection.t.empty()) {
+                    need += 2;
+                }
                 for (const auto& child : cc->children()) {
                     if (child && child->type() == nt::create_constraint_t) {
                         ++need;
@@ -809,16 +840,20 @@ namespace components::planner {
             case nt::create_schema_t:
                 return 1;
             case nt::create_type_t: {
+                // The type and its array type, plus a composite's attoid per field or an enum's pg_enum oid per label.
                 const auto* ct = static_cast<const logical_plan::node_create_type_t*>(node);
-                return ct->type().type() == LT::STRUCT ? std::size_t{1} + ct->type().child_types().size()
-                                                       : std::size_t{1};
+                if (ct->type().type() == LT::STRUCT) {
+                    return std::size_t{2} + ct->type().child_types().size();
+                }
+                const auto* enumeration = ct->type().extension_as<components::types::enum_logical_type_extension>();
+                return std::size_t{2} + (enumeration != nullptr ? enumeration->entries().size() : 0);
             }
             case nt::create_sequence_t:
                 return 1;
             case nt::create_view_t: {
-                // view (unless OR REPLACE keeps it) + rule + one attoid per output column.
+                // view, its row type and array type (unless OR REPLACE keeps them) + rule + one attoid per output column.
                 const auto* cv = static_cast<const logical_plan::node_create_view_t*>(node);
-                const std::size_t view = cv->replaced_oid() == catalog::INVALID_OID ? 1 : 0;
+                const std::size_t view = cv->replaced_oid() == catalog::INVALID_OID ? 3 : 0;
                 return view + std::size_t{1} + cv->columns().size();
             }
             case nt::create_macro_t:

@@ -709,10 +709,8 @@ namespace components::operators {
                 if (chunk.is_null(depend::refclassid, row) || chunk.is_null(depend::refobjid, row)) {
                     continue;
                 }
-                const auto classid =
-                    static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(depend::refclassid, row));
-                targets[classid].push_back(
-                    static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(depend::refobjid, row)));
+                const auto classid = chunk.get_value<components::catalog::oid_t>(depend::refclassid, row);
+                targets[classid].push_back(chunk.get_value<components::catalog::oid_t>(depend::refobjid, row));
             }
         }
 

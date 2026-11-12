@@ -151,10 +151,15 @@ namespace components::operators {
         // Verified one input chunk at a time (bounded keys-chunk; gathering all batches would overflow
         // capacity). Each keys-chunk is an OWNED copy; the per-chunk scans are sequential co_awaits — no
         // lost-wakeup.
+        if (fk_.key_columns.size() != indices.size()) {
+            co_return core::error_t{
+                core::error_code_t::internal_error,
+                std::pmr::string{"FK constraint: the key columns carry no resolved types", resource_}};
+        }
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(indices.size());
-        for (auto idx : indices) {
-            key_types.push_back(in_chunks.front().data[idx].type());
+        for (const auto& column : fk_.key_columns) {
+            key_types.push_back(column.parent_type);
         }
         for (std::size_t c = 0; c < in_chunks.size(); ++c) {
             if (counts[c] == 0) {
@@ -162,12 +167,22 @@ namespace components::operators {
             }
             components::vector::data_chunk_t keys(resource_, key_types, counts[c]);
             for (std::size_t j = 0; j < indices.size(); ++j) {
-                components::vector::vector_ops::copy(in_chunks[c].data[indices[j]],
-                                                     keys.data[j],
-                                                     qualifying[c],
-                                                     counts[c],
-                                                     0,
-                                                     0);
+                const auto& written = in_chunks[c].data[indices[j]];
+                const auto& to_parent = fk_.key_columns[j].to_parent;
+                if (!to_parent) {
+                    components::vector::vector_ops::copy(written, keys.data[j], qualifying[c], counts[c], 0, 0);
+                    continue;
+                }
+                components::vector::vector_t referencing(resource_, written.type(), counts[c]);
+                components::vector::vector_ops::copy(written, referencing, qualifying[c], counts[c], 0, 0);
+                if (auto failed = to_parent(casts::cast_kind::cast,
+                                            referencing,
+                                            &keys.data[j],
+                                            ctx->execution_context,
+                                            counts[c]);
+                    failed.contains_error()) {
+                    co_return failed;
+                }
             }
             keys.set_cardinality(counts[c]);
 

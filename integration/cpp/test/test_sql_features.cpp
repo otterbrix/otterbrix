@@ -3420,6 +3420,57 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cross_logical_same_physical_k
     }
 }
 
+// An FK's two sides of different types meet through the cast registry's assignment casts: a referencing value
+// is looked up as the referenced column's, a referenced one as the referencing column's, and a referenced value
+// no referencing column can hold has no children.
+TEST_CASE("integration::cpp::test_sql_features::fk_keys_of_two_types") {
+    auto config = test_create_config(integration_fixture_path("test_sql_features/fk_keys_of_two_types"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, sql);
+        INFO(sql << " -> " << (cur->is_error() ? cur->get_error().what : "ok"));
+        return cur;
+    };
+    REQUIRE(exec("CREATE SCHEMA s;")->is_success());
+
+    SECTION("an integer key finds its bigint parent") {
+        REQUIRE(exec("CREATE TABLE s.parent (id bigint);")->is_success());
+        REQUIRE(exec("CREATE TABLE s.child (pid integer);")->is_success());
+        REQUIRE(
+            exec("ALTER TABLE s.child ADD CONSTRAINT fk FOREIGN KEY (pid) REFERENCES s.parent (id);")->is_success());
+        REQUIRE(exec("INSERT INTO s.parent (id) VALUES (1);")->is_success());
+        CHECK(exec("INSERT INTO s.child (pid) VALUES (1);")->is_success());
+        CHECK(exec("INSERT INTO s.child (pid) VALUES (2);")->is_error());
+    }
+
+    // 70000 wraps to 4464 in a smallint, and a cast that refused it would refuse the whole DELETE.
+    SECTION("a bigint key out of a smallint's range has no children") {
+        REQUIRE(exec("CREATE TABLE s.parent (id bigint);")->is_success());
+        REQUIRE(exec("CREATE TABLE s.child (pid smallint);")->is_success());
+        REQUIRE(
+            exec("ALTER TABLE s.child ADD CONSTRAINT fk FOREIGN KEY (pid) REFERENCES s.parent (id);")->is_success());
+        REQUIRE(exec("INSERT INTO s.parent (id) VALUES (4464), (70000);")->is_success());
+        REQUIRE(exec("INSERT INTO s.child (pid) VALUES (4464);")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 70000;")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 4464;")->is_error());
+    }
+
+    // 1.50 rounds to 2 in an integer.
+    SECTION("a fractional key has no integer children") {
+        REQUIRE(exec("CREATE TABLE s.parent (id numeric(5, 2));")->is_success());
+        REQUIRE(exec("CREATE TABLE s.child (pid integer);")->is_success());
+        REQUIRE(
+            exec("ALTER TABLE s.child ADD CONSTRAINT fk FOREIGN KEY (pid) REFERENCES s.parent (id);")->is_success());
+        REQUIRE(exec("INSERT INTO s.parent (id) VALUES (1.50), (2.00);")->is_success());
+        REQUIRE(exec("INSERT INTO s.child (pid) VALUES (2);")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 1.50;")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 2.00;")->is_error());
+    }
+}
+
 namespace {
     bool has_column(const components::cursor::cursor_t& cur, std::string_view name) {
         const auto& chunk = cur.chunks().front();

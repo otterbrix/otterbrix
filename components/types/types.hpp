@@ -1,5 +1,6 @@
 #pragma once
 #include "core/date/date_types.hpp"
+#include "oid.hpp"
 #include "types.hpp"
 #include <core/arithmetic_op.hpp>
 #include <core/result_wrapper.hpp>
@@ -100,6 +101,7 @@ namespace components::types {
         UINTEGER = 29,
         UBIGINT = 30,
         UHUGEINT = 31,
+        OID = 32, // PostgreSQL's object identifier: uint32 storage, comparisons only, no arithmetic
         BIT = 34,
         TEXT = 35,
         INTEGER_LITERAL = 36, // Used for constant integers
@@ -307,6 +309,8 @@ namespace components::types {
             return logical_type::INTERVAL;
         } else if constexpr (std::is_same<T, bool>::value) {
             return logical_type::BOOLEAN;
+        } else if constexpr (std::is_same<T, oid_t>::value) {
+            return logical_type::OID;
         } else if constexpr (std::is_same<T, int128_t>::value) {
             return logical_type::HUGEINT;
         } else if constexpr (std::is_same<T, uint128_t>::value) {

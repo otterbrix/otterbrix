@@ -60,7 +60,7 @@ namespace {
     }
 
     // table_oid is 4 bytes on the wire; this placeholder stands in for pg_class.oid in production.
-    constexpr components::catalog::oid_t kTestTableOid = 16500;
+    constexpr components::catalog::oid_t kTestTableOid{16500};
 
     std::pmr::vector<components::vector::data_chunk_t> to_chunk_batch(const components::vector::data_chunk_t& chunk) {
         std::pmr::vector<components::vector::data_chunk_t> batch(chunk.resource());

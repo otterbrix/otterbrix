@@ -56,6 +56,7 @@ namespace services::index {
             case logical_type::DATE:
                 return scalar.template operator()<int32_t>();
             case logical_type::UINTEGER:
+            case logical_type::OID:
                 return scalar.template operator()<uint32_t>();
             case logical_type::BIGINT:
             case logical_type::TIME:

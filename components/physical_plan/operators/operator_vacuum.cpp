@@ -123,7 +123,7 @@ namespace components::operators {
                     co_return;
                 }
                 const auto rkv = pg_class_rows.get_value<std::string_view>(3, i);
-                const auto this_oid = static_cast<catalog::oid_t>(pg_class_rows.get_value<std::uint32_t>(0, i));
+                const auto this_oid = pg_class_rows.get_value<catalog::oid_t>(0, i);
                 if (rkv.empty() || this_oid == catalog::INVALID_OID) {
                     set_error(core::error_t{
                         core::error_code_t::data_corruption,
@@ -187,7 +187,7 @@ namespace components::operators {
                         const auto rc = chunk.get_value<std::int64_t>(6, i);
                         if (rc > 0)
                             continue;
-                        dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)));
+                        dead_attoids.push_back(chunk.get_value<catalog::oid_t>(1, i));
                     }
                 }
 
@@ -214,7 +214,7 @@ namespace components::operators {
                             continue;
                         auto attname = chunk.get_value<std::string_view>(2, i);
                         auto attversion = chunk.get_value<std::int64_t>(5, i);
-                        auto attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                        auto attoid = chunk.get_value<catalog::oid_t>(1, i);
                         grouped[std::string(attname)].push_back({attoid, attversion});
                     }
                 }

@@ -444,13 +444,13 @@ namespace services::collection::executor {
             if (node->type() == node_type::dynamic_cascade_delete_t) {
                 auto* drop = static_cast<components::logical_plan::node_dynamic_cascade_delete_t*>(node);
                 bool reaches = false;
-                switch (drop->seed_classid()) {
-                    case wk::pg_type_table:
-                    case wk::pg_namespace_table:
-                    case wk::pg_database_table:
+                switch (static_cast<unsigned>(drop->seed_classid())) {
+                    case static_cast<unsigned>(wk::pg_type_table):
+                    case static_cast<unsigned>(wk::pg_namespace_table):
+                    case static_cast<unsigned>(wk::pg_database_table):
                         reaches = true;
                         break;
-                    case wk::pg_class_table: {
+                    case static_cast<unsigned>(wk::pg_class_table): {
                         const auto* table = resolves.table_md(drop->target());
                         reaches = table != nullptr && table->address.is_remote();
                         break;
@@ -1545,7 +1545,7 @@ namespace services::collection::executor {
             if (const auto* md = resolves.type_md(written)) {
                 type = md->type;
                 // The column depends on its type in pg_depend through it, as in PostgreSQL 18.
-                column.set_atttypid(static_cast<std::uint32_t>(md->type_oid));
+                column.set_atttypid(md->type_oid);
             } else {
                 type = components::types::complex_logical_type{
                     components::catalog::pg_name_to_logical_type(written.collection.t)};
@@ -2303,7 +2303,7 @@ namespace services::collection::executor {
             };
             auto visit = [&](auto& call, const components::logical_plan::node_t& owner, bool in_check) {
                 const auto& name = call.full_name();
-                components::compute::function_scope_t scope{.builtins = true, .schema_oid = 0};
+                components::compute::function_scope_t scope{.builtins = true, .schema_oid = {}};
                 if (names_a_user_schema(name)) {
                     scope.builtins = false;
                     scope.schema_oid = resolves.namespace_oid(schema_of_call(name));
@@ -3062,6 +3062,11 @@ namespace services::collection::executor {
         if (auto stale = services::catalog_resolve::refuse_stale_pins(resource(), plan.catalog_resolves);
             stale.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(stale))};
+        }
+        if (auto refused =
+                services::dispatcher::resolve_fk_key_casts(resource(), *registries.casts, plan.catalog_resolves);
+            refused.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(refused))};
         }
         // A DROP takes the objects of a connection the host's map lost from the catalog alone.
         if (auto unbound = bind_storages_(plan.catalog_resolves, original_type == node_type::drop_t);
@@ -5581,6 +5586,9 @@ namespace services::collection::executor {
                 std::pmr::vector<explain_plan_node>{resource()});
             if (resolved.cursor->is_error()) {
                 input.resolve_error = resolved.cursor->get_error();
+            } else {
+                input.resolve_error =
+                    services::dispatcher::resolve_fk_key_casts(resource(), *own_registries_().casts, resolves);
             }
         }
 

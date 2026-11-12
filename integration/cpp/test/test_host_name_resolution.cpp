@@ -56,10 +56,10 @@ namespace {
         host.db.ok(otterbrix::session_id_t(), "DROP TABLE m2.shop.public." + name + ";");
     }
 
-    std::uint32_t oid_of(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& relname) {
+    components::catalog::oid_t oid_of(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& relname) {
         auto found = run(dispatcher, "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
         REQUIRE(found->size() == 1);
-        return found->chunks().front().get_value<std::uint32_t>(0, 0);
+        return found->chunks().front().get_value<components::catalog::oid_t>(0, 0);
     }
 
     // A statement of a session whose place is m2.shop.public: a column can be qualified by the bare table name.
@@ -286,7 +286,7 @@ TEST_CASE("integration::cpp::host_names::a_view_over_a_storage_table") {
     REQUIRE(read->is_success());
     CHECK(sorted_int_rows(read) == rows_t{{1, 100}, {2, 200}, {3, 300}});
 
-    const auto view_oid = std::to_string(oid_of(dispatcher, "ov"));
+    const auto view_oid = std::to_string(static_cast<unsigned>(oid_of(dispatcher, "ov")));
     const auto orders_oid = oid_of(dispatcher, "orders");
     auto depends =
         run(dispatcher, "SELECT refclassid, refobjid FROM pg_catalog.pg_depend WHERE objid = " + view_oid + ";");
@@ -294,10 +294,10 @@ TEST_CASE("integration::cpp::host_names::a_view_over_a_storage_table") {
     bool on_schema = false;
     for (const auto& chunk : depends->chunks()) {
         for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-            const auto refclassid = chunk.get_value<std::uint32_t>(0, row);
+            const auto refclassid = chunk.get_value<components::catalog::oid_t>(0, row);
             on_schema |= refclassid == components::catalog::well_known_oid::pg_namespace_table;
             on_orders |= refclassid == components::catalog::well_known_oid::pg_class_table &&
-                         chunk.get_value<std::uint32_t>(1, row) == orders_oid;
+                         chunk.get_value<components::catalog::oid_t>(1, row) == orders_oid;
         }
     }
     CHECK(on_schema);

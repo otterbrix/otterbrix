@@ -720,11 +720,11 @@ namespace services::catalog_resolve {
         for (const auto& entry : resolves.tables->entries()) {
             if (entry.pin.kind == components::logical_plan::view_pin_t::kind_t::relation &&
                 !entry.table_md.has_value()) {
-                return components::planner::view_stale_error(resource,
-                                                             entry.pin.view.t,
-                                                             "the relation its body was bound to (\"" +
-                                                                 entry.written.collection.t + "\", oid " +
-                                                                 std::to_string(entry.pin.oid) + ") no longer exists");
+                return components::planner::view_stale_error(
+                    resource,
+                    entry.pin.view.t,
+                    "the relation its body was bound to (\"" + entry.written.collection.t + "\", oid " +
+                        std::to_string(static_cast<unsigned>(entry.pin.oid)) + ") no longer exists");
             }
         }
         return core::error_t::no_error();
@@ -1069,7 +1069,7 @@ namespace services::dispatcher { namespace {
                     col_attoids.push_back(attoid);
                     if (i)
                         indkey += ",";
-                    indkey += std::to_string(attoid);
+                    indkey += std::to_string(static_cast<unsigned>(attoid));
                 }
                 node->set_column_attoids(std::move(col_attoids));
                 node->set_indkey(std::move(indkey));

@@ -815,7 +815,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
             const std::string oid_dir = entry.path().parent_path().filename().string();
             char* end = nullptr;
             const unsigned long oid = std::strtoul(oid_dir.c_str(), &end, 10);
-            if (end && *end == '\0' && oid >= components::catalog::FIRST_USER_OID) {
+            if (end && *end == '\0' && oid >= static_cast<unsigned>(components::catalog::FIRST_USER_OID)) {
                 user_table_dirs.push_back(entry.path().parent_path());
             }
         }
@@ -920,7 +920,8 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
             }
             const auto tbl = numeric(entry.path().parent_path());
             const auto ns = numeric(entry.path().parent_path().parent_path());
-            if (tbl >= components::catalog::FIRST_USER_OID && ns >= components::catalog::FIRST_USER_OID) {
+            if (tbl >= static_cast<unsigned>(components::catalog::FIRST_USER_OID) &&
+                ns >= static_cast<unsigned>(components::catalog::FIRST_USER_OID)) {
                 found.emplace_back(ns, tbl);
             }
         }
@@ -2925,12 +2926,13 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
             };
             bool found = false;
             for (const auto& ns_entry : std::filesystem::directory_iterator(disk_root)) {
-                if (!ns_entry.is_directory() || numeric_oid(ns_entry.path()) < components::catalog::FIRST_USER_OID) {
+                if (!ns_entry.is_directory() ||
+                    numeric_oid(ns_entry.path()) < static_cast<unsigned>(components::catalog::FIRST_USER_OID)) {
                     continue;
                 }
                 for (const auto& tbl_entry : std::filesystem::directory_iterator(ns_entry.path())) {
                     if (tbl_entry.is_directory() &&
-                        numeric_oid(tbl_entry.path()) >= components::catalog::FIRST_USER_OID &&
+                        numeric_oid(tbl_entry.path()) >= static_cast<unsigned>(components::catalog::FIRST_USER_OID) &&
                         std::filesystem::exists(tbl_entry.path() / "table.otbx")) {
                         found = true;
                         break;

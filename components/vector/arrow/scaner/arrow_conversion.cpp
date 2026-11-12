@@ -811,6 +811,7 @@ namespace components::vector::arrow::scaner {
             case types::logical_type::UTINYINT:
             case types::logical_type::USMALLINT:
             case types::logical_type::UINTEGER:
+            case types::logical_type::OID:
             case types::logical_type::UBIGINT:
             case types::logical_type::BIGINT:
             case types::logical_type::HUGEINT:

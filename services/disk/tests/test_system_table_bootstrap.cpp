@@ -256,7 +256,7 @@ TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
     REQUIRE(oids.size() == 2);
     REQUIRE(oids[0] >= FIRST_USER_OID);
-    REQUIRE(oids[1] == oids[0] + 1);
+    REQUIRE(static_cast<unsigned>(oids[1]) == static_cast<unsigned>(oids[0]) + 1);
 
     cleanup_boot_dir();
 }

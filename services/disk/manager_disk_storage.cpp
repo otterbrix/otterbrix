@@ -618,7 +618,7 @@ namespace services::disk {
         update_receipt_t result{
             write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}},
             std::pmr::vector<components::vector::data_chunk_t>{resource()},
-            std::pmr::vector<std::uint32_t>{resource()}};
+            std::pmr::vector<components::catalog::oid_t>{resource()}};
         if (!has_rows) {
             co_return std::move(result);
         }

@@ -5,6 +5,7 @@
 #include <array>
 #include <cassert>
 #include <charconv>
+#include <cstdlib>
 
 #include <components/types/types.hpp>
 
@@ -20,7 +21,8 @@ namespace components::catalog {
     using components::types::logical_type;
 
     namespace {
-        complex_logical_type oid_col() { return complex_logical_type{logical_type::UINTEGER}; }
+        complex_logical_type oid_col() { return complex_logical_type{logical_type::OID}; }
+        complex_logical_type i16_col() { return complex_logical_type{logical_type::SMALLINT}; }
         complex_logical_type i32_col() { return complex_logical_type{logical_type::INTEGER}; }
         complex_logical_type i64_col() { return complex_logical_type{logical_type::BIGINT}; }
         complex_logical_type str_col() { return complex_logical_type{logical_type::TEXT}; }
@@ -51,6 +53,7 @@ namespace components::catalog {
             c.emplace_back("relkind", str_col(),
                            true); // see catalog_codes.hpp::relkind
             c.emplace_back("relstoragemode", str_col(), true);
+            c.emplace_back("reltype", oid_col(), true); // pg_type.oid of the row type; 0 for an index or a sequence
             return c;
         }
 
@@ -70,6 +73,8 @@ namespace components::catalog {
             // MVCC: added_at_commit_id/dropped_at_commit_id (0=alive) gate visibility; attisdropped mirrors dropped>0.
             c.emplace_back("added_at_commit_id", i64_col(), true);
             c.emplace_back("dropped_at_commit_id", i64_col(), true);
+            c.emplace_back("atttypmod", i32_col(), true); // see pg_attribute_type_of
+            c.emplace_back("attndims", i16_col(), true);
             return c;
         }
 
@@ -79,6 +84,21 @@ namespace components::catalog {
             c.emplace_back("typname", str_col(), true);
             c.emplace_back("typnamespace", oid_col(), true);
             c.emplace_back("typdefspec", str_col(), false); // encode_type_spec; empty/missing decodes as UNKNOWN
+            // As in PostgreSQL 18; see pg_type_attributes_of. No domains, so typnotnull..typndims keep their
+            // non-domain values.
+            c.emplace_back("typlen", i16_col(), true);
+            c.emplace_back("typbyval", bool_col(), true);
+            c.emplace_back("typtype", str_col(), true);     // see catalog_codes.hpp::typtype
+            c.emplace_back("typcategory", str_col(), true); // see catalog_codes.hpp::typcategory
+            c.emplace_back("typisdefined", bool_col(), true);
+            c.emplace_back("typdelim", str_col(), true);
+            c.emplace_back("typrelid", oid_col(), true); // pg_class.oid of a composite type, else 0
+            c.emplace_back("typelem", oid_col(), true);
+            c.emplace_back("typarray", oid_col(), true);
+            c.emplace_back("typnotnull", bool_col(), true);
+            c.emplace_back("typbasetype", oid_col(), true);
+            c.emplace_back("typtypmod", i32_col(), true);
+            c.emplace_back("typndims", i32_col(), true);
             return c;
         }
 
@@ -185,8 +205,33 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), /*not_null*/ true);
             c.emplace_back("castsource", oid_col(), true);
             c.emplace_back("casttarget", oid_col(), true);
-            // (castsource,casttarget) is the lookup key; no castcontext yet (lives on cast_entry
-            // until CREATE CAST needs to persist it).
+            // (castsource,casttarget) is the lookup key. castfunc is 0: cast functions have no pg_proc row.
+            c.emplace_back("castfunc", oid_col(), true);
+            c.emplace_back("castcontext", str_col(), true); // see catalog_codes.hpp::castcontext
+            c.emplace_back("castmethod", str_col(), true);  // see catalog_codes.hpp::castmethod
+            return c;
+        }
+
+        // One row per label of an enum type, as CREATE TYPE ... AS ENUM writes them.
+        std::vector<column_definition_t> pg_enum_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), /*not_null*/ true);
+            c.emplace_back("enumtypid", oid_col(), true);
+            c.emplace_back("enumsortorder", complex_logical_type{logical_type::FLOAT}, true);
+            c.emplace_back("enumlabel", str_col(), true);
+            return c;
+        }
+
+        // Empty: there are no range types. rngcanonical/rngsubdiff are regproc in PostgreSQL, stored the same way.
+        std::vector<column_definition_t> pg_range_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("rngtypid", oid_col(), /*not_null*/ true);
+            c.emplace_back("rngsubtype", oid_col(), true);
+            c.emplace_back("rngmultitypid", oid_col(), true);
+            c.emplace_back("rngcollation", oid_col(), true);
+            c.emplace_back("rngsubopc", oid_col(), true);
+            c.emplace_back("rngcanonical", oid_col(), true);
+            c.emplace_back("rngsubdiff", oid_col(), true);
             return c;
         }
 
@@ -207,9 +252,9 @@ namespace components::catalog {
     std::span<const system_table_def_t> all_system_tables() {
         // pg_database must come first — every catalog object is scoped to a database (seeded via
         // well_known_oid::main_database, manager_disk_t::bootstrap_system_tables_sync).
-        static const std::array<system_table_def_t, 15> tables = []() {
+        static const std::array<system_table_def_t, 17> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            std::array<system_table_def_t, 15> defs{{
+            std::array<system_table_def_t, 17> defs{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -245,14 +290,42 @@ namespace components::catalog {
                  pg_catalog,
                  relkind::regular,
                  pg_rewrite_ref_columns()},
+                {"pg_enum", well_known_oid::pg_enum_table, pg_catalog, relkind::regular, pg_enum_columns()},
+                {"pg_range", well_known_oid::pg_range_table, pg_catalog, relkind::regular, pg_range_columns()},
             }};
-            oid_t next_attoid = FIRST_SYSTEM_ATTOID;
+            // oids have no arithmetic: the counters count, each number becomes an oid.
+            std::uint32_t next_attoid = static_cast<unsigned>(FIRST_SYSTEM_ATTOID);
             for (auto& def : defs) {
                 for (auto& column : def.columns) {
-                    column.set_attoid(next_attoid++);
+                    column.set_attoid(oid_t{next_attoid++});
                 }
             }
-            assert(next_attoid <= FIRST_USER_OID && "system attoids reached the user oid range");
+            assert(oid_t{next_attoid} <= FIRST_USER_OID && "system attoids reached the user oid range");
+            std::uint32_t next_row_type = static_cast<unsigned>(well_known_oid::FIRST_SYSTEM_ROW_TYPE);
+            for (auto& def : defs) {
+                switch (static_cast<unsigned>(def.relation_oid)) {
+                    case static_cast<unsigned>(well_known_oid::pg_type_table):
+                        def.row_type_oid = well_known_oid::pg_type_row_type;
+                        def.row_array_oid = well_known_oid::pg_type_row_array_type;
+                        break;
+                    case static_cast<unsigned>(well_known_oid::pg_attribute_table):
+                        def.row_type_oid = well_known_oid::pg_attribute_row_type;
+                        def.row_array_oid = well_known_oid::pg_attribute_row_array_type;
+                        break;
+                    case static_cast<unsigned>(well_known_oid::pg_proc_table):
+                        def.row_type_oid = well_known_oid::pg_proc_row_type;
+                        def.row_array_oid = well_known_oid::pg_proc_row_array_type;
+                        break;
+                    case static_cast<unsigned>(well_known_oid::pg_class_table):
+                        def.row_type_oid = well_known_oid::pg_class_row_type;
+                        def.row_array_oid = well_known_oid::pg_class_row_array_type;
+                        break;
+                    default:
+                        def.row_type_oid = oid_t{next_row_type++};
+                        def.row_array_oid = oid_t{next_row_type++};
+                        break;
+                }
+            }
             return defs;
         }();
         return tables;
@@ -313,6 +386,8 @@ namespace components::catalog {
                 return "int8";
             case LT::UBIGINT:
                 return "uint8";
+            case LT::OID:
+                return "oid";
             case LT::HUGEINT:
                 return "int16"; // no PG equivalent
             case LT::UHUGEINT:
@@ -326,13 +401,13 @@ namespace components::catalog {
             case LT::TIMESTAMP:
                 return "timestamp";
             case LT::TIMESTAMP_TZ:
-                return "timestamp with time zone";
+                return "timestamptz";
             case LT::DATE:
                 return "date";
             case LT::TIME:
                 return "time";
             case LT::TIME_TZ:
-                return "time with time zone";
+                return "timetz";
             case LT::INTERVAL:
                 return "interval";
             case LT::BLOB:
@@ -364,6 +439,8 @@ namespace components::catalog {
             return LT::BIGINT;
         if (n == "uint8")
             return LT::UBIGINT;
+        if (n == "oid")
+            return LT::OID;
         if (n == "int16")
             return LT::HUGEINT;
         if (n == "uint16")
@@ -376,13 +453,13 @@ namespace components::catalog {
             return LT::TEXT;
         if (n == "timestamp")
             return LT::TIMESTAMP;
-        if (n == "timestamp with time zone")
+        if (n == "timestamptz")
             return LT::TIMESTAMP_TZ;
         if (n == "date")
             return LT::DATE;
         if (n == "time")
             return LT::TIME;
-        if (n == "time with time zone")
+        if (n == "timetz")
             return LT::TIME_TZ;
         if (n == "interval")
             return LT::INTERVAL;
@@ -390,7 +467,29 @@ namespace components::catalog {
             return LT::BLOB;
         if (n == "uuid")
             return LT::UUID;
-        // Seed/alias names (manager_disk_bootstrap.cpp); this "int16" is unrelated to the PG-block one above.
+        // Aliases: names a type answers to that are not its pg_type row.
+        if (n == "timestamp with time zone")
+            return LT::TIMESTAMP_TZ;
+        if (n == "time with time zone")
+            return LT::TIME_TZ;
+        if (n == "double precision")
+            return LT::DOUBLE;
+        if (n == "int")
+            return LT::INTEGER;
+        if (n == "hugeint")
+            return LT::HUGEINT;
+        if (n == "utinyint")
+            return LT::UTINYINT;
+        if (n == "usmallint")
+            return LT::USMALLINT;
+        if (n == "uinteger" || n == "uint")
+            return LT::UINTEGER;
+        if (n == "ubigint")
+            return LT::UBIGINT;
+        if (n == "uhugeint")
+            return LT::UHUGEINT;
+        if (n == "bpchar" || n == "name")
+            return LT::TEXT;
         if (n == "string")
             return LT::TEXT;
         if (n == "blob")
@@ -1054,53 +1153,205 @@ namespace components::catalog {
 
     std::string_view logical_type_to_pg_name(types::logical_type t) noexcept { return scalar_type_to_name(t); }
 
+    oid_t builtin_array_type_oid(types::logical_type type) noexcept {
+        using LT = types::logical_type;
+        namespace ns = well_known_oid;
+        switch (type) {
+            case LT::BOOLEAN:
+                return ns::boolean_array_type;
+            case LT::BLOB:
+                return ns::blob_array_type;
+            case LT::SMALLINT:
+                return ns::int16_array_type;
+            case LT::INTEGER:
+                return ns::int32_array_type;
+            case LT::TEXT:
+                return ns::string_array_type;
+            case LT::BIGINT:
+                return ns::int64_array_type;
+            case LT::FLOAT:
+                return ns::float32_array_type;
+            case LT::DOUBLE:
+                return ns::float64_array_type;
+            case LT::OID:
+                return ns::oid_array_type;
+            case LT::TIMESTAMP:
+                return ns::timestamp_array_type;
+            case LT::DATE:
+                return ns::date_array_type;
+            case LT::TIME:
+                return ns::time_array_type;
+            case LT::TIMESTAMP_TZ:
+                return ns::timestamp_tz_array_type;
+            case LT::INTERVAL:
+                return ns::interval_array_type;
+            case LT::DECIMAL:
+                return ns::numeric_array_type;
+            case LT::TIME_TZ:
+                return ns::time_tz_array_type;
+            case LT::UUID:
+                return ns::uuid_array_type;
+            case LT::TINYINT:
+                return ns::int8_array_type;
+            case LT::UTINYINT:
+                return ns::uint8_array_type;
+            case LT::USMALLINT:
+                return ns::uint16_array_type;
+            case LT::UINTEGER:
+                return ns::uint32_array_type;
+            case LT::UBIGINT:
+                return ns::uint64_array_type;
+            case LT::HUGEINT:
+                return ns::int128_array_type;
+            case LT::UHUGEINT:
+                return ns::uint128_array_type;
+            default:
+                return INVALID_OID;
+        }
+    }
+
+    pg_attribute_type_t pg_attribute_type_of(const types::complex_logical_type& type, oid_t resolved_typid) {
+        using LT = types::logical_type;
+        pg_attribute_type_t out;
+        const types::complex_logical_type* element = &type;
+        while (element->type() == LT::LIST || element->type() == LT::ARRAY) {
+            ++out.attndims;
+            element = &element->child_type();
+        }
+        if (element->type() == LT::DECIMAL) {
+            if (const auto* decimal = element->extension_as<types::decimal_logical_type_extension>()) {
+                constexpr std::int32_t varhdrsz = 4;
+                out.atttypmod = ((static_cast<std::int32_t>(decimal->width()) << 16) |
+                                 static_cast<std::int32_t>(decimal->scale())) +
+                                varhdrsz;
+            }
+        }
+        if (out.attndims > 0) {
+            out.atttypid = builtin_array_type_oid(element->type());
+            return out;
+        }
+        if (resolved_typid != INVALID_OID) {
+            out.atttypid = resolved_typid;
+        } else if (element->type() == LT::DECIMAL) {
+            out.atttypid = well_known_oid::numeric_type;
+        } else {
+            out.atttypid = builtin_type_to_oid(element->type());
+        }
+        return out;
+    }
+
+    pg_type_attributes_t array_pg_type_attributes(oid_t typelem) noexcept {
+        return {-1, false, typtype::base, typcategory::array, INVALID_OID, typelem, INVALID_OID};
+    }
+
+    pg_type_attributes_t pg_type_attributes_of(types::logical_type type, oid_t typrelid) noexcept {
+        using LT = types::logical_type;
+        const auto base = [type](std::int16_t typlen, bool typbyval, char typcategory) {
+            return pg_type_attributes_t{typlen,
+                                        typbyval,
+                                        typtype::base,
+                                        typcategory,
+                                        INVALID_OID,
+                                        INVALID_OID,
+                                        builtin_array_type_oid(type)};
+        };
+        switch (type) {
+            case LT::BOOLEAN:
+                return base(1, true, typcategory::boolean);
+            case LT::TINYINT:
+            case LT::UTINYINT:
+                return base(1, true, typcategory::numeric);
+            case LT::SMALLINT:
+            case LT::USMALLINT:
+                return base(2, true, typcategory::numeric);
+            case LT::INTEGER:
+            case LT::UINTEGER:
+            case LT::OID:
+            case LT::FLOAT:
+                return base(4, true, typcategory::numeric);
+            case LT::BIGINT:
+            case LT::UBIGINT:
+            case LT::DOUBLE:
+                return base(8, true, typcategory::numeric);
+            case LT::HUGEINT:
+            case LT::UHUGEINT:
+                return base(16, false, typcategory::numeric);
+            case LT::DECIMAL:
+                return base(-1, false, typcategory::numeric);
+            case LT::TEXT:
+                return base(-1, false, typcategory::string);
+            case LT::BLOB:
+                return base(-1, false, typcategory::user_defined);
+            case LT::UUID:
+                return base(16, false, typcategory::user_defined);
+            case LT::DATE:
+                return base(4, true, typcategory::datetime);
+            case LT::TIME:
+            case LT::TIMESTAMP:
+            case LT::TIMESTAMP_TZ:
+                return base(8, true, typcategory::datetime);
+            case LT::TIME_TZ:
+                return base(12, false, typcategory::datetime);
+            case LT::INTERVAL:
+                return base(16, false, typcategory::timespan);
+            case LT::ENUM:
+                return {4, true, typtype::enumeration, typcategory::enumeration, INVALID_OID, INVALID_OID, INVALID_OID};
+            case LT::STRUCT:
+                return {-1, false, typtype::composite, typcategory::composite, typrelid, INVALID_OID, INVALID_OID};
+            default:
+                std::abort();
+        }
+    }
+
     types::logical_type oid_to_builtin_type(oid_t oid) noexcept {
         using LT = types::logical_type;
         namespace ns = well_known_oid;
-        switch (oid) {
-            case ns::boolean_type:
+        switch (static_cast<unsigned>(oid)) {
+            case static_cast<unsigned>(ns::boolean_type):
                 return LT::BOOLEAN;
-            case ns::int8_type:
+            case static_cast<unsigned>(ns::int8_type):
                 return LT::TINYINT;
-            case ns::uint8_type:
+            case static_cast<unsigned>(ns::uint8_type):
                 return LT::UTINYINT;
-            case ns::int16_type:
+            case static_cast<unsigned>(ns::int16_type):
                 return LT::SMALLINT;
-            case ns::uint16_type:
+            case static_cast<unsigned>(ns::uint16_type):
                 return LT::USMALLINT;
-            case ns::int32_type:
+            case static_cast<unsigned>(ns::int32_type):
                 return LT::INTEGER;
-            case ns::uint32_type:
+            case static_cast<unsigned>(ns::uint32_type):
                 return LT::UINTEGER;
-            case ns::int64_type:
+            case static_cast<unsigned>(ns::int64_type):
                 return LT::BIGINT;
-            case ns::uint64_type:
+            case static_cast<unsigned>(ns::uint64_type):
                 return LT::UBIGINT;
-            case ns::int128_type:
+            case static_cast<unsigned>(ns::int128_type):
                 return LT::HUGEINT;
-            case ns::uint128_type:
+            case static_cast<unsigned>(ns::uint128_type):
                 return LT::UHUGEINT;
-            case ns::float32_type:
+            case static_cast<unsigned>(ns::float32_type):
                 return LT::FLOAT;
-            case ns::float64_type:
+            case static_cast<unsigned>(ns::float64_type):
                 return LT::DOUBLE;
-            case ns::string_type:
+            case static_cast<unsigned>(ns::string_type):
                 return LT::TEXT;
-            case ns::timestamp_type:
+            case static_cast<unsigned>(ns::oid_type):
+                return LT::OID;
+            case static_cast<unsigned>(ns::timestamp_type):
                 return LT::TIMESTAMP;
-            case ns::timestamp_tz_type:
+            case static_cast<unsigned>(ns::timestamp_tz_type):
                 return LT::TIMESTAMP_TZ;
-            case ns::date_type:
+            case static_cast<unsigned>(ns::date_type):
                 return LT::DATE;
-            case ns::time_type:
+            case static_cast<unsigned>(ns::time_type):
                 return LT::TIME;
-            case ns::time_tz_type:
+            case static_cast<unsigned>(ns::time_tz_type):
                 return LT::TIME_TZ;
-            case ns::interval_type:
+            case static_cast<unsigned>(ns::interval_type):
                 return LT::INTERVAL;
-            case ns::blob_type:
+            case static_cast<unsigned>(ns::blob_type):
                 return LT::BLOB;
-            case ns::uuid_type:
+            case static_cast<unsigned>(ns::uuid_type):
                 return LT::UUID;
             default:
                 return LT::UNKNOWN;
@@ -1139,6 +1390,8 @@ namespace components::catalog {
                 return ns::float64_type;
             case LT::TEXT:
                 return ns::string_type;
+            case LT::OID:
+                return ns::oid_type;
             case LT::TIMESTAMP:
                 return ns::timestamp_type;
             case LT::TIMESTAMP_TZ:

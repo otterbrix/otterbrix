@@ -180,7 +180,7 @@ namespace components::operators {
                 if (!pc_batches.empty() && pc_batches[0].size() != 0) {
                     found = true;
                     if (!pc_batches[0].is_null(0, 0)) {
-                        namespace_oid = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(0, 0));
+                        namespace_oid = pc_batches[0].get_value<catalog::oid_t>(0, 0);
                     }
                     if (!pc_batches[0].is_null(1, 0)) {
                         auto rk_cell = pc_batches[0].get_value<std::string_view>(1, 0);
@@ -262,10 +262,9 @@ namespace components::operators {
                         binding.dbname = text(chunk, col::dbname, i);
                         binding.schema = text(chunk, col::schema, i);
                         binding.relname = text(chunk, col::relname, i);
-                        binding.refobjid =
-                            chunk.is_null(col::refobjid, i)
-                                ? catalog::INVALID_OID
-                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(col::refobjid, i));
+                        binding.refobjid = chunk.is_null(col::refobjid, i)
+                                               ? catalog::INVALID_OID
+                                               : chunk.get_value<catalog::oid_t>(col::refobjid, i);
                         binding.proargmatchers = text(chunk, col::proargmatchers, i);
                         binding.prorettype = text(chunk, col::prorettype, i);
                         view_bindings.push_back(std::move(binding));
@@ -324,12 +323,10 @@ namespace components::operators {
                         }
                         cc_candidate_t cand;
                         cand.attname.assign(chunk.get_value<std::string_view>(2, i));
-                        cand.attoid = chunk.is_null(1, i)
-                                          ? catalog::INVALID_OID
-                                          : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                        cand.atttypid = chunk.is_null(3, i)
-                                            ? catalog::INVALID_OID
-                                            : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                        cand.attoid =
+                            chunk.is_null(1, i) ? catalog::INVALID_OID : chunk.get_value<catalog::oid_t>(1, i);
+                        cand.atttypid =
+                            chunk.is_null(3, i) ? catalog::INVALID_OID : chunk.get_value<catalog::oid_t>(3, i);
                         if (!chunk.is_null(4, i)) {
                             cand.atttypspec.assign(chunk.get_value<std::string_view>(4, i));
                         }
@@ -497,15 +494,12 @@ namespace components::operators {
                             }
                         }
                         out_row_t row;
-                        row.attoid = chunk.is_null(0, i)
-                                         ? catalog::INVALID_OID
-                                         : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        row.attoid = chunk.is_null(0, i) ? catalog::INVALID_OID : chunk.get_value<catalog::oid_t>(0, i);
                         if (!chunk.is_null(2, i)) {
                             row.attname.assign(chunk.get_value<std::string_view>(2, i));
                         }
-                        row.atttypid = chunk.is_null(3, i)
-                                           ? catalog::INVALID_OID
-                                           : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                        row.atttypid =
+                            chunk.is_null(3, i) ? catalog::INVALID_OID : chunk.get_value<catalog::oid_t>(3, i);
                         row.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
                         // Storage column order matches pg_attribute's 1-based attnum, so chunk_position = attnum-1.
                         row.chunk_position = row.attnum > 0 ? row.attnum - 1 : -1;

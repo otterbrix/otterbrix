@@ -641,7 +641,12 @@ namespace components::sql::transform {
                                                                             static_cast<uint8_t>(raw_scale)));
             }
         } else {
+            // A bare name looks in pg_catalog first, as PostgreSQL's search_path does: a built-in is known here, at
+            // any depth (an array's element too), and only another name waits for the catalog.
             types::logical_type t = get_logical_type(linint_name);
+            if (t == types::logical_type::UNKNOWN) {
+                t = catalog::pg_name_to_logical_type(linint_name);
+            }
             if (t == types::logical_type::UNKNOWN) {
                 column = types::complex_logical_type::create_unknown(linint_name);
             } else {
@@ -649,8 +654,10 @@ namespace components::sql::transform {
             }
         }
 
-        if (list_length(type->arrayBounds)) {
-            auto size = pg_ptr_assert_cast<Value>(linitial(type->arrayBounds), T_Integer);
+        // One level per bound, the last one innermost: int4[3][4] is three arrays of four.
+        const auto bounds = static_cast<int>(list_length(type->arrayBounds));
+        for (int bound = bounds - 1; bound >= 0; --bound) {
+            auto size = pg_ptr_assert_cast<Value>(list_nth(type->arrayBounds, bound), T_Integer);
             if (intVal(size) < 0) {
                 column = types::complex_logical_type::create_list(column);
             } else {
@@ -983,6 +990,8 @@ namespace components::sql::transform {
                     return "UBIGINT";
                 case LT::UHUGEINT:
                     return "UHUGEINT";
+                case LT::OID:
+                    return "OID";
                 case LT::FLOAT:
                     return "REAL";
                 case LT::DOUBLE:
@@ -1204,6 +1213,12 @@ namespace components::sql::transform {
     } // namespace
 
     namespace {
+        // A target the literal stays unconverted for, the cast over it doing the work: a type the catalog resolves
+        // later, and oid, whose casts (PostgreSQL's oidin range included) are the registry's.
+        bool leaves_literal_to_cast(const types::complex_logical_type& target_type) noexcept {
+            return target_type.type() == types::logical_type::UNKNOWN || target_type.type() == types::logical_type::OID;
+        }
+
         core::result_wrapper_t<vector::vector_t> cast_string_literal(std::pmr::memory_resource* resource,
                                                                      const types::complex_logical_type& target_type,
                                                                      std::string_view str) {
@@ -1265,7 +1280,7 @@ namespace components::sql::transform {
                                              std::pmr::string{"unsupported duration cast target", resource});
                 }
             }
-            if (target_type.type() == types::logical_type::UNKNOWN) {
+            if (leaves_literal_to_cast(target_type)) {
                 return vector::make_string_literal(resource, str);
             }
             return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
@@ -1305,7 +1320,7 @@ namespace components::sql::transform {
                                                                   " is not supported",
                                                               resource});
                     }
-                    if (target_type.type() == types::logical_type::UNKNOWN) {
+                    if (leaves_literal_to_cast(target_type)) {
                         return numeric_literal_value(resource, &constant->val);
                     }
                     if (types::is_duration(target_type.type())) {

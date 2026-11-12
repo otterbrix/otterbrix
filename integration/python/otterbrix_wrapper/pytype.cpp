@@ -61,6 +61,8 @@ namespace otterbrix {
                     return "USMALLINT";
                 case logical_type::UINTEGER:
                     return "UINTEGER";
+                case logical_type::OID:
+                    return "OID";
                 case logical_type::UBIGINT:
                     return "UBIGINT";
                 case logical_type::UHUGEINT:

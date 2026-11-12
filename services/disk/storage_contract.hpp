@@ -60,7 +60,7 @@ namespace services::disk {
     struct update_receipt_t {
         write_receipt_t receipt;
         std::pmr::vector<components::vector::data_chunk_t> written;
-        std::pmr::vector<std::uint32_t> attoids;
+        std::pmr::vector<components::types::oid_t> attoids;
     };
 
     using host_rows_t = components::host_rows_t;

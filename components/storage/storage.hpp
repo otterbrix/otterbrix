@@ -34,7 +34,7 @@ namespace components::storage {
     struct updated_rows_t {
         appended_range_t range;
         std::pmr::vector<vector::data_chunk_t> written;
-        std::pmr::vector<std::uint32_t> attoids;
+        std::pmr::vector<types::oid_t> attoids;
     };
 
     class storage_t {

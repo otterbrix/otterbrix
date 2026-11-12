@@ -49,8 +49,8 @@ using services::index::tests::index_fixture_path;
 
 namespace {
 
-    constexpr components::catalog::oid_t kTableOid = 18500;
-    constexpr components::catalog::oid_t kIndexOid = 18501;
+    constexpr components::catalog::oid_t kTableOid{18500};
+    constexpr components::catalog::oid_t kIndexOid{18501};
 
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
@@ -159,7 +159,7 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
                       .contains_error());
 
     auto duplicate = boot.bootstrap_index_sync(kTableOid,
-                                               kIndexOid + 1,
+                                               components::catalog::oid_t{static_cast<unsigned>(kIndexOid) + 1},
                                                components::logical_plan::index_type::single,
                                                keys_of(&resource, {"id"}),
                                                std::pmr::set<std::uint64_t>(&resource));
@@ -201,7 +201,7 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
     const auto session = session_id_t::generate_uid();
     auto fut = manager->create_index(session,
                                      kTableOid,
-                                     kIndexOid + 1,
+                                     components::catalog::oid_t{static_cast<unsigned>(kIndexOid) + 1},
                                      keys_of(&resource, {"id", "name"}),
                                      components::logical_plan::index_type::single,
                                      core::date::timezone_offset_t{},
@@ -308,7 +308,7 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
         auto fut =
             manager->apply_wal_record_for_index(session,
                                                 kTableOid,
-                                                kIndexOid + 7,
+                                                components::catalog::oid_t{static_cast<unsigned>(kIndexOid) + 7},
                                                 /*wal_record_id=*/11,
                                                 static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
                                                 std::move(row_ids),

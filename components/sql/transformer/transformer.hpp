@@ -9,6 +9,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
@@ -22,6 +23,9 @@ namespace components::sql::parser {
 } // namespace components::sql::parser
 
 namespace components::sql::transform {
+    [[nodiscard]] core::result_wrapper_t<logical_plan::transaction_access_t>
+    transaction_access_of(List* modes, std::pmr::memory_resource* resource);
+
     // There are some differences for expression parsing, depending on where it is placed
     enum class expression_placement_t
     {

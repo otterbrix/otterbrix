@@ -91,6 +91,7 @@ namespace core {
         undefined_cursor = 98,                          // PostgreSQL 34000
         duplicate_cursor = 99,                          // PostgreSQL 42P03
         object_in_use = 100,                            // PostgreSQL 55006
+        read_only_sql_transaction = 101,                // PostgreSQL 25006
     };
 
     struct [[nodiscard]] error_t {

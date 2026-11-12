@@ -2361,6 +2361,56 @@ namespace services::collection::executor {
             return refused;
         }
 
+        // The command a read-only transaction refuses
+        const char* write_command_of(components::logical_plan::node_type type) {
+            using components::logical_plan::node_type;
+            switch (type) {
+                case node_type::insert_t:
+                case node_type::insert_on_conflict_t:
+                    return "INSERT";
+                case node_type::update_t:
+                    return "UPDATE";
+                case node_type::delete_t:
+                    return "DELETE";
+                case node_type::create_collection_t:
+                    return "CREATE TABLE";
+                case node_type::create_database_t:
+                    return "CREATE DATABASE";
+                case node_type::create_schema_t:
+                    return "CREATE SCHEMA";
+                case node_type::create_index_t:
+                    return "CREATE INDEX";
+                case node_type::create_type_t:
+                    return "CREATE TYPE";
+                case node_type::create_sequence_t:
+                    return "CREATE SEQUENCE";
+                case node_type::create_view_t:
+                    return "CREATE VIEW";
+                case node_type::create_macro_t:
+                    return "CREATE MACRO";
+                case node_type::create_matview_t:
+                    return "CREATE MATERIALIZED VIEW";
+                case node_type::refresh_matview_t:
+                    return "REFRESH MATERIALIZED VIEW";
+                case node_type::create_constraint_t:
+                case node_type::alter_table_t:
+                case node_type::alter_column_t:
+                    return "ALTER TABLE";
+                case node_type::drop_t:
+                    return "DROP";
+                case node_type::register_udf_t:
+                    return "CREATE FUNCTION";
+                case node_type::unregister_udf_t:
+                    return "DROP FUNCTION";
+                case node_type::register_cast_t:
+                    return "CREATE CAST";
+                case node_type::unregister_cast_t:
+                    return "DROP CAST";
+                default:
+                    return nullptr;
+            }
+        }
+
         // What the set_config() calls of a statement set: SET's own channel to the session, taken only when the
         // statement succeeds.
         struct setting_calls_t {
@@ -3049,6 +3099,18 @@ namespace services::collection::executor {
             auto* r = plan.sub_queries.back().get();
             return r ? r->type() : node_type::unused;
         }();
+
+        // EXPLAIN without ANALYZE does not run what it explains.
+        if (const char* command = write_command_of(original_type);
+            command != nullptr && session_ctx.settings.transaction_read_only && !describe &&
+            (plan.explain == components::logical_plan::explain_type::none ||
+             plan.explain == components::logical_plan::explain_type::analyze)) {
+            co_return execute_result_t{make_cursor(
+                resource(),
+                core::error_t{core::error_code_t::read_only_sql_transaction,
+                              std::pmr::string{"cannot execute " + std::string{command} + " in a read-only transaction",
+                                               resource()}})};
+        }
 
         const auto place = components::catalog::place_of(session_ctx.settings.search_path);
         plan.catalog_resolves.place = place;

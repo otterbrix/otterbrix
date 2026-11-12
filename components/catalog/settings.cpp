@@ -17,7 +17,7 @@ namespace components::catalog {
 
     namespace {
 
-        constexpr std::array<setting_def_t, 3> known_settings{
+        constexpr std::array<setting_def_t, 5> known_settings{
             setting_def_t{"timezone",
                           "TimeZone",
                           setting_id::timezone,
@@ -29,7 +29,15 @@ namespace components::catalog {
             setting_def_t{"search_path",
                           "search_path",
                           setting_id::search_path,
-                          "Sets the schema search order for names that are not schema-qualified."}};
+                          "Sets the schema search order for names that are not schema-qualified."},
+            setting_def_t{"default_transaction_read_only",
+                          "default_transaction_read_only",
+                          setting_id::default_transaction_read_only,
+                          "Sets the default read-only status of new transactions."},
+            setting_def_t{"transaction_read_only",
+                          "transaction_read_only",
+                          setting_id::transaction_read_only,
+                          "Sets the current transaction's read-only status."}};
 
         std::string to_lower(std::string_view text) {
             std::string lowered(text);
@@ -100,6 +108,10 @@ namespace components::catalog {
                 return std::pmr::string{cache.autocommit ? "on" : "off", resource};
             case setting_id::search_path:
                 return std::pmr::string{cache.search_path.data(), cache.search_path.size(), resource};
+            case setting_id::default_transaction_read_only:
+                return std::pmr::string{cache.default_transaction_read_only ? "on" : "off", resource};
+            case setting_id::transaction_read_only:
+                return std::pmr::string{cache.transaction_read_only ? "on" : "off", resource};
         }
         assert(false && "a setting_id with no value in the cache");
         std::abort();
@@ -124,6 +136,10 @@ namespace components::catalog {
                 return canonical_boolean("autocommit", raw, resource);
             case setting_id::search_path:
                 return canonical_search_path(raw, resource);
+            case setting_id::default_transaction_read_only:
+                return canonical_boolean("default_transaction_read_only", raw, resource);
+            case setting_id::transaction_read_only:
+                return canonical_boolean("transaction_read_only", raw, resource);
         }
         return core::error_t(core::error_code_t::internal_error, std::pmr::string{"unknown setting", resource});
     }
@@ -148,6 +164,13 @@ namespace components::catalog {
                 return core::error_t::no_error();
             case setting_id::search_path:
                 cache.search_path = std::string(value);
+                return core::error_t::no_error();
+            case setting_id::default_transaction_read_only:
+                cache.default_transaction_read_only = boolean_setting_value(value);
+                cache.transaction_read_only = cache.default_transaction_read_only;
+                return core::error_t::no_error();
+            case setting_id::transaction_read_only:
+                cache.transaction_read_only = boolean_setting_value(value);
                 return core::error_t::no_error();
         }
         return core::error_t(core::error_code_t::internal_error, std::pmr::string{"unknown setting", resource});

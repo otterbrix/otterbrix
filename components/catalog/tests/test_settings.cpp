@@ -47,10 +47,12 @@ TEST_CASE("catalog::settings::case_insensitive_storage") {
 }
 
 TEST_CASE("catalog::settings::the_known_settings") {
-    REQUIRE(all_settings().size() == 3);
+    REQUIRE(all_settings().size() == 5);
     REQUIRE(find_setting_by_sql_name("TimeZone") != nullptr);
     REQUIRE(find_setting_by_sql_name("autocommit") != nullptr);
     REQUIRE(find_setting_by_sql_name("search_path") != nullptr);
+    REQUIRE(find_setting_by_sql_name("default_transaction_read_only") != nullptr);
+    REQUIRE(find_setting_by_sql_name("transaction_read_only") != nullptr);
     REQUIRE(find_setting_by_sql_name("decimal_width") == nullptr);
     REQUIRE(find_setting_by_sql_name("decimal_scale") == nullptr);
 }

@@ -45,10 +45,12 @@ TEST_CASE("components::sql::transaction::mode_lists_are_refused") {
         return local.transform(transform::pg_cell_to_node_cast(statement)).get_error().contains_error();
     };
 
-    REQUIRE(refused("BEGIN READ ONLY;"));
     REQUIRE(refused("BEGIN ISOLATION LEVEL SERIALIZABLE;"));
     REQUIRE(refused("START TRANSACTION ISOLATION LEVEL READ COMMITTED;"));
-    // Not vacuous: without a mode list the same statements transform.
+    REQUIRE(refused("BEGIN READ ONLY, ISOLATION LEVEL REPEATABLE READ;"));
+    // Not vacuous: without an isolation level the same statements transform.
     REQUIRE_FALSE(refused("BEGIN;"));
     REQUIRE_FALSE(refused("START TRANSACTION;"));
+    REQUIRE_FALSE(refused("BEGIN READ ONLY;"));
+    REQUIRE_FALSE(refused("START TRANSACTION READ WRITE;"));
 }

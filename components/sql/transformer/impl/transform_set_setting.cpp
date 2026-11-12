@@ -60,14 +60,43 @@ namespace components::sql::transform {
 
         // SET, SET LOCAL and ALTER SYSTEM share the forms: a value, or the default (PostgreSQL 18: RESET name is
         // SET name TO DEFAULT, RESET ALL resets every setting).
+        // SET [SESSION | LOCAL] TRANSACTION modes is the current transaction's, as SET LOCAL transaction_read_only;
+        // SET SESSION CHARACTERISTICS AS TRANSACTION modes the session's default, as SET default_transaction_read_only
+        // (PostgreSQL 18 ExecSetVariableStmt).
+        core::result_wrapper_t<logical_plan::node_ptr> transform_transaction_modes(const VariableSetStmt& node,
+                                                                                   std::pmr::memory_resource* r) {
+            auto access = transaction_access_of(node.args, r);
+            if (access.has_error()) {
+                return access.error();
+            }
+            const bool session_wide = std::string_view{node.name} == "SESSION CHARACTERISTICS";
+            const auto scope = session_wide ? catalog::setting_scope_t::session : catalog::setting_scope_t::local;
+            std::pmr::vector<catalog::setting_assignment_t> assignments{r};
+            if (access.value() != logical_plan::transaction_access_t::as_default) {
+                assignments.emplace_back(session_wide ? catalog::setting_id::default_transaction_read_only
+                                                      : catalog::setting_id::transaction_read_only,
+                                         access.value() == logical_plan::transaction_access_t::read_only ? "on" : "off",
+                                         r);
+            }
+            return logical_plan::node_ptr{logical_plan::make_node_set_setting(r, scope, std::move(assignments))};
+        }
+
         core::result_wrapper_t<logical_plan::node_ptr> transform_variable_set(const VariableSetStmt& node,
                                                                               catalog::setting_scope_t scope,
                                                                               std::pmr::memory_resource* r) {
+            if (node.kind == VAR_SET_MULTI && node.name != nullptr &&
+                (std::string_view{node.name} == "TRANSACTION" ||
+                 std::string_view{node.name} == "SESSION CHARACTERISTICS")) {
+                return transform_transaction_modes(node, r);
+            }
             const auto statement = statement_of(node, scope);
             std::pmr::vector<catalog::setting_assignment_t> assignments{r};
             if (node.kind == VAR_RESET_ALL) {
+                // The transaction's own access is no session setting RESET ALL returns (GUC_NO_RESET_ALL).
                 for (const auto& setting : catalog::all_settings()) {
-                    assignments.push_back(catalog::setting_assignment_t::to_default(setting.id, r));
+                    if (setting.id != catalog::setting_id::transaction_read_only) {
+                        assignments.push_back(catalog::setting_assignment_t::to_default(setting.id, r));
+                    }
                 }
                 return logical_plan::node_ptr{logical_plan::make_node_set_setting(r, scope, std::move(assignments))};
             }
@@ -76,6 +105,16 @@ namespace components::sql::transform {
                 return setting.error();
             }
             const auto id = setting.value()->id;
+            // transaction_read_only is the current transaction's whatever the SET says; no default stores it.
+            if (id == catalog::setting_id::transaction_read_only) {
+                if (scope == catalog::setting_scope_t::system) {
+                    return core::error_t(core::error_code_t::invalid_parameter,
+                                         std::pmr::string{"transaction_read_only is the current transaction's, and "
+                                                          "has no default to store",
+                                                          r});
+                }
+                scope = catalog::setting_scope_t::local;
+            }
             if (node.kind == VAR_RESET || node.kind == VAR_SET_DEFAULT) {
                 assignments.push_back(catalog::setting_assignment_t::to_default(id, r));
                 return logical_plan::node_ptr{logical_plan::make_node_set_setting(r, scope, std::move(assignments))};

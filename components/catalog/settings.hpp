@@ -15,7 +15,9 @@ namespace components::catalog {
     {
         timezone,
         autocommit,
-        search_path
+        search_path,
+        default_transaction_read_only,
+        transaction_read_only
     };
 
     // Where a value goes: SET to its session, SET LOCAL to its session until the transaction ends, ALTER SYSTEM to

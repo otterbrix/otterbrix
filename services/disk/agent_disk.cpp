@@ -403,7 +403,7 @@ namespace services::disk {
                                        std::pmr::vector<components::vector::data_chunk_t> data,
                                        bool returning) {
         const auto txn = ctx.txn;
-        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}};
+        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0};
         data.erase(std::remove_if(data.begin(),
                                   data.end(),
                                   [](const components::vector::data_chunk_t& chunk) { return chunk.size() == 0; }),
@@ -775,7 +775,7 @@ namespace services::disk {
                                        components::table::transaction_data txn,
                                        bool returning) {
         update_receipt_t result{
-            write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}},
+            write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0},
             std::pmr::vector<components::vector::data_chunk_t>{resource()},
             std::pmr::vector<components::catalog::oid_t>{resource()}};
         bool has_rows = false;
@@ -867,7 +867,7 @@ namespace services::disk {
                                             components::table::row_id_batch_t row_ids,
                                             components::table::transaction_data txn,
                                             bool returning) {
-        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}};
+        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0};
         if (row_ids.empty()) {
             co_return std::move(receipt);
         }

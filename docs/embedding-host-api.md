@@ -158,7 +158,7 @@ publication at COMMIT). Every table's operator reaches its storage only by
 | `storage_fetch_next_batch(session, oid, cursor, limit, projected, txn)` | `fetch_batch_t{batch, cursor_id}` | cursor 0 opens a scan; an EMPTY batch ends it |
 | `storage_close_cursor(session, oid, cursor)` | — | a scan left before its end |
 | `storage_total_rows(session, oid)` | rows | an estimate is an answer: it only orders the sides of a hash join |
-| `storage_append(ctx, oid, attoids, chunks, returning)` | `write_receipt_t` | INSERT; `attoids` name the chunk's columns, the table's declared order |
+| `storage_append(ctx, oid, attoids, chunks, returning)` | `write_receipt_t` | INSERT; `attoids` name the chunk's columns (the written ones), the table's declared order |
 | `storage_update(ctx, oid, row_ids, chunks, returning)` | `update_receipt_t` | UPDATE of the rows the backend's scan numbered |
 | `storage_delete_rows(ctx, oid, row_ids, returning)` | `write_receipt_t` | DELETE by the same numbers |
 | `create_storage_disk(ctx, oid, database_oid, name, columns, computed)` | `ddl_reply_t` | CREATE TABLE |
@@ -174,11 +174,14 @@ publication at COMMIT). Every table's operator reaches its storage only by
 | `storage_release_block(ctx, request)` | — | the portal that took `request` finished: the storage forgets the take |
 | `storage_run_write(ctx, request, parameters, returning)` | `write_receipt_t` | a taken UPDATE / DELETE |
 
-- `write_receipt_t{start_row, count, awaits_publish, returned}`: `count` is what the backend applied (a short write
-  is a smaller count, `the_count_is_what_the_sink_reports_written`); `awaits_publish` is the disk's: its rows wait for
-  otterbrix's MVCC publication at COMMIT. A backend that commits its writes itself answers `false`, and the
-  transaction has it as a participant. `returned`, when asked for, holds every column of each written row (of each
-  deleted row, as it was), in the order the rows were sent.
+- `write_receipt_t{start_row, count, awaits_publish, returned, generated_id}`: `count` is what the backend applied (a
+  short write is a smaller count, `the_count_is_what_the_sink_reports_written`); `awaits_publish` is the disk's: its
+  rows wait for otterbrix's MVCC publication at COMMIT. A backend that commits its writes itself answers `false`, and
+  the transaction has it as a participant. `returned`, when asked for, holds every column of each written row (of each
+  deleted row, as it was), in the order the rows were sent. `generated_id`, of an append, is the first value the
+  backend generated for an auto-increment column of its rows (MySQL's `LAST_INSERT_ID`), 0 when it generated none:
+  the statement's is its first message's that is not 0, and the cursor reports it as `generated_id()`, what a MySQL
+  OK packet carries as `last_insert_id` (`generated_id`).
 - Every chunk a backend answers (a page, a receipt's `returned`, the `host_rows_t` of a DDL reply) holds at most
   `vector::DEFAULT_VECTOR_CAPACITY` rows, as every chunk of otterbrix's: a wider one is refused with
   `protocol_violation`, `a storage answered a chunk of N rows, more than the 1024 rows of a chunk`, before otterbrix

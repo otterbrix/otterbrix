@@ -774,6 +774,39 @@ TEST_CASE("integration::cpp::host_names::backend_defaults") {
     }
 }
 
+// The first value the backend generated for an auto-increment column, as MySQL's OK packet reports it.
+TEST_CASE("integration::cpp::host_names::generated_id") {
+    HOST_TEST_BOILERPLATE("test_host_names/generated_id")
+    declare_orders(host);
+    host.backend().set_auto_increment(orders, "id", 10);
+    host.backend().set_rows(orders, {});
+    const auto generated_by = [&](const std::string& sql) {
+        auto cursor = run(dispatcher, sql);
+        INFO(sql << " -> " << error_of(cursor));
+        REQUIRE(cursor->is_success());
+        return cursor->generated_id();
+    };
+
+    SECTION("of a statement of several rows") {
+        CHECK(generated_by("INSERT INTO m2.shop.public.orders (amount) VALUES (1), (2), (3);") == 10);
+        CHECK(generated_by("INSERT INTO m2.shop.public.orders (amount) VALUES (4);") == 13);
+        CHECK(host.backend().rows(orders) == rows_t{{10, 1}, {11, 2}, {12, 3}, {13, 4}});
+    }
+
+    SECTION("by a later message") {
+        CHECK(generated_by(
+                  "INSERT INTO m2.shop.public.orders (amount, id) VALUES (1, 5), (2, DEFAULT), (3, DEFAULT);") == 10);
+        CHECK(host.backend().rows(orders) == rows_t{{5, 1}, {10, 2}, {11, 3}});
+    }
+
+    SECTION("none") {
+        CHECK(generated_by("INSERT INTO m2.shop.public.orders (id, amount) VALUES (5, 1);") == 0);
+        REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
+        REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT);")->is_success());
+        CHECK(generated_by("INSERT INTO loc.t (id) VALUES (1);") == 0);
+    }
+}
+
 TEST_CASE("integration::cpp::host_names::insert_returning_reads_the_rows_written") {
     HOST_TEST_BOILERPLATE("test_host_names/insert_returning")
     declare_orders(host);

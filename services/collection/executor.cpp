@@ -4177,6 +4177,7 @@ namespace services::collection::executor {
         if (modified_rows && portal.plan.explain == components::logical_plan::explain_type::none &&
             exec_result.cursor->is_success()) {
             exec_result.cursor->set_written(exec_result.written);
+            exec_result.cursor->set_generated_id(exec_result.generated_id);
         }
         if (created_table_oid != components::catalog::INVALID_OID && exec_result.cursor->is_success()) {
             exec_result.cursor->set_created_oid(created_table_oid);
@@ -5330,6 +5331,7 @@ namespace services::collection::executor {
         }
 
         result_tracking.written = piece->written();
+        result_tracking.generated_id = piece->generated_id();
 
         if (pipeline_context.has_pending_disk_futures()) {
             auto disk_futures = pipeline_context.take_pending_disk_futures();
@@ -5545,6 +5547,7 @@ namespace services::collection::executor {
         out.referenced_deletes = std::move(result.referenced_deletes);
         out.dropped_objects = std::move(result.dropped_objects);
         out.written = result.written;
+        out.generated_id = result.generated_id;
         out.participants = std::move(result.participants);
         out.host_rows = std::move(result.host_rows);
         out.dropped_functions = std::move(result.dropped_functions);

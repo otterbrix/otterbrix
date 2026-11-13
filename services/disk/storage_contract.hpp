@@ -48,11 +48,14 @@ namespace services::disk {
     // What one write did. `awaits_publish`: the rows wait for otterbrix's MVCC publication at COMMIT (the disk);
     // a storage that commits them itself answers false. `returned`: when the write asked for them, the values of every
     // column of each written row (or of each deleted row, as it was), in the order the rows were sent.
+    // `generated_id`: of an append, the first value the storage generated for an auto-increment column of the rows
+    // (MySQL's LAST_INSERT_ID), 0 when it generated none.
     struct write_receipt_t {
         int64_t start_row{0};
         uint64_t count{0};
         bool awaits_publish{false};
         std::pmr::vector<components::vector::data_chunk_t> returned;
+        uint64_t generated_id{0};
     };
 
     // UPDATE's receipt; `written` / `attoids` are the new versions as the disk journals them (empty for a storage

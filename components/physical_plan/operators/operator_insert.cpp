@@ -323,6 +323,10 @@ namespace components::operators {
                     }
                     if (!outcome.error.contains_error()) {
                         written_ += receipt.count;
+                        // The statement's is its first: a later message's rows were generated after.
+                        if (generated_id_ == 0) {
+                            generated_id_ = receipt.generated_id;
+                        }
                         // The rows come back in the order sent: the n-th is the row numbered start_row + n, which
                         // ON CONFLICT reads to leave out the rows it removed.
                         int64_t next_row = receipt.start_row;

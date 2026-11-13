@@ -704,7 +704,7 @@ namespace services::disk {
             if (db_entry.kind != std::filesystem::file_type::directory)
                 continue;
             const auto db_name = db_entry.path.filename().string();
-            std::uint64_t db_oid_raw = 0;
+            std::uint32_t db_oid_raw = 0;
             {
                 auto [ptr, parse_ec] = std::from_chars(db_name.data(), db_name.data() + db_name.size(), db_oid_raw);
                 if (parse_ec != std::errc{})
@@ -719,7 +719,7 @@ namespace services::disk {
                 if (tbl_entry.kind != std::filesystem::file_type::directory)
                     continue;
                 const auto tbl_name = tbl_entry.path.filename().string();
-                std::uint64_t tbl_oid_raw = 0;
+                std::uint32_t tbl_oid_raw = 0;
                 {
                     auto [ptr, parse_ec] =
                         std::from_chars(tbl_name.data(), tbl_name.data() + tbl_name.size(), tbl_oid_raw);
@@ -1555,7 +1555,7 @@ namespace services::disk {
                 std::size_t end = csv.find(',', pos);
                 if (end == std::pmr::string::npos)
                     end = csv.size();
-                std::uint64_t token = 0;
+                std::uint32_t token = 0;
                 auto [ptr, ec] = std::from_chars(csv.data() + pos, csv.data() + end, token);
                 pos = end + 1;
                 if (ec != std::errc{})

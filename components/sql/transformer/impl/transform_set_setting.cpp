@@ -2,6 +2,7 @@
 #include <components/catalog/settings.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
 #include <components/sql/parser/nodes/makefuncs.h>
+#include <core/pmr.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -197,16 +198,17 @@ namespace components::sql::transform {
     // SHOW ALL is a row (name, setting, description) per setting, ordered by name.
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_show(VariableShowStmt& node,
                                                                                logical_plan::execution_plan_t* plan) {
-        auto* arena = resource_;
+        core::pmr::arena_resource_t nodes_arena{resource_};
         const std::string_view name = node.name ? node.name : "";
         if (name != "all") {
             const auto* setting = catalog::find_setting_by_sql_name(name);
             const std::string_view column = setting != nullptr ? setting->catalog_name : name;
-            auto* select =
-                select_of(arena, list_make1(arena, target_of(arena, current_setting_of(arena, name), column)));
+            auto* select = select_of(
+                &nodes_arena,
+                list_make1(&nodes_arena, target_of(&nodes_arena, current_setting_of(&nodes_arena, name), column)));
             return transform_select(*select, plan);
         }
-        std::pmr::vector<const catalog::setting_def_t*> settings{arena};
+        std::pmr::vector<const catalog::setting_def_t*> settings{resource_};
         for (const auto& known : catalog::all_settings()) {
             settings.push_back(&known);
         }
@@ -218,17 +220,17 @@ namespace components::sql::transform {
         });
         SelectStmt* all = nullptr;
         for (const auto* known : settings) {
-            auto* row =
-                select_of(arena,
-                          list_make3(arena,
-                                     target_of(arena, string_constant(arena, known->catalog_name), "name"),
-                                     target_of(arena, current_setting_of(arena, known->sql_name), "setting"),
-                                     target_of(arena, string_constant(arena, known->description), "description")));
+            auto* row = select_of(
+                &nodes_arena,
+                list_make3(&nodes_arena,
+                           target_of(&nodes_arena, string_constant(&nodes_arena, known->catalog_name), "name"),
+                           target_of(&nodes_arena, current_setting_of(&nodes_arena, known->sql_name), "setting"),
+                           target_of(&nodes_arena, string_constant(&nodes_arena, known->description), "description")));
             if (all == nullptr) {
                 all = row;
                 continue;
             }
-            auto* both = makeNode(arena, SelectStmt);
+            auto* both = makeNode(&nodes_arena, SelectStmt);
             both->op = SETOP_UNION;
             both->all = true;
             both->larg = all;

@@ -1373,6 +1373,10 @@ namespace components::sql::transform {
                                            types::complex_logical_type::create_struct("", field_types),
                                            fields);
             }
+            case T_SetToDefault:
+                // Only an INSERT's VALUES cell takes a column's default
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"DEFAULT is not allowed in this context", resource});
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"unable to parse value", resource});

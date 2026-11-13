@@ -63,6 +63,8 @@ namespace host_actor {
         complex_logical_type type;
         bool not_null{false};
         components::catalog::oid_t attoid{components::catalog::INVALID_OID};
+        // The backend's own default: what a row the INSERT does not write the column of takes (empty: NULL).
+        std::optional<int64_t> default_value;
     };
 
     struct row_t {
@@ -220,6 +222,16 @@ namespace host_actor {
                 }
                 table->rows.push_back(std::move(row));
             }
+        }
+        void set_default(const std::string& name, const std::string& column, int64_t value) {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            auto* table = find_by_name(name);
+            REQUIRE(table != nullptr);
+            auto found = std::find_if(table->columns.begin(), table->columns.end(), [&column](const column_t& held) {
+                return held.name == column;
+            });
+            REQUIRE(found != table->columns.end());
+            found->default_value = value;
         }
         bool has_table(const std::string& name) const {
             std::lock_guard<std::mutex> guard(state_mutex_);
@@ -487,15 +499,30 @@ namespace host_actor {
             if (auto refused = round_refusal(table->name, rows); refused.contains_error()) {
                 co_return refused;
             }
+            // The chunk's column of each table column, by attoid; a column the INSERT does not write takes the
+            // backend's default.
+            std::vector<std::size_t> source(table->columns.size(), attoids.size());
             std::string types;
-            for (std::size_t i = 0; i < table->columns.size(); ++i) {
-                types += (i == 0 ? "" : ",") + table->columns[i].name + ":" +
-                         (table->columns[i].type.type() == logical_type::BIGINT ? "bigint" : "other");
+            for (std::size_t written_column = 0; written_column < attoids.size(); ++written_column) {
+                auto found = std::find_if(table->columns.begin(), table->columns.end(), [&](const column_t& column) {
+                    return column.attoid == attoids[written_column];
+                });
+                const auto index = static_cast<std::size_t>(found - table->columns.begin());
+                if (found == table->columns.end() || source[index] != attoids.size()) {
+                    co_return core::error_t{
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"the test backend got the attoids of other columns", resource_}};
+                }
+                source[index] = written_column;
+                types += (written_column == 0 ? "" : ",") + found->name + ":" +
+                         (found->type.type() == logical_type::BIGINT ? "bigint" : "other");
             }
-            if (attoids.size() != table->columns.size()) {
-                co_return core::error_t{
-                    core::error_code_t::invalid_parameter,
-                    std::pmr::string{"the test backend got the attoids of other columns", resource_}};
+            for (const auto& chunk : data) {
+                if (chunk.column_count() != attoids.size()) {
+                    co_return core::error_t{
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"the test backend got rows of other columns than their attoids", resource_}};
+                }
             }
             note("insert " + table->name + " " + types, ctx.session.data(), ctx.txn);
             std::vector<row_t> written;
@@ -503,8 +530,8 @@ namespace host_actor {
                 for (uint64_t row = 0; row < chunk.size(); ++row) {
                     row_t added{next_row_id_++, {}};
                     for (std::size_t column = 0; column < table->columns.size(); ++column) {
-                        added.values.push_back(column < chunk.column_count() ? cell_of(chunk, column, row)
-                                                                             : std::optional<int64_t>{});
+                        added.values.push_back(source[column] != attoids.size() ? cell_of(chunk, source[column], row)
+                                                                                : table->columns[column].default_value);
                     }
                     for (std::size_t column = 0; column < table->columns.size(); ++column) {
                         if (table->columns[column].not_null && !added.values[column].has_value()) {
@@ -648,7 +675,8 @@ namespace host_actor {
             table.name = name.to_string();
             std::string line = "create " + table.name;
             for (const auto& column : columns) {
-                table.columns.push_back(column_t{column.name(), column.type(), column.is_not_null(), column.attoid()});
+                table.columns.push_back(
+                    column_t{column.name(), column.type(), column.is_not_null(), column.attoid(), {}});
                 line += " " + column.name() + (column.is_not_null() ? ":not_null" : "");
             }
             journal_.push_back(std::move(line));
@@ -731,7 +759,7 @@ namespace host_actor {
             journal_.push_back("alter add " + table->name + " " + column.name());
             oid_calls_.push_back(
                 oid_call_t{"alter add", oid, static_cast<components::catalog::oid_t>(column.attoid())});
-            table->columns.push_back(column_t{column.name(), column.type(), column.is_not_null(), column.attoid()});
+            table->columns.push_back(column_t{column.name(), column.type(), column.is_not_null(), column.attoid(), {}});
             for (auto& row : table->rows) {
                 row.values.emplace_back();
             }

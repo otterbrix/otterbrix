@@ -135,6 +135,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_information_schema.cpp
         test_set_config.cpp
         test_transaction_access.cpp
+        test_insert_default_cells.cpp
         test_current_place.cpp
         test_remote_databases.cpp
         test_connection_names.cpp

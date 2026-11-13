@@ -279,8 +279,17 @@ namespace components::sql::transform {
         };
 
         if (!node.selectStmt) {
-            return core::error_t(core::error_code_t::unimplemented_yet,
-                                 std::pmr::string{"INSERT ... DEFAULT VALUES is not supported", resource_});
+            // DEFAULT VALUES: one row that writes no column, so every column is omitted and takes its default.
+            std::pmr::vector<vector::data_chunk_t> chunks(resource_);
+            chunks.emplace_back(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 1);
+            chunks.back().set_cardinality(1);
+            auto ins = logical_plan::make_node_insert(resource_, std::move(chunks), std::move(key_translation));
+            auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
+            auto qn = rangevar_to_qualified_name(node.relation);
+            ins_node->returning() = returning;
+            set_target(*ins_node, qn, target_slots::relation);
+            register_write_target(qn);
+            return with_on_conflict(logical_plan::node_insert_ptr{ins_node});
         }
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {
             const auto& vals = pg_ptr_cast<List>(pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists)->lst;
@@ -317,6 +326,7 @@ namespace components::sql::transform {
 
             logical_plan::insert_literal_digits_list_t literal_digits(resource_);
             logical_plan::deferred_cells_t deferred_cells(resource_);
+            logical_plan::insert_default_cells_t default_cells(resource_);
 
             auto fill_row = [&](vector::data_chunk_t& chunk,
                                 size_t chunk_index,
@@ -363,6 +373,19 @@ namespace components::sql::transform {
                             placeholder.set_null(true);
                             chunk.data.emplace_back(std::move(placeholder));
                         }
+                    } else if (nodeTag(it_value->data) == T_SetToDefault) {
+                        // NULL until operator_insert writes the column's default; a column of DEFAULTs only is NA.
+                        auto it_column = find_column(field_name);
+                        if (it_column == chunk.data.end()) {
+                            chunk.data.emplace_back(resource_,
+                                                    types::complex_logical_type{types::logical_type::NA, field_name},
+                                                    chunk.capacity());
+                            it_column = chunk.data.end() - 1;
+                        }
+                        it_column->set_null(chunk_row, true);
+                        default_cells.push_back(
+                            logical_plan::insert_default_cell_t{global_row,
+                                                                static_cast<uint64_t>(it_column - chunk.data.begin())});
                     } else {
                         auto* written_node = pg_ptr_cast<Node>(it_value->data);
                         auto it = find_column(field_name);
@@ -592,6 +615,7 @@ namespace components::sql::transform {
             }
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
             ins_node->set_literal_digits(std::move(literal_digits));
+            ins_node->set_default_cells(std::move(default_cells));
             // With $N parameters this data node is a placeholder; transform_result moves the cells to the bound rows.
             static_cast<logical_plan::node_data_t*>(ins_node->children().front().get())
                 ->set_deferred_cells(std::move(deferred_cells));

@@ -94,6 +94,20 @@ namespace components::operators {
                 }
                 input.data[i] = std::move(casted);
             }
+            const uint64_t first_row = rows_pushed_;
+            const uint64_t end_row = first_row + input.size();
+            rows_pushed_ = end_row;
+            if (address_.is_remote()) {
+                append_written_runs_(std::move(input), first_row);
+                return core::error_t::no_error();
+            }
+            // A DEFAULT cell takes its column's default, as an omitted column does below.
+            for (const auto& written : written_defaults_) {
+                auto row = std::lower_bound(written.rows.begin(), written.rows.end(), first_row);
+                for (; row != written.rows.end() && *row < end_row; ++row) {
+                    vector::vector_ops::copy(written.value, input.data[written.column], 1, 0, *row - first_row);
+                }
+            }
             // DEFAULT expansion, above the journal, so storage_append/WAL/constraints see one full-width row.
             if (!fill_list_.empty() && !components::catalog::is_catalog_table(table_oid_)) {
                 const uint64_t rows = input.size();
@@ -117,6 +131,75 @@ namespace components::operators {
             output_->append_chunk(std::move(input));
         }
         return core::error_t::no_error();
+    }
+
+    // A connection's table declares no defaults: what the statement does not write, the backend fills itself. Its
+    // messages carry the written columns only, in declared order, named by their attoids; the rows of a run of the same
+    // DEFAULT cells go in messages of their own, in the order written.
+    void operator_insert::append_written_runs_(vector::data_chunk_t&& input, uint64_t first_row) {
+        const uint64_t rows = input.size();
+        assert(input.column_count() <= column_bindings_.size() && "append_written_runs_: every column is bound");
+        std::pmr::vector<uint64_t> declared(resource_);
+        declared.reserve(input.column_count());
+        for (uint64_t column = 0; column < input.column_count(); ++column) {
+            declared.push_back(column);
+        }
+        std::sort(declared.begin(), declared.end(), [this](uint64_t left, uint64_t right) {
+            return column_bindings_[left].target_index < column_bindings_[right].target_index;
+        });
+
+        std::pmr::vector<std::pmr::vector<uint64_t>::const_iterator> next_default(resource_);
+        next_default.reserve(written_defaults_.size());
+        for (const auto& written : written_defaults_) {
+            next_default.push_back(std::lower_bound(written.rows.begin(), written.rows.end(), first_row));
+        }
+        // Which written column is a DEFAULT cell in `row`, by the position in written_defaults_.
+        const auto defaults_of = [&](uint64_t row, std::pmr::vector<bool>* defaulted) {
+            for (std::size_t entry = 0; entry < written_defaults_.size(); ++entry) {
+                auto& next = next_default[entry];
+                const bool is_default = next != written_defaults_[entry].rows.end() && *next == first_row + row;
+                if (is_default) {
+                    ++next;
+                }
+                (*defaulted)[entry] = is_default;
+            }
+        };
+        const auto append_run = [&](uint64_t start, uint64_t end, const std::pmr::vector<bool>& defaulted) {
+            auto run = start == 0 && end == rows ? std::move(input) : input.partial_copy(resource_, start, end - start);
+            std::vector<vector::vector_t> columns;
+            std::pmr::vector<catalog::oid_t> attoids(resource_);
+            for (const auto column : declared) {
+                bool is_default = false;
+                for (std::size_t entry = 0; entry < written_defaults_.size(); ++entry) {
+                    is_default = is_default || (defaulted[entry] && written_defaults_[entry].column == column);
+                }
+                if (is_default) {
+                    continue;
+                }
+                columns.push_back(std::move(run.data[column]));
+                attoids.push_back(attoids_[column_bindings_[column].target_index]);
+            }
+            run.data = std::move(columns);
+            output_->append_chunk(std::move(run));
+            written_attoids_.push_back(std::move(attoids));
+        };
+
+        std::pmr::vector<bool> run_defaults(written_defaults_.size(), false, resource_);
+        std::pmr::vector<bool> row_defaults(written_defaults_.size(), false, resource_);
+        uint64_t run_start = 0;
+        for (uint64_t row = 0; row < rows; ++row) {
+            defaults_of(row, &row_defaults);
+            if (row == 0) {
+                run_defaults = row_defaults;
+            } else if (row_defaults != run_defaults) {
+                append_run(run_start, row, run_defaults);
+                run_start = row;
+                run_defaults = row_defaults;
+            }
+        }
+        if (rows > 0) {
+            append_run(run_start, rows, run_defaults);
+        }
     }
 
     actor_zeta::unique_future<void> operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
@@ -167,8 +250,29 @@ namespace components::operators {
                 src.copy(dst, 0);
                 return dst;
             };
-            auto rounds = dml_detail::split_rounds(resource_, output_->chunks(), address_.max_rows_per_write());
-            for (auto& round : rounds) {
+            // A round writes one set of columns: the table's, or (a connection's table) those of consecutive runs that
+            // wrote the same ones.
+            std::pmr::vector<write_round_t> rounds(resource_);
+            auto& chunks = output_->chunks();
+            std::size_t first = 0;
+            while (first < chunks.size()) {
+                const auto& written = written_attoids_.empty() ? attoids_ : written_attoids_[first];
+                std::size_t last = first + 1;
+                while (last < chunks.size() && (written_attoids_.empty() || written_attoids_[last] == written)) {
+                    ++last;
+                }
+                chunks_vector_t same_columns(resource_);
+                for (std::size_t chunk = first; chunk < last; ++chunk) {
+                    same_columns.push_back(std::move(chunks[chunk]));
+                }
+                for (auto& cut : dml_detail::split_rounds(resource_, same_columns, address_.max_rows_per_write())) {
+                    rounds.push_back(
+                        write_round_t{std::move(cut), std::pmr::vector<catalog::oid_t>{written, resource_}});
+                }
+                first = last;
+            }
+            written_attoids_.clear();
+            for (auto& [round, round_attoids] : rounds) {
                 // One write message per round; the index needs the rows intact after storage_append consumed them.
                 chunks_vector_t idx_chunks(resource_);
                 if (mirror_index) {
@@ -183,13 +287,13 @@ namespace components::operators {
                     }
                 }
                 ctx->join_transaction(address_, table_oid_, true);
-                auto [_a, af] =
-                    actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_append>(address_,
-                                                                                                   exec_ctx,
-                                                                                                   table_oid_,
-                                                                                                   attoids_,
-                                                                                                   std::move(round),
-                                                                                                   !returning_.empty());
+                auto [_a, af] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_append>(
+                    address_,
+                    exec_ctx,
+                    table_oid_,
+                    std::move(round_attoids),
+                    std::move(round),
+                    !returning_.empty());
                 auto append_result = co_await std::move(af);
                 dml_detail::flush_outcome_t outcome{};
                 if (append_result.has_error()) {

@@ -7,8 +7,8 @@ database is a connection's. otterbrix resolves every name and plans every statem
 actors, one address per connection: a table's operators reach the table's rows only through the messages of the
 storage contract, sent to the table's address — otterbrix's disk for a table of its own, the connection's backend for
 a table of a connection. One path for both: the same scans, writes, DDL steps, transactions and RETURNING; what
-differs is only what each storage answers. otterbrix runs the SQL (FROM / USING, joins, sub-queries, RETURNING, casts,
-NULL in omitted columns) over whatever the backend does not take of a statement (pushdown). otterbrix keeps nothing of
+differs is only what each storage answers. otterbrix runs the SQL (FROM / USING, joins, sub-queries, RETURNING, casts)
+over whatever the backend does not take of a statement (pushdown); what an INSERT does not write, the backend fills. otterbrix keeps nothing of
 the backend's: what a host needs (the remote name of a table, a location, a topic) it keeps in its own tables, keyed by
 otterbrix's oids — the table's oid and its columns' attoids, which every message carries.
 
@@ -214,9 +214,12 @@ block (see "Pushdown").
 
 ## Writes
 
-- **INSERT.** otterbrix's own: column list, arity, an assignment cast to every declared type, NULL in an omitted
-  column (a connection's table declares no defaults). `storage_append` gets full rows in the declared column order,
-  already cast, with `attoids` of the table's columns (`insert_into_a_storage_table`, `an_omitted_column_is_null`).
+- **INSERT.** otterbrix's own: column list, arity, an assignment cast to every declared type. A connection's table
+  declares no defaults, so what the statement does not write is the backend's to fill with its own: `storage_append`
+  gets the written columns only, in the declared column order, already cast, and `attoids` name them. An omitted
+  column is not sent, nor is a `DEFAULT` cell of `VALUES`: rows whose `DEFAULT` cells differ go in messages of their
+  own, in the order written, each naming the columns its rows write. `DEFAULT VALUES` sends rows of no columns
+  (`insert_into_a_storage_table`, `an_omitted_column_is_null`, `backend_defaults`).
 - **UPDATE and DELETE.** Whatever the backend does not take as one statement runs as otterbrix's own: the backend's
   scan numbers the rows, otterbrix applies the WHERE, the FROM / USING semi-join, LIMIT and RETURNING, and the chosen
   rows go to `storage_update` (every column of the row, the new values set) or `storage_delete_rows` with their numbers

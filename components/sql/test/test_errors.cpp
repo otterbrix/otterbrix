@@ -208,7 +208,7 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_OK("COMMIT;");
     TEST_TRANSFORMER_OK("ROLLBACK;");
 
-    TEST_TRANSFORMER_ERROR("INSERT INTO d.t DEFAULT VALUES;", R"_(INSERT ... DEFAULT VALUES is not supported)_");
+    TEST_TRANSFORMER_OK("INSERT INTO d.t DEFAULT VALUES;");
 
     SECTION("unsupported statements name their tag") {
         // TRUNCATE has its own refusal (test_name_bugs.cpp).

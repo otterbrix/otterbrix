@@ -720,7 +720,7 @@ TEST_CASE("integration::cpp::host_names::an_insert_flushes_on_the_storage_thresh
     CHECK(host.backend().rows(orders) == rows_t{{11, 100}, {12, 200}, {13, 300}});
 }
 
-// A backend's table declares no defaults: a column the INSERT leaves out is NULL, as for a local table without one.
+// A column the INSERT leaves out is not sent: the backend fills it, and this one has no default for it.
 TEST_CASE("integration::cpp::host_names::an_omitted_column_is_null") {
     HOST_TEST_BOILERPLATE("test_host_names/insert_null")
     declare_orders(host);
@@ -735,6 +735,43 @@ TEST_CASE("integration::cpp::host_names::an_omitted_column_is_null") {
         REQUIRE(cursor->is_success());
     }
     CHECK(sorted(host.backend().rows(orders)) == rows_t{{-1, 800}, {1, 100}, {2, 200}, {3, 300}, {4, -1}, {5, -1}});
+}
+
+// What the INSERT does not write, an omitted column or a DEFAULT cell, takes the backend's own default: a message
+// names the columns its rows write, and rows of other DEFAULT cells go in messages of their own, in order.
+TEST_CASE("integration::cpp::host_names::backend_defaults") {
+    HOST_TEST_BOILERPLATE("test_host_names/backend_defaults")
+    declare_orders(host);
+    host.backend().set_default(orders, "id", 77);
+    host.backend().set_rows(orders, {});
+    host.backend().clear_journal();
+
+    SECTION("an omitted column") {
+        REQUIRE(run(dispatcher, "INSERT INTO m2.shop.public.orders (amount) VALUES (1);")->is_success());
+        CHECK(host.backend().rows(orders) == rows_t{{77, 1}});
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " amount:bigint"});
+    }
+
+    SECTION("default cells") {
+        auto inserted = run(dispatcher,
+                            "INSERT INTO m2.shop.public.orders (amount, id) VALUES (2, DEFAULT), (3, DEFAULT), "
+                            "(4, 5), (6, DEFAULT);");
+        INFO(error_of(inserted));
+        REQUIRE(inserted->is_success());
+        CHECK(host.backend().rows(orders) == rows_t{{77, 2}, {77, 3}, {5, 4}, {77, 6}});
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " amount:bigint",
+                                                          "insert " + orders + " id:bigint,amount:bigint",
+                                                          "insert " + orders + " amount:bigint"});
+    }
+
+    SECTION("default values") {
+        auto returned = run(dispatcher, "INSERT INTO m2.shop.public.orders DEFAULT VALUES RETURNING id;");
+        INFO(error_of(returned));
+        REQUIRE(returned->is_success());
+        CHECK(sorted_int_rows(returned) == rows_t{{77}});
+        CHECK(host.backend().rows(orders) == rows_t{{77, -1}});
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " "});
+    }
 }
 
 TEST_CASE("integration::cpp::host_names::insert_returning_reads_the_rows_written") {

@@ -58,19 +58,80 @@
 namespace services::dispatcher { namespace {
     using components::logical_plan::catalog_resolves_t;
 
-    // DEFAULT is expanded here, once — the only reader of pg_attribute.attdefspec.
+    // A column's DEFAULT, or a NULL of its type when it has none: the only reader of pg_attribute.attdefspec.
+    core::result_wrapper_t<components::vector::vector_t>
+    column_default(std::pmr::memory_resource* resource,
+                   const components::logical_plan::resolved_column_metadata_t& col) {
+        std::optional<components::vector::vector_t> decoded;
+        if (col.atthasdefault) {
+            if (auto ec = components::catalog::decode_default_spec(resource, col.type, col.attdefspec, decoded);
+                ec.contains_error()) {
+                return ec;
+            }
+        }
+        if (decoded.has_value()) {
+            return std::move(*decoded);
+        }
+        return components::vector::make_null(resource, col.type);
+    }
+
+    // The DEFAULT cells of each written column, with the default of the column it is bound to.
+    core::error_t build_insert_written_defaults(components::logical_plan::node_insert_t* node,
+                                                const components::logical_plan::resolved_table_metadata_t& md) {
+        auto* resource = node->resource();
+        components::logical_plan::insert_written_defaults_t written(resource);
+        const auto& bindings = node->column_bindings();
+        for (const auto& cell : node->default_cells()) {
+            if (cell.column >= bindings.size() || bindings[cell.column].target_index >= md.columns.size()) {
+                return core::error_t(
+                    core::error_code_t::internal_error,
+                    std::pmr::string{"INSERT: a VALUES cell written as DEFAULT points outside the INSERT columns",
+                                     resource});
+            }
+            auto entry = std::find_if(written.begin(), written.end(), [&cell](const auto& column) {
+                return column.column == cell.column;
+            });
+            if (entry == written.end()) {
+                auto value = column_default(resource, md.columns[bindings[cell.column].target_index]);
+                if (value.has_error()) {
+                    return value.error();
+                }
+                written.push_back(
+                    components::logical_plan::insert_written_default_t{cell.column,
+                                                                       std::pmr::vector<uint64_t>{resource},
+                                                                       std::move(value.value())});
+                entry = written.end() - 1;
+            }
+            entry->rows.push_back(cell.row);
+        }
+        for (auto& column : written) {
+            std::sort(column.rows.begin(), column.rows.end());
+        }
+        node->set_written_defaults(std::move(written));
+        return core::error_t::no_error();
+    }
+
     core::error_t build_insert_fill_list(components::logical_plan::node_insert_t* node,
                                          const components::logical_plan::resolved_table_metadata_t& md) {
         auto* resource = node->resource();
         components::logical_plan::insert_fill_list_t fill(resource);
         std::pmr::vector<uint64_t> slots(resource);
         const auto& bindings = node->column_bindings();
+        // VALUES rows of no columns (DEFAULT VALUES) write none: every column is omitted.
+        const auto* source = node->children().empty() ? nullptr : node->children().front().get();
+        const bool writes_no_column =
+            source != nullptr && source->type() == components::logical_plan::node_type::data_t &&
+            static_cast<const components::logical_plan::node_data_t*>(source)->data_chunk().column_count() == 0;
         // A dynamic-schema table's bindings name source positions, not its columns; the storage
-        // fills what such a payload lacks by name (data_table_t::widen_by_name).
-        if (bindings.empty() || md.relkind == 'g') {
+        // fills what such a payload lacks by name (data_table_t::widen_by_name). It declares no defaults: a DEFAULT
+        // cell stays NULL.
+        if ((bindings.empty() && !writes_no_column) || md.relkind == 'g') {
             node->set_fill_list(std::move(fill));
             node->set_column_slots(std::move(slots));
             return core::error_t::no_error();
+        }
+        if (auto ec = build_insert_written_defaults(node, md); ec.contains_error()) {
+            return ec;
         }
         slots.reserve(md.columns.size());
         for (std::size_t i = 0; i < md.columns.size(); ++i) {
@@ -83,18 +144,15 @@ namespace services::dispatcher { namespace {
                 continue;
             }
             slots.push_back(bindings.size() + fill.size());
-            std::optional<components::vector::vector_t> decoded;
-            if (col.atthasdefault) {
-                if (auto ec = components::catalog::decode_default_spec(resource, col.type, col.attdefspec, decoded);
-                    ec.contains_error()) {
-                    return ec;
-                }
+            auto value = column_default(resource, col);
+            if (value.has_error()) {
+                return value.error();
             }
-            fill.push_back(components::logical_plan::insert_fill_column_t{
-                i,
-                std::pmr::string{col.attname.c_str(), resource},
-                col.type,
-                decoded.has_value() ? std::move(*decoded) : components::vector::make_null(resource, col.type)});
+            fill.push_back(
+                components::logical_plan::insert_fill_column_t{i,
+                                                               std::pmr::string{col.attname.c_str(), resource},
+                                                               col.type,
+                                                               std::move(value.value())});
         }
         node->set_fill_list(std::move(fill));
         node->set_column_slots(std::move(slots));

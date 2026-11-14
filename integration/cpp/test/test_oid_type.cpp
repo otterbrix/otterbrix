@@ -5,6 +5,10 @@
 
 #include <components/types/types.hpp>
 
+#include <string>
+#include <string_view>
+#include <type_traits>
+
 // oid as PostgreSQL 18 defines it: uint32 storage; int2/int4/int8 -> oid implicit (int2/int4 keep the bit
 // pattern, int8 refuses outside 0..4294967295); oid -> int4/int8 assignment; text in/out; comparisons, min and
 // max, no arithmetic.
@@ -28,6 +32,8 @@ namespace {
 
         template<typename T>
         T single(const std::string& sql) {
+            static_assert(!std::is_same_v<T, std::string_view>,
+                          "a text cell is a view into the cursor's memory: read it with single_text");
             auto cursor = run(sql);
             INFO(sql);
             INFO((cursor->is_error() ? std::string{cursor->get_error().what} : std::string{}));
@@ -36,6 +42,18 @@ namespace {
             auto cell = cursor->get<T>(0, 0);
             REQUIRE_FALSE(cell.has_error());
             return cell.value();
+        }
+
+        // A text cell is a view into the cursor's chunk memory: copied out before the cursor goes.
+        std::string single_text(const std::string& sql) {
+            auto cursor = run(sql);
+            INFO(sql);
+            INFO((cursor->is_error() ? std::string{cursor->get_error().what} : std::string{}));
+            REQUIRE(cursor->is_success());
+            REQUIRE(cursor->size() == 1);
+            auto cell = cursor->get<std::string_view>(0, 0);
+            REQUIRE_FALSE(cell.has_error());
+            return std::string{cell.value()};
         }
 
         configuration::config config;
@@ -76,7 +94,7 @@ TEST_CASE("integration::cpp::oid_type::text_io") {
     CHECK(db.single<std::uint32_t>("SELECT CAST('4294967295' AS oid);") == 4294967295U);
     CHECK(db.run("SELECT CAST('4294967296' AS oid);")->is_error());
     CHECK(db.run("SELECT CAST('-2147483649' AS oid);")->is_error());
-    CHECK(db.single<std::string_view>("SELECT CAST(CAST(4294967295 AS oid) AS TEXT);") == "4294967295");
+    CHECK(db.single_text("SELECT CAST(CAST(4294967295 AS oid) AS TEXT);") == "4294967295");
 }
 
 TEST_CASE("integration::cpp::oid_type::no_arithmetic") {

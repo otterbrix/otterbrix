@@ -846,6 +846,51 @@ TEST_CASE("integration::cpp::test_sql_features::like_match_mode_is_not_callable_
     CHECK(cur->size() == 1);
 }
 
+// x IS [NOT] TRUE / FALSE / UNKNOWN is never NULL: a NULL x is unknown (PostgreSQL 18 BooleanTest).
+TEST_CASE("integration::cpp::test_sql_features::boolean_test") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/boolean_test"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE SCHEMA bdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE bdb.t (id bigint, a boolean);"));
+    REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO bdb.t (id, a) VALUES (1, true), (2, false), (3, NULL);"));
+
+    SECTION("every test of every value") {
+        auto cur = test_helpers::exec(dispatcher,
+                                      "SELECT a IS TRUE, a IS NOT TRUE, a IS FALSE, a IS NOT FALSE, a IS UNKNOWN, "
+                                      "a IS NOT UNKNOWN FROM bdb.t ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        const std::vector<std::vector<bool>> expected{{true, false, false, true, false, true},
+                                                      {false, true, true, false, false, true},
+                                                      {false, true, false, true, true, false}};
+        const auto& chunk = cur->chunks().front();
+        for (uint64_t row = 0; row < 3; ++row) {
+            for (uint64_t column = 0; column < 6; ++column) {
+                INFO("row " << row << ", test " << column);
+                REQUIRE_FALSE(chunk.is_null(column, row));
+                CHECK(chunk.get_value<bool>(column, row) == expected[row][column]);
+            }
+        }
+    }
+
+    SECTION("as a predicate") {
+        auto cur = test_helpers::exec(dispatcher, "SELECT id FROM bdb.t WHERE a IS NOT TRUE AND NOT (a IS FALSE);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        CHECK(cur->chunks().front().get_value<int64_t>(0, 0) == 3);
+    }
+
+    SECTION("of a value that is not boolean") {
+        auto cur = test_helpers::exec(dispatcher, "SELECT id FROM bdb.t WHERE id IS TRUE;");
+        REQUIRE(cur->is_error());
+        CHECK(cur->get_error().type == core::error_code_t::datatype_mismatch);
+        auto called = test_helpers::exec(dispatcher, "SELECT boolean_test(a, 0::uint1) FROM bdb.t;");
+        REQUIRE(called->is_error());
+        CHECK(called->get_error().type == core::error_code_t::unrecognized_function);
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {
     // RE2 defaults to UTF-8; core::regex_t must compile Latin-1 (byte-wise) so LIKE matches non-UTF-8 bytes.
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_latin1_bytes"));

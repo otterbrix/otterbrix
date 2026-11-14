@@ -737,6 +737,63 @@ namespace {
         return fn;
     }
 
+    // PostgreSQL 18 ExecEvalBooleanTest: the answer is never NULL; a NULL value is unknown.
+    core::error_t vector_boolean_test(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
+        const auto& values = inputs.data[0];
+        const auto* truths = values.data<bool>();
+        const auto* tests = inputs.data[1].data<uint8_t>();
+        auto* answers = output.data<bool>();
+        for (uint64_t row = 0; row < inputs.size(); row++) {
+            const bool known = !values.is_null(row);
+            const bool is_true = known && truths[row];
+            const bool is_false = known && !truths[row];
+            switch (static_cast<boolean_test_t>(tests[row])) {
+                case boolean_test_t::is_true:
+                    answers[row] = is_true;
+                    break;
+                case boolean_test_t::is_not_true:
+                    answers[row] = !is_true;
+                    break;
+                case boolean_test_t::is_false:
+                    answers[row] = is_false;
+                    break;
+                case boolean_test_t::is_not_false:
+                    answers[row] = !is_false;
+                    break;
+                case boolean_test_t::is_unknown:
+                    answers[row] = !known;
+                    break;
+                case boolean_test_t::is_not_unknown:
+                    answers[row] = known;
+                    break;
+            }
+            output.set_null(row, false);
+        }
+        return core::error_t::no_error();
+    }
+
+    core::pmr::polymorphic_unique_ptr<vector_function> make_boolean_test_func(std::pmr::memory_resource* resource) {
+        function_doc doc{resource,
+                         "Boolean test",
+                         "BOOLEAN_TEST(value, test) -> bool; internal: what IS [NOT] TRUE / FALSE / UNKNOWN lower to",
+                         {"value", "test"},
+                         false};
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      boolean_test_name,
+                                                                      arity::binary(),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{1},
+                                                                      volatility_t::immutable);
+        kernel_signature_t sig(
+            function_type_t::vector,
+            {parameter_type::exact(logical_type::BOOLEAN), parameter_type::exact(logical_type::UTINYINT)},
+            {output_type::fixed(logical_type::BOOLEAN)});
+        vector_kernel k(std::move(sig), vector_boolean_test);
+        [[maybe_unused]] const auto added = fn->add_kernel(resource, std::move(k));
+        assert(!added.contains_error() && "boolean_test kernel must fit the declared slots and arity");
+        return fn;
+    }
+
 } // namespace
 
 namespace components::compute {
@@ -791,5 +848,8 @@ namespace components::compute {
                                         set_config_name,
                                         "set_config(name, value, is_local) -> text; SET [LOCAL], answering the value"));
     }
+
+    // WARNING: the uid must mirror the DEFAULT_FUNCTIONS entry boolean_test (23).
+    void register_boolean_test_function(function_registry_t& r) { r.add_builtin(make_boolean_test_func(r.resource())); }
 
 } // namespace components::compute

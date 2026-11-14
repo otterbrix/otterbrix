@@ -444,6 +444,27 @@ namespace services::dispatcher {
             return result;
         }
 
+        // A WHERE / HAVING that is not a comparison (a boolean column, a call, a CASE): any value, required boolean.
+        [[nodiscard]] core::error_t resolve_boolean_clause(const validation::validation_context_t& context,
+                                                           expression_ptr& clause,
+                                                           const storage_parameters& parameters,
+                                                           const named_schema* schema_left,
+                                                           const named_schema* schema_right = nullptr) {
+            validation::expression_context_t predicate_context{
+                context.resource,
+                *schema_left,
+                parameters,
+                context.cast_registry,
+                context.function_registry,
+                context.execution_context,
+                components::compute::create_mask(components::compute::function_type_t::vector),
+                context.column_uses,
+                context.parameter_types,
+                schema_right};
+            predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
+            return validation::resolve_expression(clause, predicate_context);
+        }
+
         [[nodiscard]] core::result_wrapper_t<named_schema>
         validate_schema(const validation::validation_context_t& context,
                         node_match_t* node,
@@ -487,19 +508,11 @@ namespace services::dispatcher {
                     auto* expr = reinterpret_cast<compare_expression_t*>(node->expressions()[0].get());
                     return validate_schema(context, expr, parameters, schema_left, schema_right);
                 } else {
-                    validation::expression_context_t predicate_context{
-                        resource,
-                        *schema_left,
-                        parameters,
-                        context.cast_registry,
-                        context.function_registry,
-                        context.execution_context,
-                        components::compute::create_mask(components::compute::function_type_t::vector),
-                        context.column_uses,
-                        context.parameter_types,
-                        schema_right};
-                    predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
-                    if (auto error = validation::resolve_expression(node->expressions()[0], predicate_context);
+                    if (auto error = resolve_boolean_clause(context,
+                                                            node->expressions()[0],
+                                                            parameters,
+                                                            schema_left,
+                                                            schema_right);
                         error.contains_error()) {
                         return error;
                     }
@@ -2929,6 +2942,9 @@ namespace services::dispatcher {
                         if (res.has_error()) {
                             return res;
                         }
+                    } else if (auto error = impl::resolve_boolean_clause(context, having, parameters, &result);
+                               error.contains_error()) {
+                        return error;
                     }
                 }
                 // cleanup of group output schema

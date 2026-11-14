@@ -846,28 +846,8 @@ namespace components::sql::transform {
                 auto expr = make_compare_union_expression(resource_,
                                                           node->kind == AEXPR_AND ? compare_type::union_and
                                                                                   : compare_type::union_or);
-                auto lower = [this, &plan, &names](Node* node) -> core::result_wrapper_t<expression_ptr> {
-                    switch (nodeTag(node)) {
-                        case T_A_Expr:
-                            return transform_a_expr(pg_ptr_cast<A_Expr>(node), names, plan);
-                        case T_A_Indirection:
-                            return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, plan);
-                        case T_FuncCall:
-                            return transform_a_expr_func(pg_ptr_cast<FuncCall>(node), names, plan);
-                        case T_NullTest:
-                            return transform_null_test(pg_ptr_cast<NullTest>(node), expression_context_t{names, plan});
-                        case T_SubLink: {
-                            return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
-                        }
-                        default:
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr",
-                                                 resource_});
-                    }
-                };
-                auto append = [&expr, &lower](Node* node) -> core::error_t {
-                    VALUE_OR_RETURN(auto child_res, lower(node));
+                auto append = [this, &expr, &names, &plan](Node* node) -> core::error_t {
+                    VALUE_OR_RETURN(auto child_res, transform_predicate(node, names, plan));
                     // An accepted-but-empty child has no group() to read; skip it rather than null-deref below.
                     auto child_expr = std::move(child_res);
                     if (!child_expr) {
@@ -988,21 +968,7 @@ namespace components::sql::transform {
                 return cmp;
             }
             case AEXPR_NOT: {
-                expression_ptr right;
-                if (nodeTag(node->rexpr) == T_A_Expr) {
-                    VALUE_OR_RETURN(right, transform_a_expr(pg_ptr_cast<A_Expr>(node->rexpr), names, plan));
-                } else if (nodeTag(node->rexpr) == T_A_Indirection) {
-                    VALUE_OR_RETURN(right,
-                                    transform_a_indirection(pg_ptr_cast<A_Indirection>(node->rexpr), names, plan));
-                } else if (nodeTag(node->rexpr) == T_FuncCall) {
-                    VALUE_OR_RETURN(right, transform_a_expr_func(pg_ptr_cast<FuncCall>(node->rexpr), names, plan));
-                } else if (nodeTag(node->rexpr) == T_SubLink) {
-                    VALUE_OR_RETURN(right, transform_sublink_expr(pg_ptr_cast<SubLink>(node->rexpr), names, plan));
-                } else {
-                    return core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr", resource_});
-                }
+                VALUE_OR_RETURN(auto right, transform_predicate(node->rexpr, names, plan));
                 if (!right) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"NOT operand lowered to an empty expression", resource_});
@@ -1116,8 +1082,56 @@ namespace components::sql::transform {
                         }
                     }
                 }
-                return core::error_t(core::error_code_t::sql_parse_error,
-                                     std::pmr::string{"Unsupported predicate expression", resource_});
+                VALUE_OR_RETURN(auto converted, transform_expression(node, expression_context_t{names, plan}));
+                return as_expression(std::move(converted));
+            }
+            // x IS [NOT] TRUE / FALSE / UNKNOWN: boolean_test(x, test), never NULL (PostgreSQL 18 BooleanTest).
+            case T_BooleanTest: {
+                auto* test = pg_ptr_cast<BooleanTest>(node);
+                compute::boolean_test_t kind = compute::boolean_test_t::is_true;
+                switch (test->booltesttype) {
+                    case IS_TRUE:
+                        kind = compute::boolean_test_t::is_true;
+                        break;
+                    case IS_NOT_TRUE:
+                        kind = compute::boolean_test_t::is_not_true;
+                        break;
+                    case IS_FALSE:
+                        kind = compute::boolean_test_t::is_false;
+                        break;
+                    case IS_NOT_FALSE:
+                        kind = compute::boolean_test_t::is_not_false;
+                        break;
+                    case IS_UNKNOWN:
+                        kind = compute::boolean_test_t::is_unknown;
+                        break;
+                    case IS_NOT_UNKNOWN:
+                        kind = compute::boolean_test_t::is_not_unknown;
+                        break;
+                }
+                VALUE_OR_RETURN(auto value,
+                                transform_expression(pg_ptr_cast<Node>(test->arg), expression_context_t{names, plan}));
+                std::pmr::vector<expressions::param_storage> args{resource_};
+                args.emplace_back(std::move(value));
+                args.emplace_back(
+                    plan->parameters->add_parameter(vector::make_scalar(resource_, static_cast<std::uint8_t>(kind)),
+                                                    vector::parameter_kind::literal));
+                auto call = make_function_expression(
+                    resource_,
+                    function_qualified_name_t{core::function_name_t{std::string{compute::boolean_test_name}}},
+                    std::move(args));
+                call->set_pins(std::pmr::vector<compute::function_pin_t>({{compute::boolean_test_uid, 0}}, resource_));
+                return call;
+            }
+            // A value is a predicate of its own (WHERE flag, NOT flag, a AND b): validation requires it boolean.
+            case T_ColumnRef:
+            case T_ParamRef:
+            case T_A_Const:
+            case T_CaseExpr:
+            case T_CoalesceExpr:
+            case T_MinMaxExpr: {
+                VALUE_OR_RETURN(auto value, transform_expression(node, expression_context_t{names, plan}));
+                return as_expression(std::move(value));
             }
             default:
                 return core::error_t(
@@ -1564,23 +1578,8 @@ namespace components::sql::transform {
                 auto cond = make_compare_expression(resource_, compare_type::eq, col_key.field, param);
                 expr->append_param(expression_ptr(cond));
             } else {
-                auto cond_node = pg_ptr_cast<Node>(when->expr);
-                core::result_wrapper_t<expression_ptr> condition;
-                if (nodeTag(cond_node) == T_A_Expr) {
-                    condition = transform_a_expr(pg_ptr_cast<A_Expr>(cond_node), names, plan);
-                } else if (nodeTag(cond_node) == T_FuncCall) {
-                    condition = transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, plan);
-                } else if (nodeTag(cond_node) == T_NullTest) {
-                    condition =
-                        transform_null_test(pg_ptr_cast<NullTest>(cond_node), expression_context_t{names, plan});
-                } else {
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"Unsupported WHEN condition type", resource_});
-                }
-                if (condition.has_error()) {
-                    return condition.error();
-                }
-                expr->append_param(std::move(condition.value()));
+                VALUE_OR_RETURN(auto condition, transform_predicate(pg_ptr_cast<Node>(when->expr), names, plan));
+                expr->append_param(std::move(condition));
             }
 
             VALUE_OR_RETURN(auto result, resolve_select_operand(pg_ptr_cast<Node>(when->result), names, plan, group));

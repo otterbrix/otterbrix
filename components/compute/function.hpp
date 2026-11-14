@@ -5,6 +5,7 @@
 
 #include <components/types/types.hpp>
 #include <core/pmr.hpp>
+#include <cstdint>
 #include <initializer_list>
 #include <memory>
 #include <memory_resource>
@@ -405,7 +406,7 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, function_uid>, 23> DEFAULT_FUNCTIONS{
+    static const std::array<std::pair<std::string, function_uid>, 24> DEFAULT_FUNCTIONS{
         std::pair<std::string, function_uid>{"sum", 0},
         std::pair<std::string, function_uid>{"min", 1},
         std::pair<std::string, function_uid>{"max", 2},
@@ -428,13 +429,28 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"current_schema", 19},
         std::pair<std::string, function_uid>{"current_connection", 20},
         std::pair<std::string, function_uid>{"current_setting", 21},
-        std::pair<std::string, function_uid>{"set_config", 22}};
+        std::pair<std::string, function_uid>{"set_config", 22},
+        std::pair<std::string, function_uid>{"boolean_test", 23}};
 
     inline bool is_builtin(function_uid uid) noexcept { return uid < DEFAULT_FUNCTIONS.size(); }
 
     inline constexpr function_uid like_match_uid = 17;
     inline constexpr std::string_view like_match_name = "like_match";
-    inline bool is_internal(function_uid uid) noexcept { return uid == like_match_uid; }
+    // boolean_test(value, test): what x IS [NOT] TRUE / FALSE / UNKNOWN lower to (PostgreSQL 18 BooleanTest).
+    inline constexpr function_uid boolean_test_uid = 23;
+    inline constexpr std::string_view boolean_test_name = "boolean_test";
+    inline bool is_internal(function_uid uid) noexcept { return uid == like_match_uid || uid == boolean_test_uid; }
+
+    // The test boolean_test applies; never NULL, whatever the value.
+    enum class boolean_test_t : std::uint8_t
+    {
+        is_true,
+        is_not_true,
+        is_false,
+        is_not_false,
+        is_unknown,
+        is_not_unknown
+    };
 
     // Goes through add_builtin, which pins uids to DEFAULT_FUNCTIONS and poisons the registry on
     // mismatch; check builtin_registration_error() for the outcome.
@@ -448,6 +464,7 @@ namespace components::compute {
     void register_internal_functions(function_registry_t& registry);
     void register_place_functions(function_registry_t& registry);
     void register_setting_functions(function_registry_t& registry);
+    void register_boolean_test_function(function_registry_t& registry);
 
     // current_database() / current_schema() / current_connection(): the executor reads the session's place from
     // the catalog and binds its name (NULL when it is gone; current_connection: '' for a local place) as the one

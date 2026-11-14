@@ -47,6 +47,12 @@ namespace {
         {"is_null", "name IS NULL", yields::boolean, true},
         {"boolean_and", "amount > 1 AND id < 100", yields::boolean, true},
         {"negation", "NOT (amount > 5)", yields::boolean, true},
+        {"boolean_column", "active", yields::boolean, true},
+        {"boolean_column_and", "active AND amount > 1", yields::boolean, true},
+        {"boolean_column_negation", "NOT active", yields::boolean, true},
+        {"case_on_boolean_column", "CASE WHEN active THEN 1 ELSE 0 END", yields::value, true},
+        {"boolean_test", "active IS NOT TRUE", yields::boolean, true},
+        {"boolean_test_of_comparison", "(amount > 5) IS UNKNOWN", yields::boolean, true},
         {"like", "name LIKE 'a%'", yields::boolean, true},
         {"in_list", "id IN (1, 2, 3)", yields::boolean, true},
         {"between", "amount BETWEEN 1 AND 100", yields::boolean, true},
@@ -160,9 +166,9 @@ namespace {
             : dispatcher_(dispatcher) {
             const char* schema[] = {
                 "CREATE SCHEMA ddb;",
-                "CREATE TABLE ddb.orders (id BIGINT, name TEXT, amount BIGINT, tags BIGINT[]);",
+                "CREATE TABLE ddb.orders (id BIGINT, name TEXT, amount BIGINT, tags BIGINT[], active BOOLEAN);",
                 "CREATE TABLE ddb.customers (cid BIGINT, cname TEXT);",
-                "INSERT INTO ddb.orders (id, name, amount) VALUES (1, 'alice', 10);",
+                "INSERT INTO ddb.orders (id, name, amount, active) VALUES (1, 'alice', 10, true);",
                 "INSERT INTO ddb.customers (cid, cname) VALUES (1, 'acme');",
             };
             for (const char* statement : schema) {

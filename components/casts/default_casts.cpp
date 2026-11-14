@@ -411,11 +411,12 @@ namespace components::casts {
         template<typename Numeric>
         void add_numeric_to_bool(cast_registry_t& registry) {
             // Only integer -> bool, matching PostgreSQL; a floating -> bool would trip -Wfloat-equal (float != 0).
+            // MySQL client writes a BOOLEAN (TINYINT(1)) as 1 / 0.
             if constexpr (!std::is_floating_point_v<Numeric>) {
                 complex_logical_type source{types::to_logical_type<Numeric>()};
                 complex_logical_type target{types::to_logical_type<bool>()};
                 cast_entry entry{cast_function_t{&kernels::numeric_cast<Numeric, bool>, nullptr},
-                                 cast_type::explicit_only,
+                                 cast_type::assignment,
                                  /*convertable_inplace*/ false};
                 [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
                 assert(!error.contains_error() && "duplicate default cast registration");

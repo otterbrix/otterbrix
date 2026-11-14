@@ -774,6 +774,51 @@ TEST_CASE("integration::cpp::host_names::backend_defaults") {
     }
 }
 
+// ORMs quote a federated prefix as one identifier: a name that is nothing as written is the one its dots spell.
+TEST_CASE("integration::cpp::host_names::spelled_by_dots") {
+    HOST_TEST_BOILERPLATE("test_host_names/spelled_by_dots")
+    declare_orders(host);
+
+    SECTION("a quoted schema") {
+        auto found =
+            run(dispatcher, "SELECT \"m2.shop.public\".\"orders\".id FROM \"m2.shop.public\".\"orders\" ORDER BY id;");
+        INFO(error_of(found));
+        REQUIRE(found->is_success());
+        CHECK(sorted_int_rows(found) == rows_t{{1}, {2}, {3}});
+        REQUIRE(
+            run(dispatcher, "INSERT INTO \"m2.shop.public\".\"orders\" (id, amount) VALUES (4, 400);")->is_success());
+        CHECK(host.backend().rows(orders).size() == 4);
+    }
+
+    SECTION("a quoted relation") {
+        auto found = run(dispatcher, "SELECT id FROM \"m2.shop.public.orders\";");
+        INFO(error_of(found));
+        REQUIRE(found->is_success());
+        CHECK(sorted_int_rows(found) == rows_t{{1}, {2}, {3}});
+        REQUIRE(run(dispatcher, "INSERT INTO \"m2.shop.public.orders\" (id, amount) VALUES (4, 400);")->is_success());
+        CHECK(host.backend().rows(orders).size() == 4);
+    }
+
+    SECTION("a name as written first") {
+        REQUIRE(run(dispatcher, "CREATE SCHEMA \"m2.shop.public\";")->is_success());
+        REQUIRE(run(dispatcher, "CREATE TABLE \"m2.shop.public\".orders (id BIGINT);")->is_success());
+        REQUIRE(run(dispatcher, "INSERT INTO \"m2.shop.public\".orders (id) VALUES (99);")->is_success());
+        auto found = run(dispatcher, "SELECT id FROM \"m2.shop.public\".\"orders\";");
+        INFO(error_of(found));
+        REQUIRE(found->is_success());
+        CHECK(sorted_int_rows(found) == rows_t{{99}});
+        CHECK(host.backend().rows(orders).size() == 3);
+    }
+
+    SECTION("a name that is neither") {
+        auto missing = run(dispatcher, "SELECT id FROM \"m2.shop.public\".\"nothing\";");
+        REQUIRE(missing->is_error());
+        auto not_a_connection = run(dispatcher, "INSERT INTO \"m9.shop.public\".\"orders\" (id) VALUES (1);");
+        REQUIRE(not_a_connection->is_error());
+        CHECK(host.backend().rows(orders).size() == 3);
+    }
+}
+
 // The first value the backend generated for an auto-increment column, as MySQL's OK packet reports it.
 TEST_CASE("integration::cpp::host_names::generated_id") {
     HOST_TEST_BOILERPLATE("test_host_names/generated_id")

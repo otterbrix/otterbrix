@@ -1775,7 +1775,6 @@ namespace services::collection::executor {
             return {};
         }
 
-        // `target` in its database's own names when it is written in three parts of a connection.
         qualified_name_t in_own_names(const components::logical_plan::catalog_resolves_t& resolves,
                                       const qualified_name_t& target) {
             if (!target.connection.t.empty()) {
@@ -1787,7 +1786,7 @@ namespace services::collection::executor {
             }
             return qualified_name_t{schema->found_place->connection,
                                     schema->found_place->database,
-                                    target.schema,
+                                    schema->found_place->schema,
                                     target.collection};
         }
     } // namespace

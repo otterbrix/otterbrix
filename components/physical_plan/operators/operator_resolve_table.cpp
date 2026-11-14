@@ -97,6 +97,7 @@ namespace components::operators {
             // Where the table was found: [connection.]database.schema; read by the namespace oid when the entry
             // names no schema (a pinned view body name, an entry requested by oid).
             std::optional<catalog::place_t> where;
+            core::relname_t relation = entry.written.collection;
             catalog::oid_t table_oid = entry.pin.oid != catalog::INVALID_OID ? entry.pin.oid : entry.relation_oid;
             if (table_oid == catalog::INVALID_OID) {
                 if (entry.namespace_of != components::logical_plan::resolve_entry_t::no_target) {
@@ -137,20 +138,58 @@ namespace components::operators {
                     }
                     entry.database_oid = schema.value().database_oid;
                     entry.namespace_oid = schema.value().namespace_oid;
-                    if (schema.value().namespace_oid == catalog::INVALID_OID) {
-                        continue;
+                    if (schema.value().namespace_oid != catalog::INVALID_OID) {
+                        where->connection = schema.value().connection;
+                        where->database = schema.value().database;
+                        auto found = co_await lookup_relation_oid(resource_,
+                                                                  ctx,
+                                                                  schema.value().namespace_oid,
+                                                                  entry.written.collection);
+                        if (found.has_error()) {
+                            set_error(found.error());
+                            co_return;
+                        }
+                        table_oid = found.value();
                     }
-                    where->connection = schema.value().connection;
-                    where->database = schema.value().database;
-                    auto found = co_await lookup_relation_oid(resource_,
-                                                              ctx,
-                                                              schema.value().namespace_oid,
-                                                              entry.written.collection);
-                    if (found.has_error()) {
-                        set_error(found.error());
-                        co_return;
+                    const auto missing =
+                        schema.value().database_oid == catalog::INVALID_OID    ? catalog::name_level_t::database
+                        : schema.value().namespace_oid == catalog::INVALID_OID ? catalog::name_level_t::schema
+                                                                               : catalog::name_level_t::relation;
+                    catalog::place_t spelled_place;
+                    core::relname_t spelled_relation;
+                    if (table_oid == catalog::INVALID_OID &&
+                        catalog::relation_spelled_by_dots(entry.written.connection.t,
+                                                          entry.written.database.t,
+                                                          entry.written.schema.t,
+                                                          entry.written.collection.t,
+                                                          missing,
+                                                          &spelled_place,
+                                                          &spelled_relation)) {
+                        auto dotted_schema = co_await lookup_schema(resource_, ctx, spelled_place);
+                        if (dotted_schema.has_error()) {
+                            set_error(dotted_schema.error());
+                            co_return;
+                        }
+                        if (dotted_schema.value().namespace_oid != catalog::INVALID_OID) {
+                            auto dotted = co_await lookup_relation_oid(resource_,
+                                                                       ctx,
+                                                                       dotted_schema.value().namespace_oid,
+                                                                       spelled_relation);
+                            if (dotted.has_error()) {
+                                set_error(dotted.error());
+                                co_return;
+                            }
+                            if (dotted.value() != catalog::INVALID_OID) {
+                                table_oid = dotted.value();
+                                entry.database_oid = dotted_schema.value().database_oid;
+                                entry.namespace_oid = dotted_schema.value().namespace_oid;
+                                where = catalog::place_t{dotted_schema.value().connection,
+                                                         dotted_schema.value().database,
+                                                         spelled_place.schema};
+                                relation = std::move(spelled_relation);
+                            }
+                        }
                     }
-                    table_oid = found.value();
                 }
                 if (table_oid == catalog::INVALID_OID) {
                     continue;
@@ -159,7 +198,7 @@ namespace components::operators {
             bool found = false;
             auto namespace_oid = catalog::INVALID_OID;
             char relkind = 0;
-            std::string relname = entry.written.collection.t;
+            std::string relname = relation.t;
             {
                 std::pmr::vector<std::uint64_t> pc_keys(resource_);
                 pc_keys.emplace_back(catalog::pg_class_col::oid);

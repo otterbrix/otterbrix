@@ -520,8 +520,9 @@ namespace services::dispatcher {
             const auto* node = statement->insert();
             const auto* table = node->table_metadata();
             if (!table) {
-                return core::error_t(core::error_code_t::table_not_exists,
-                                     std::pmr::string{"INSERT target collection does not exist", resource});
+                return core::error_t(
+                    core::error_code_t::table_not_exists,
+                    std::pmr::string{"relation \"" + node->target().to_string() + "\" does not exist", resource});
             }
             if (table->relkind == 'g') {
                 return core::error_t(
@@ -3126,8 +3127,9 @@ namespace services::dispatcher {
                 }
                 const auto* tbl_ins = insert_node->table_metadata();
                 if (!tbl_ins) {
-                    return core::error_t(core::error_code_t::table_not_exists,
-                                         std::pmr::string{"INSERT target collection does not exist", resource});
+                    return core::error_t(
+                        core::error_code_t::table_not_exists,
+                        std::pmr::string{"relation \"" + node->target().to_string() + "\" does not exist", resource});
                 }
 
                 // The target columns type the literals of the source (PostgreSQL: p_resolve_unknowns off).

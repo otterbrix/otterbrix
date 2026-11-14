@@ -127,6 +127,7 @@ namespace components::vector::arrow {
                 child.format = "S";
                 return core::error_t::no_error();
             case logical_type::UINTEGER:
+            case logical_type::OID:
                 child.format = "I";
                 return core::error_t::no_error();
             case logical_type::UBIGINT:

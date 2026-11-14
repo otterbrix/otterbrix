@@ -21,7 +21,7 @@
 
 namespace components::catalog {
 
-    // PostgreSQL-style system catalog schemas: 14 hardcoded relation definitions plus their
+    // PostgreSQL-style system catalog schemas: 17 hardcoded relation definitions plus their
     // bootstrap rows (deviations from PG-canonical columns are listed in system_table_schemas.cpp).
     // After bootstrap, every catalog operation is a regular insert/scan against one of these tables.
 
@@ -31,6 +31,8 @@ namespace components::catalog {
         oid_t namespace_oid;   // always well_known_oid::pg_catalog_namespace
         char relkind;          // 'r' relation, 'i' index, etc.
         std::vector<table::column_definition_t> columns;
+        oid_t row_type_oid{INVALID_OID};  // pg_class.reltype: the table's composite pg_type row
+        oid_t row_array_oid{INVALID_OID}; // that row type's array type
     };
 
     // Backed by a function-local static array populated once (C++11 magic statics); subsequent
@@ -65,6 +67,39 @@ namespace components::catalog {
 
     // Canonical pg_type.typname for a built-in logical_type; "" for DECIMAL, UNKNOWN, and complex types.
     std::string_view logical_type_to_pg_name(types::logical_type t) noexcept;
+
+    // How pg_type describes a type: PostgreSQL 18's values (pg_type.dat) for the types it has.
+    struct pg_type_attributes_t {
+        std::int16_t typlen;
+        bool typbyval;
+        char typtype;
+        char typcategory;
+        oid_t typrelid;
+        oid_t typelem;
+        oid_t typarray;
+    };
+
+    // A built-in scalar (typarray: its array type), ENUM or STRUCT (whose pg_class row is typrelid; the caller sets
+    // the typarray it minted); no other type has a pg_type row.
+    pg_type_attributes_t pg_type_attributes_of(types::logical_type type, oid_t typrelid) noexcept;
+
+    // The array type of `typelem`, as PostgreSQL makes one for every base, enum and composite type.
+    pg_type_attributes_t array_pg_type_attributes(oid_t typelem) noexcept;
+
+    // INVALID_OID for a type with no built-in array type.
+    oid_t builtin_array_type_oid(types::logical_type type) noexcept;
+
+    // How pg_attribute records a column's type, as PostgreSQL does: an array column is its element's array type
+    // with attndims levels, numeric(p,s) is numeric with atttypmod ((p << 16) | s) + 4, and -1 means no modifier.
+    struct pg_attribute_type_t {
+        oid_t atttypid{INVALID_OID};
+        std::int32_t atttypmod{-1};
+        std::int16_t attndims{0};
+    };
+
+    // `resolved_typid` is the pg_type row a named type resolved to (column_definition_t::atttypid), else INVALID_OID.
+    // atttypid stays INVALID_OID for a type pg_type has no row for (an array of a user type, MAP, UNION, VARIANT).
+    pg_attribute_type_t pg_attribute_type_of(const types::complex_logical_type& type, oid_t resolved_typid);
 
     // UNKNOWN for non-builtin OIDs — caller resolves complex types from pg_type by name + typdefspec.
     types::logical_type oid_to_builtin_type(oid_t oid) noexcept;

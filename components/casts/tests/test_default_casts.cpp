@@ -2001,15 +2001,18 @@ TEST_CASE("default casts: BOOLEAN <-> numeric and string") {
 
     const complex_logical_type bool_type{logical_type::BOOLEAN};
 
-    // bool<->numeric is explicit-only both ways, as in PostgreSQL: bool converts to a numeric but isn't one.
+    // bool converts to a numeric but isn't one: bool -> integer is explicit only, as in PostgreSQL; integer -> bool
+    // applies on assignment too, as a MySQL client writes a BOOLEAN as 1 / 0. Neither is implicit.
     const cast_entry* bool_to_int = registry.find(bool_type, integer_type);
     const cast_entry* int_to_bool = registry.find(integer_type, bool_type);
     REQUIRE(bool_to_int != nullptr);
     REQUIRE(int_to_bool != nullptr);
     REQUIRE(bool_to_int->level == cast_type::explicit_only);
-    REQUIRE(int_to_bool->level == cast_type::explicit_only);
+    REQUIRE(int_to_bool->level == cast_type::assignment);
     REQUIRE_FALSE(common(registry, bool_type, integer_type).has_value());
     REQUIRE_FALSE(registry.resolve(bool_type, integer_type, cast_type::assignment).has_value());
+    REQUIRE(registry.resolve(integer_type, bool_type, cast_type::assignment).has_value());
+    REQUIRE_FALSE(registry.resolve(integer_type, bool_type, cast_type::implicit).has_value());
 
     graph_execution_context context{};
 

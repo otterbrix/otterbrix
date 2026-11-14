@@ -28,7 +28,9 @@ namespace components::logical_plan {
         , column_bindings_(resource)
         , fill_list_(resource)
         , column_slots_(resource)
-        , literal_digits_(resource) {}
+        , literal_digits_(resource)
+        , default_cells_(resource)
+        , written_defaults_(resource) {}
 
     std::pmr::vector<expressions::key_t>& node_insert_t::key_translation() { return key_translation_; }
 
@@ -45,7 +47,7 @@ namespace components::logical_plan {
 
     std::string node_insert_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$insert: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+        stream << "$insert: <oid:" << static_cast<unsigned>(table_oid()) << ">";
         if (!children_.empty()) {
             stream << " {";
             stream << children_.front()->to_string();

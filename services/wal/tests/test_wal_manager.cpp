@@ -59,8 +59,8 @@ static auto await_value(F& fut) {
 }
 
 constexpr auto kMainDb = catalog::well_known_oid::main_database;
-constexpr catalog::oid_t kTestTableOidA = 16500;
-constexpr catalog::oid_t kTestTableOidB = 16501;
+constexpr catalog::oid_t kTestTableOidA{16500};
+constexpr catalog::oid_t kTestTableOidB{16501};
 
 // PID-qualified like every fixture root here, since a shared root would race concurrent ctest -j runs.
 static const std::filesystem::path base_mgr_path =

@@ -28,7 +28,9 @@ namespace components::operators {
             constexpr std::uint64_t attname = 1;
             constexpr std::uint64_t attnum = 2;
             constexpr std::uint64_t attisdropped = 3;
-            constexpr std::uint64_t attdefspec = 4;
+            constexpr std::uint64_t atttypid = 4;
+            constexpr std::uint64_t atttypspec = 5;
+            constexpr std::uint64_t attdefspec = 6;
         } // namespace attr_at
 
         std::pmr::vector<std::uint64_t> pg_attribute_key_cols(std::pmr::memory_resource* resource) {
@@ -38,6 +40,9 @@ namespace components::operators {
             cols.emplace_back(catalog::pg_attribute_col::attnum);  // orders the schema positions
             // Without attisdropped, the tombstone filter below can't see dropped columns and binds to them.
             cols.emplace_back(catalog::pg_attribute_col::attisdropped);
+            // The stored type of a key column: an FK's two sides are compared in the referenced one.
+            cols.emplace_back(catalog::pg_attribute_col::atttypid);
+            cols.emplace_back(catalog::pg_attribute_col::atttypspec);
             return cols;
         }
 
@@ -69,8 +74,7 @@ namespace components::operators {
                         continue;
                     }
                     live_column_t column;
-                    column.attoid =
-                        static_cast<catalog::oid_t>(attr_chunk.get_value<std::uint32_t>(attr_at::attoid, row));
+                    column.attoid = attr_chunk.get_value<catalog::oid_t>(attr_at::attoid, row);
                     column.attnum = attr_chunk.is_null(attr_at::attnum, row)
                                         ? 0
                                         : attr_chunk.get_value<std::int32_t>(attr_at::attnum, row);
@@ -112,6 +116,56 @@ namespace components::operators {
                 names.emplace_back(column.chunk->get_value<std::string_view>(attr_at::attname, column.row));
             }
             return names;
+        }
+
+        // A column's stored type: what its atttypspec spells, or the built-in type its atttypid names.
+        core::error_t column_type(std::pmr::memory_resource* resource,
+                                  const live_column_t& column,
+                                  types::complex_logical_type* type) {
+            const auto& chunk = *column.chunk;
+            if (!chunk.is_null(attr_at::atttypspec, column.row)) {
+                const auto spec = chunk.get_value<std::string_view>(attr_at::atttypspec, column.row);
+                if (!spec.empty()) {
+                    auto decoded = catalog::decode_type_spec(resource, spec);
+                    if (decoded.has_error()) {
+                        return decoded.error();
+                    }
+                    *type = std::move(decoded.value());
+                    return core::error_t::no_error();
+                }
+            }
+            if (chunk.is_null(attr_at::atttypid, column.row)) {
+                std::pmr::string what{"pg_attribute row of column \"", resource};
+                what.append(chunk.get_value<std::string_view>(attr_at::attname, column.row));
+                what.append("\" has no readable atttypid");
+                return core::error_t{core::error_code_t::internal_error, std::move(what)};
+            }
+            *type = types::complex_logical_type(
+                catalog::oid_to_builtin_type(chunk.get_value<catalog::oid_t>(attr_at::atttypid, column.row)));
+            return core::error_t::no_error();
+        }
+
+        // The key columns' types, pair by pair; the two lists are the same length.
+        core::error_t key_column_types(std::pmr::memory_resource* resource,
+                                       const std::pmr::vector<live_column_t>& child_columns,
+                                       const std::pmr::vector<live_column_t>& parent_columns,
+                                       catalog::fk_info_t* fk) {
+            fk->key_columns.clear();
+            fk->key_columns.reserve(fk->child_col_indices.size());
+            for (std::size_t key = 0; key < fk->child_col_indices.size(); ++key) {
+                catalog::fk_key_column_t column;
+                if (auto error = column_type(resource, child_columns[fk->child_col_indices[key]], &column.child_type);
+                    error.contains_error()) {
+                    return error;
+                }
+                if (auto error =
+                        column_type(resource, parent_columns[fk->parent_col_indices[key]], &column.parent_type);
+                    error.contains_error()) {
+                    return error;
+                }
+                fk->key_columns.push_back(std::move(column));
+            }
+            return core::error_t::no_error();
         }
     } // namespace
 
@@ -242,8 +296,8 @@ namespace components::operators {
                         std::string msg = "constraint row in pg_constraint (oid ";
                         msg += con_chunk.is_null(catalog::pg_constraint_col::oid, ci)
                                    ? std::string{"unreadable"}
-                                   : std::to_string(static_cast<catalog::oid_t>(
-                                         con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
+                                   : std::to_string(static_cast<unsigned>(
+                                         con_chunk.get_value<catalog::oid_t>(catalog::pg_constraint_col::oid, ci)));
                         msg += ") has no readable contype — what it declares cannot be determined, so it cannot "
                                "be enforced or dismissed";
                         set_error(core::error_t{core::error_code_t::internal_error,
@@ -259,8 +313,7 @@ namespace components::operators {
                         if (!cname.empty()) {
                             constraint_oids.emplace_back(
                                 std::string{cname},
-                                static_cast<catalog::oid_t>(
-                                    con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
+                                con_chunk.get_value<catalog::oid_t>(catalog::pg_constraint_col::oid, ci));
                         }
                     }
                     if (entry.names_only) {
@@ -278,8 +331,7 @@ namespace components::operators {
                                                     std::pmr::string{std::move(msg), resource_}});
                             co_return;
                         }
-                        fk.constraint_oid = static_cast<catalog::oid_t>(
-                            con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
+                        fk.constraint_oid = con_chunk.get_value<catalog::oid_t>(catalog::pg_constraint_col::oid, ci);
                         if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
                             pending.constraint_name.assign(
                                 con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
@@ -289,8 +341,9 @@ namespace components::operators {
                                                           : catalog::pg_constraint_col::conrelid;
                         if (con_chunk.is_null(far_col, ci)) {
                             std::string msg = "foreign key constraint \"";
-                            msg += pending.constraint_name.empty() ? "oid " + std::to_string(fk.constraint_oid)
-                                                                   : pending.constraint_name;
+                            msg += pending.constraint_name.empty()
+                                       ? "oid " + std::to_string(static_cast<unsigned>(fk.constraint_oid))
+                                       : pending.constraint_name;
                             msg += (direction == direction_t::outgoing)
                                        ? "\": pg_constraint.confrelid is unreadable — the referenced table "
                                          "cannot be identified"
@@ -302,11 +355,9 @@ namespace components::operators {
                         }
                         if (direction == direction_t::outgoing) {
                             fk.child_table_oid = table_oid;
-                            fk.parent_table_oid =
-                                static_cast<catalog::oid_t>(con_chunk.get_value<std::uint32_t>(far_col, ci));
+                            fk.parent_table_oid = con_chunk.get_value<catalog::oid_t>(far_col, ci);
                         } else {
-                            fk.child_table_oid =
-                                static_cast<catalog::oid_t>(con_chunk.get_value<std::uint32_t>(far_col, ci));
+                            fk.child_table_oid = con_chunk.get_value<catalog::oid_t>(far_col, ci);
                             fk.parent_table_oid = table_oid;
                         }
                         auto code_or = [&](std::uint64_t col, char fallback) {
@@ -359,8 +410,8 @@ namespace components::operators {
                                 msg += "oid unreadable";
                             } else {
                                 msg += "oid ";
-                                msg += std::to_string(static_cast<catalog::oid_t>(
-                                    con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
+                                msg += std::to_string(static_cast<unsigned>(
+                                    con_chunk.get_value<catalog::oid_t>(catalog::pg_constraint_col::oid, ci)));
                             }
                             msg += "\" on table \"";
                             msg += target_md->name.t;
@@ -386,16 +437,16 @@ namespace components::operators {
                         pending.constraint_oid =
                             con_chunk.is_null(catalog::pg_constraint_col::oid, ci)
                                 ? catalog::INVALID_OID
-                                : static_cast<catalog::oid_t>(
-                                      con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
+                                : con_chunk.get_value<catalog::oid_t>(catalog::pg_constraint_col::oid, ci);
                         if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
                             pending.constraint_name.assign(
                                 con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                         }
                         if (pending.is_pk) {
-                            std::string label = pending.constraint_name.empty()
-                                                    ? "oid " + std::to_string(pending.constraint_oid)
-                                                    : pending.constraint_name;
+                            std::string label =
+                                pending.constraint_name.empty()
+                                    ? "oid " + std::to_string(static_cast<unsigned>(pending.constraint_oid))
+                                    : pending.constraint_name;
                             if (pk_seen) {
                                 std::string msg = "multiple primary keys for table \"";
                                 msg += target_md->name.t;
@@ -463,7 +514,7 @@ namespace components::operators {
                         std::string out;
                         if (con_name.empty()) {
                             out = "oid ";
-                            out += std::to_string(fk.constraint_oid);
+                            out += std::to_string(static_cast<unsigned>(fk.constraint_oid));
                         } else {
                             out = con_name;
                         }
@@ -528,6 +579,19 @@ namespace components::operators {
                         co_return;
                     }
                     fk.parent_col_names = key_names(parent_columns, fk.parent_col_indices);
+                    if (fk.child_col_indices.size() != fk.parent_col_indices.size()) {
+                        std::string msg = "foreign key constraint \"";
+                        msg += describe_constraint();
+                        msg += "\": pg_constraint.conkey and confkey name different numbers of columns";
+                        set_error(core::error_t{core::error_code_t::internal_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
+                    }
+                    if (auto error = key_column_types(resource_, child_columns, parent_columns, &fk);
+                        error.contains_error()) {
+                        set_error(std::move(error));
+                        co_return;
+                    }
 
                     if (direction == direction_t::referencing) {
                         // pg_namespace keys off an oid from the pg_class read — a 2-hop chained read, not batchable.
@@ -552,7 +616,7 @@ namespace components::operators {
                             std::string msg = "foreign key constraint \"";
                             msg += describe_constraint();
                             msg += "\": the referencing table (oid ";
-                            msg += std::to_string(fk.child_table_oid);
+                            msg += std::to_string(static_cast<unsigned>(fk.child_table_oid));
                             msg += ") has no readable pg_class row — the cascade it governs cannot be evaluated";
                             set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
@@ -561,8 +625,8 @@ namespace components::operators {
                         fk.child_collection_name =
                             std::string(cls_batches[0].get_value<std::string_view>(catalog::pg_class_col::relname, 0));
                         fk.child_database = "";
-                        const auto ns_oid = static_cast<catalog::oid_t>(
-                            cls_batches[0].get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));
+                        const auto ns_oid =
+                            cls_batches[0].get_value<catalog::oid_t>(catalog::pg_class_col::relnamespace, 0);
                         std::pmr::vector<std::uint64_t> ns_keys(resource_);
                         ns_keys.emplace_back(catalog::pg_namespace_col::oid);
                         auto [_ns, fut_ns] =
@@ -586,7 +650,7 @@ namespace components::operators {
                             msg += "\": the referencing table \"";
                             msg += fk.child_collection_name;
                             msg += "\" names namespace oid ";
-                            msg += std::to_string(ns_oid);
+                            msg += std::to_string(static_cast<unsigned>(ns_oid));
                             msg += ", which has no readable pg_namespace row";
                             set_error(core::error_t{core::error_code_t::internal_error,
                                                     std::pmr::string{std::move(msg), resource_}});
@@ -627,7 +691,7 @@ namespace components::operators {
                         std::string out = pending.is_pk ? "primary key constraint \"" : "unique constraint \"";
                         if (pending.constraint_name.empty()) {
                             out += "oid ";
-                            out += std::to_string(pending.constraint_oid);
+                            out += std::to_string(static_cast<unsigned>(pending.constraint_oid));
                         } else {
                             out += pending.constraint_name;
                         }
@@ -652,8 +716,7 @@ namespace components::operators {
                                 if (attribute_row_is_dropped(attr_chunk, ai)) {
                                     continue;
                                 }
-                                auto row_attoid = static_cast<catalog::oid_t>(
-                                    attr_chunk.get_value<std::uint32_t>(attr_at::attoid, ai));
+                                auto row_attoid = attr_chunk.get_value<catalog::oid_t>(attr_at::attoid, ai);
                                 if (row_attoid == wanted_oid) {
                                     names.emplace_back(
                                         std::string(attr_chunk.get_value<std::string_view>(attr_at::attname, ai)));

@@ -34,6 +34,40 @@ namespace components::catalog {
         inline constexpr char disk = 'd'; // table.otbx on disk
     }                                     // namespace relstoragemode
 
+    // pg_type.typtype
+    namespace typtype {
+        inline constexpr char base = 'b';
+        inline constexpr char composite = 'c';
+        inline constexpr char enumeration = 'e';
+    } // namespace typtype
+
+    // pg_type.typcategory
+    namespace typcategory {
+        inline constexpr char array = 'A';
+        inline constexpr char boolean = 'B';
+        inline constexpr char composite = 'C';
+        inline constexpr char datetime = 'D';
+        inline constexpr char enumeration = 'E';
+        inline constexpr char numeric = 'N';
+        inline constexpr char string = 'S';
+        inline constexpr char timespan = 'T';
+        inline constexpr char user_defined = 'U';
+    } // namespace typcategory
+
+    // pg_cast.castcontext: where the cast may be applied without being written.
+    namespace castcontext {
+        inline constexpr char implicit = 'i';
+        inline constexpr char assignment = 'a';
+        inline constexpr char explicit_only = 'e';
+    } // namespace castcontext
+
+    // pg_cast.castmethod: how the cast converts.
+    namespace castmethod {
+        inline constexpr char function = 'f';
+        inline constexpr char inout = 'i';
+        inline constexpr char binary = 'b';
+    } // namespace castmethod
+
     // pg_constraint.confmatchtype (FK match strategy)
     namespace fk_match {
         inline constexpr char simple = 's';

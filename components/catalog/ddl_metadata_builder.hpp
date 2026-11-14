@@ -4,6 +4,7 @@
 #include "catalog_oids.hpp"
 #include "catalog_write.hpp"
 #include "oid_batch.hpp"
+#include "system_table_schemas.hpp"
 #include "view_binding.hpp"
 
 #include <components/base/collection_full_name.hpp>
@@ -60,7 +61,17 @@ namespace components::catalog {
                                          oid_t view_oid,
                                          const std::string& name,
                                          oid_t namespace_oid,
-                                         char relkind);
+                                         char relkind,
+                                         oid_t reltype);
+
+    // A relation's row type (typtype 'c', typrelid the relation, named as it) and its array type "_name", each
+    // part of what it belongs to ('i' in pg_depend). build_create_table_writes writes a table's itself.
+    std::vector<catalog_write_t> build_row_type_writes(std::pmr::memory_resource* resource,
+                                                       const std::string& relname,
+                                                       oid_t namespace_oid,
+                                                       oid_t rel_oid,
+                                                       oid_t row_type_oid,
+                                                       oid_t array_type_oid);
 
     // Everything of a view but its pg_class row: one pg_attribute row per output column (attoids minted from
     // `oid_batch` and stamped back), pg_depend: view -> namespace and one 'n' edge per dependency, pg_rewrite (the
@@ -96,11 +107,24 @@ namespace components::catalog {
                               const std::vector<oid_t>& column_attoids,
                               char indtype);
 
+    // One pg_type row, as bootstrap seeds a built-in and CREATE TYPE writes a user type.
+    vector::data_chunk_t make_pg_type_row(std::pmr::memory_resource* resource,
+                                          oid_t type_oid,
+                                          std::string_view type_name,
+                                          oid_t namespace_oid,
+                                          std::string_view type_spec,
+                                          const pg_type_attributes_t& attributes);
+
+    // `type` is an ENUM or a STRUCT; a STRUCT's pg_class row is `typrelid`. Writes its array type "_name" too, and an
+    // ENUM's pg_enum rows, one per label in `enum_label_oids` (empty for a STRUCT).
     std::vector<catalog_write_t> build_create_type_writes(std::pmr::memory_resource* resource,
                                                           const std::string& type_name,
                                                           oid_t namespace_oid,
                                                           oid_t type_oid,
-                                                          const std::string& type_spec);
+                                                          const types::complex_logical_type& type,
+                                                          oid_t typrelid,
+                                                          oid_t array_type_oid,
+                                                          std::span<const oid_t> enum_label_oids);
 
     std::vector<catalog_write_t> build_create_function_writes(std::pmr::memory_resource* resource,
                                                               const std::string& function_name,
@@ -111,11 +135,21 @@ namespace components::catalog {
                                                               const std::string& proargmatchers,
                                                               const std::string& prorettype);
 
+    // One pg_cast row; castfunc is 0, a cast function has no pg_proc row.
+    vector::data_chunk_t make_pg_cast_row(std::pmr::memory_resource* resource,
+                                          oid_t cast_oid,
+                                          oid_t source_type_oid,
+                                          oid_t target_type_oid,
+                                          char castcontext,
+                                          char castmethod);
+
     // pg_depend 'n' edges anchor the cast to castsource/casttarget so a DROP TYPE cascades to it.
     std::vector<catalog_write_t> build_create_cast_writes(std::pmr::memory_resource* resource,
                                                           oid_t cast_oid,
                                                           oid_t source_type_oid,
-                                                          oid_t target_type_oid);
+                                                          oid_t target_type_oid,
+                                                          char castcontext,
+                                                          char castmethod);
 
     // deptype separates conkey ('i', dies with the column) from confkey ('n', lives in another table).
     // Refuses an INVALID_OID in fk/ref_column_attoids; EMPTY stays legal (test_declared_key_conkey_loss.cpp).
@@ -134,12 +168,13 @@ namespace components::catalog {
                                    const std::string& check_expr);
 
     // added_at_commit_id=0 means always-visible; ALTER DROP COLUMN tombstones the row
-    // (is_dropped=true) instead of deleting it.
+    // (is_dropped=true) instead of deleting it. A rewrite carries `type` from the row it replaces
+    // (pg_attribute_type_in).
     vector::data_chunk_t build_pg_attribute_row(std::pmr::memory_resource* resource,
                                                 oid_t attoid,
                                                 oid_t table_oid,
                                                 const std::string& name,
-                                                oid_t atttypid,
+                                                const pg_attribute_type_t& type,
                                                 std::int32_t attnum,
                                                 bool not_null,
                                                 bool has_default,

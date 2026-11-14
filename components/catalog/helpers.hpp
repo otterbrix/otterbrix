@@ -2,6 +2,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/resolve_result.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/result_wrapper.hpp>
@@ -63,13 +64,19 @@ namespace components::catalog {
         constexpr std::uint64_t attdefspec = 9;
         constexpr std::uint64_t added_at_commit_id = 10;
         constexpr std::uint64_t dropped_at_commit_id = 11;
+        constexpr std::uint64_t atttypmod = 12;
+        constexpr std::uint64_t attndims = 13;
     } // namespace pg_attribute_col
+
+    // atttypid/atttypmod/attndims of a pg_attribute row read with every column: what a rewrite of the row carries.
+    pg_attribute_type_t pg_attribute_type_in(const vector::data_chunk_t& chunk, std::uint64_t row);
     namespace pg_class_col {
         constexpr std::uint64_t oid = 0;
         constexpr std::uint64_t relname = 1;
         constexpr std::uint64_t relnamespace = 2;
         constexpr std::uint64_t relkind = 3;
         constexpr std::uint64_t relstoragemode = 4;
+        constexpr std::uint64_t reltype = 5;
     } // namespace pg_class_col
     namespace pg_namespace_col {
         constexpr std::uint64_t oid = 0;
@@ -97,6 +104,19 @@ namespace components::catalog {
         constexpr std::uint64_t typname = 1;
         constexpr std::uint64_t typnamespace = 2;
         constexpr std::uint64_t typdefspec = 3;
+        constexpr std::uint64_t typlen = 4;
+        constexpr std::uint64_t typbyval = 5;
+        constexpr std::uint64_t typtype = 6;
+        constexpr std::uint64_t typcategory = 7;
+        constexpr std::uint64_t typisdefined = 8;
+        constexpr std::uint64_t typdelim = 9;
+        constexpr std::uint64_t typrelid = 10;
+        constexpr std::uint64_t typelem = 11;
+        constexpr std::uint64_t typarray = 12;
+        constexpr std::uint64_t typnotnull = 13;
+        constexpr std::uint64_t typbasetype = 14;
+        constexpr std::uint64_t typtypmod = 15;
+        constexpr std::uint64_t typndims = 16;
     } // namespace pg_type_col
     namespace pg_database_col {
         constexpr std::uint64_t oid = 0;
@@ -141,10 +161,19 @@ namespace components::catalog {
         constexpr std::uint64_t proargmatchers = 5;
         constexpr std::uint64_t prorettype = 6;
     } // namespace pg_proc_col
+    namespace pg_enum_col {
+        constexpr std::uint64_t oid = 0;
+        constexpr std::uint64_t enumtypid = 1;
+        constexpr std::uint64_t enumsortorder = 2;
+        constexpr std::uint64_t enumlabel = 3;
+    } // namespace pg_enum_col
     namespace pg_cast_col {
         constexpr std::uint64_t oid = 0;
         constexpr std::uint64_t castsource = 1;
         constexpr std::uint64_t casttarget = 2;
+        constexpr std::uint64_t castfunc = 3;
+        constexpr std::uint64_t castcontext = 4;
+        constexpr std::uint64_t castmethod = 5;
     } // namespace pg_cast_col
 
     // One pg_proc row of a chunk read with every column.

@@ -55,6 +55,22 @@ namespace components::logical_plan {
 
     using insert_literal_digits_list_t = std::pmr::vector<insert_literal_digits_t>;
 
+    struct insert_default_cell_t {
+        uint64_t row{0};
+        uint64_t column{0};
+    };
+
+    using insert_default_cells_t = std::pmr::vector<insert_default_cell_t>;
+
+    // A written column's DEFAULT cells and the default they take, resolved by enrich as an omitted column's is.
+    struct insert_written_default_t {
+        uint64_t column{0};              // the position in the chunk
+        std::pmr::vector<uint64_t> rows; // across the whole chunk batch, ascending
+        vector::vector_t value;          // one row: the column's DEFAULT
+    };
+
+    using insert_written_defaults_t = std::pmr::vector<insert_written_default_t>;
+
     class node_insert_t final : public node_t {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource);
@@ -121,6 +137,14 @@ namespace components::logical_plan {
         void set_literal_digits(insert_literal_digits_list_t v) { literal_digits_ = std::move(v); }
         const insert_literal_digits_list_t& literal_digits() const { return literal_digits_; }
 
+        // The VALUES cells written as DEFAULT, stamped by the transformer.
+        void set_default_cells(insert_default_cells_t v) { default_cells_ = std::move(v); }
+        const insert_default_cells_t& default_cells() const { return default_cells_; }
+
+        // Stamped by enrich from the default cells; operator_insert writes them in push().
+        void set_written_defaults(insert_written_defaults_t v) { written_defaults_ = std::move(v); }
+        const insert_written_defaults_t& written_defaults() const { return written_defaults_; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -138,6 +162,8 @@ namespace components::logical_plan {
         insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
         std::pmr::vector<uint64_t> column_slots_;
         insert_literal_digits_list_t literal_digits_;
+        insert_default_cells_t default_cells_;
+        insert_written_defaults_t written_defaults_;
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

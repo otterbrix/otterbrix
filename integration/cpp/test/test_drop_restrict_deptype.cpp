@@ -43,7 +43,7 @@ namespace {
         REQUIRE(cur->is_success());
         for (const auto& chunk : cur->chunks()) {
             if (chunk.size() != 0) {
-                return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
+                return chunk.get_value<catalog::oid_t>(0, 0);
             }
         }
         return catalog::INVALID_OID;
@@ -57,8 +57,8 @@ namespace {
     // keyed on attrelid, matched by attname.
     catalog::oid_t attoid_of(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t table_oid, const std::string& column) {
         return first_oid(d,
-                         "SELECT attoid FROM pg_catalog.pg_attribute WHERE attrelid = " + std::to_string(table_oid) +
-                             " AND attname = '" + column + "';");
+                         "SELECT attoid FROM pg_catalog.pg_attribute WHERE attrelid = " +
+                             std::to_string(static_cast<unsigned>(table_oid)) + " AND attname = '" + column + "';");
     }
 
     // No writer in this engine emits the (classid, deptype) combination the
@@ -232,7 +232,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refus
 
     // An object in pg_class depending on column a through a NORMAL edge. Its oid
     // is outside the allocator's range so it can never collide with a real row.
-    constexpr components::catalog::oid_t kForeignBlocker = 990001;
+    constexpr components::catalog::oid_t kForeignBlocker{990001};
     forge_depend_edge(space,
                       components::catalog::well_known_oid::pg_class_table,
                       kForeignBlocker,
@@ -247,7 +247,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refus
     // gate's, which this shape does not reach.
     CHECK(error_text(refused).find("cannot drop column a of table dr.t because other objects depend on it") !=
           std::string::npos);
-    CHECK(error_text(refused).find(std::to_string(kForeignBlocker)) != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(static_cast<unsigned>(kForeignBlocker))) != std::string::npos);
 
     CHECK(run_ok(d, "SELECT a FROM dr.t;")->size() == 1);
 
@@ -308,7 +308,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_normal_dependent_behind_an_owned_i
     INFO("error: " << error_text(refused));
     REQUIRE_FALSE(refused->is_success());
     CHECK(error_text(refused).find("cannot drop table dr.t because other objects depend on it") != std::string::npos);
-    CHECK(error_text(refused).find(std::to_string(other_oid)) != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(static_cast<unsigned>(other_oid))) != std::string::npos);
 
     CHECK(run_ok(d, "SELECT b FROM dr.other;")->size() == 1);
 }

@@ -124,6 +124,8 @@ namespace services::collection::executor {
         std::vector<components::pipeline::dropped_function_t> dropped_functions{};
         // Filled only from a PREPARE's or a DEALLOCATE's sub-plan result.
         components::logical_plan::prepared_change_t prepared_change{};
+        // generated_id() of the plan root; the cursor reports it only for an INSERT.
+        uint64_t generated_id{0};
     };
 
     // The registries a statement sees: the executor's own, or copies of them with its transaction's own changes over
@@ -174,6 +176,7 @@ namespace services::collection::executor {
         std::vector<components::host_rows_t> host_rows{};
         std::vector<components::pipeline::dropped_function_t> dropped_functions{};
         components::logical_plan::prepared_change_t prepared_change{};
+        uint64_t generated_id{0};
     };
 
     // A piece is what one pipeline runs: the left chain from its root down to the first operator with a right input

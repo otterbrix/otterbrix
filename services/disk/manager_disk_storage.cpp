@@ -568,7 +568,7 @@ namespace services::disk {
                                    std::pmr::vector<catalog::oid_t> attoids,
                                    std::pmr::vector<components::vector::data_chunk_t> data,
                                    bool returning) {
-        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}};
+        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0};
         bool has_rows = false;
         for (const auto& chunk : data) {
             if (chunk.size() != 0) {
@@ -616,9 +616,9 @@ namespace services::disk {
             }
         }
         update_receipt_t result{
-            write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}},
+            write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0},
             std::pmr::vector<components::vector::data_chunk_t>{resource()},
-            std::pmr::vector<std::uint32_t>{resource()}};
+            std::pmr::vector<components::catalog::oid_t>{resource()}};
         if (!has_rows) {
             co_return std::move(result);
         }

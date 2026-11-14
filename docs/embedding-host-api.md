@@ -7,8 +7,8 @@ database is a connection's. otterbrix resolves every name and plans every statem
 actors, one address per connection: a table's operators reach the table's rows only through the messages of the
 storage contract, sent to the table's address — otterbrix's disk for a table of its own, the connection's backend for
 a table of a connection. One path for both: the same scans, writes, DDL steps, transactions and RETURNING; what
-differs is only what each storage answers. otterbrix runs the SQL (FROM / USING, joins, sub-queries, RETURNING, casts,
-NULL in omitted columns) over whatever the backend does not take of a statement (pushdown). otterbrix keeps nothing of
+differs is only what each storage answers. otterbrix runs the SQL (FROM / USING, joins, sub-queries, RETURNING, casts)
+over whatever the backend does not take of a statement (pushdown); what an INSERT does not write, the backend fills. otterbrix keeps nothing of
 the backend's: what a host needs (the remote name of a table, a location, a topic) it keeps in its own tables, keyed by
 otterbrix's oids — the table's oid and its columns' attoids, which every message carries.
 
@@ -158,7 +158,7 @@ publication at COMMIT). Every table's operator reaches its storage only by
 | `storage_fetch_next_batch(session, oid, cursor, limit, projected, txn)` | `fetch_batch_t{batch, cursor_id}` | cursor 0 opens a scan; an EMPTY batch ends it |
 | `storage_close_cursor(session, oid, cursor)` | — | a scan left before its end |
 | `storage_total_rows(session, oid)` | rows | an estimate is an answer: it only orders the sides of a hash join |
-| `storage_append(ctx, oid, attoids, chunks, returning)` | `write_receipt_t` | INSERT; `attoids` name the chunk's columns, the table's declared order |
+| `storage_append(ctx, oid, attoids, chunks, returning)` | `write_receipt_t` | INSERT; `attoids` name the chunk's columns (the written ones), the table's declared order |
 | `storage_update(ctx, oid, row_ids, chunks, returning)` | `update_receipt_t` | UPDATE of the rows the backend's scan numbered |
 | `storage_delete_rows(ctx, oid, row_ids, returning)` | `write_receipt_t` | DELETE by the same numbers |
 | `create_storage_disk(ctx, oid, database_oid, name, columns, computed)` | `ddl_reply_t` | CREATE TABLE |
@@ -174,11 +174,14 @@ publication at COMMIT). Every table's operator reaches its storage only by
 | `storage_release_block(ctx, request)` | — | the portal that took `request` finished: the storage forgets the take |
 | `storage_run_write(ctx, request, parameters, returning)` | `write_receipt_t` | a taken UPDATE / DELETE |
 
-- `write_receipt_t{start_row, count, awaits_publish, returned}`: `count` is what the backend applied (a short write
-  is a smaller count, `the_count_is_what_the_sink_reports_written`); `awaits_publish` is the disk's: its rows wait for
-  otterbrix's MVCC publication at COMMIT. A backend that commits its writes itself answers `false`, and the
-  transaction has it as a participant. `returned`, when asked for, holds every column of each written row (of each
-  deleted row, as it was), in the order the rows were sent.
+- `write_receipt_t{start_row, count, awaits_publish, returned, generated_id}`: `count` is what the backend applied (a
+  short write is a smaller count, `the_count_is_what_the_sink_reports_written`); `awaits_publish` is the disk's: its
+  rows wait for otterbrix's MVCC publication at COMMIT. A backend that commits its writes itself answers `false`, and
+  the transaction has it as a participant. `returned`, when asked for, holds every column of each written row (of each
+  deleted row, as it was), in the order the rows were sent. `generated_id`, of an append, is the first value the
+  backend generated for an auto-increment column of its rows (MySQL's `LAST_INSERT_ID`), 0 when it generated none:
+  the statement's is its first message's that is not 0, and the cursor reports it as `generated_id()`, what a MySQL
+  OK packet carries as `last_insert_id` (`generated_id`).
 - Every chunk a backend answers (a page, a receipt's `returned`, the `host_rows_t` of a DDL reply) holds at most
   `vector::DEFAULT_VECTOR_CAPACITY` rows, as every chunk of otterbrix's: a wider one is refused with
   `protocol_violation`, `a storage answered a chunk of N rows, more than the 1024 rows of a chunk`, before otterbrix
@@ -214,9 +217,12 @@ block (see "Pushdown").
 
 ## Writes
 
-- **INSERT.** otterbrix's own: column list, arity, an assignment cast to every declared type, NULL in an omitted
-  column (a connection's table declares no defaults). `storage_append` gets full rows in the declared column order,
-  already cast, with `attoids` of the table's columns (`insert_into_a_storage_table`, `an_omitted_column_is_null`).
+- **INSERT.** otterbrix's own: column list, arity, an assignment cast to every declared type. A connection's table
+  declares no defaults, so what the statement does not write is the backend's to fill with its own: `storage_append`
+  gets the written columns only, in the declared column order, already cast, and `attoids` name them. An omitted
+  column is not sent, nor is a `DEFAULT` cell of `VALUES`: rows whose `DEFAULT` cells differ go in messages of their
+  own, in the order written, each naming the columns its rows write. `DEFAULT VALUES` sends rows of no columns
+  (`insert_into_a_storage_table`, `an_omitted_column_is_null`, `backend_defaults`).
 - **UPDATE and DELETE.** Whatever the backend does not take as one statement runs as otterbrix's own: the backend's
   scan numbers the rows, otterbrix applies the WHERE, the FROM / USING semi-join, LIMIT and RETURNING, and the chosen
   rows go to `storage_update` (every column of the row, the new values set) or `storage_delete_rows` with their numbers

@@ -87,7 +87,7 @@ namespace components::operators {
                 const auto attname_cell = chunk.get_value<std::string_view>(2, i);
                 if (attname_cell != column_name_.t)
                     continue;
-                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto row_attoid = chunk.get_value<catalog::oid_t>(0, i);
                 if (attoid_ != catalog::INVALID_OID && row_attoid != attoid_)
                     continue;
                 attoid = row_attoid;
@@ -120,7 +120,7 @@ namespace components::operators {
             std::string rel = std::move(rel_id.relname.t);
             if (rel.empty()) {
                 rel = "oid ";
-                rel += std::to_string(table_oid_);
+                rel += std::to_string(static_cast<unsigned>(table_oid_));
             }
             std::string msg = "column \"";
             msg += column_name_.t;
@@ -167,8 +167,8 @@ namespace components::operators {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                const auto dep_cls = chunk.get_value<catalog::oid_t>(0, i);
+                const auto dep_oid = chunk.get_value<catalog::oid_t>(1, i);
 
                 if (dep_cls != catalog::well_known_oid::pg_constraint_table)
                     continue;
@@ -205,8 +205,7 @@ namespace components::operators {
                 if (!chunk.is_null(catalog::pg_constraint_col::conname, 0))
                     con_name.assign(chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, 0));
                 if (!chunk.is_null(catalog::pg_constraint_col::conrelid, 0))
-                    con_relid = static_cast<catalog::oid_t>(
-                        chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::conrelid, 0));
+                    con_relid = chunk.get_value<catalog::oid_t>(catalog::pg_constraint_col::conrelid, 0);
                 break;
             }
             std::string con_table;
@@ -236,11 +235,11 @@ namespace components::operators {
             }
             if (con_name.empty()) {
                 con_name = "oid ";
-                con_name += std::to_string(blocking.front());
+                con_name += std::to_string(static_cast<unsigned>(blocking.front()));
             }
             if (con_table.empty()) {
                 con_table = "oid ";
-                con_table += std::to_string(con_relid);
+                con_table += std::to_string(static_cast<unsigned>(con_relid));
             }
             std::string msg = "cannot drop column \"";
             msg += column_name_.t;

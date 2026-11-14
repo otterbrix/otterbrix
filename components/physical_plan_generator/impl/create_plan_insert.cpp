@@ -63,6 +63,15 @@ namespace services::planner::impl {
                 components::vector::make_constant_copy(context.resource, column.value)});
         }
         plan->set_fill_list(std::move(fill));
+        components::logical_plan::insert_written_defaults_t written(context.resource);
+        written.reserve(node_insert->written_defaults().size());
+        for (const auto& column : node_insert->written_defaults()) {
+            written.push_back(components::logical_plan::insert_written_default_t{
+                column.column,
+                std::pmr::vector<uint64_t>{column.rows.begin(), column.rows.end(), context.resource},
+                components::vector::make_constant_copy(context.resource, column.value)});
+        }
+        plan->set_written_defaults(std::move(written));
         VALUE_OR_RETURN(auto child,
                         create_plan(context,
                                     function_registry,

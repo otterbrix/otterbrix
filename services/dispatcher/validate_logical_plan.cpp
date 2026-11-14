@@ -163,6 +163,57 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
+    namespace {
+        // PostgreSQL ATAddForeignKeyConstraint's refusal, met here by a constraint whose column types changed since.
+        core::error_t incompatible_fk_key(std::pmr::memory_resource* resource,
+                                          const components::catalog::fk_info_t& fk,
+                                          std::size_t key) {
+            const auto& column = fk.key_columns[key];
+            return core::error_t(core::error_code_t::datatype_mismatch,
+                                 std::pmr::string{"foreign key constraint cannot be implemented: key columns \"" +
+                                                      fk.child_col_names[key] + "\" and \"" + fk.parent_col_names[key] +
+                                                      "\" are of incompatible types: " +
+                                                      components::catalog::format_type_be(column.child_type) + " and " +
+                                                      components::catalog::format_type_be(column.parent_type),
+                                                  resource});
+        }
+    } // namespace
+
+    core::error_t resolve_fk_key_casts(std::pmr::memory_resource* resource,
+                                       const components::casts::cast_registry_t& cast_registry,
+                                       catalog_resolves_t& resolves) {
+        if (!resolves.constraints) {
+            return core::error_t::no_error();
+        }
+        using components::casts::cast_type;
+        for (auto& entry : resolves.constraints->entries()) {
+            const bool referencing = entry.direction == components::logical_plan::resolve_direction::referencing;
+            for (auto& fk : entry.fks) {
+                for (std::size_t key = 0; key < fk.key_columns.size(); ++key) {
+                    auto& column = fk.key_columns[key];
+                    if (column.child_type == column.parent_type) {
+                        continue;
+                    }
+                    auto to_parent =
+                        cast_registry.resolve(column.child_type, column.parent_type, cast_type::assignment);
+                    if (!to_parent.has_value()) {
+                        return incompatible_fk_key(resource, fk, key);
+                    }
+                    column.to_parent = std::move(*to_parent);
+                    if (!referencing) {
+                        continue;
+                    }
+                    auto to_child = cast_registry.resolve(column.parent_type, column.child_type, cast_type::assignment);
+                    if (!to_child.has_value()) {
+                        return incompatible_fk_key(resource, fk, key);
+                    }
+                    column.to_child = std::move(*to_child);
+                }
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     namespace impl {
 
         components::expressions::expression_ptr
@@ -393,6 +444,27 @@ namespace services::dispatcher {
             return result;
         }
 
+        // A WHERE / HAVING that is not a comparison (a boolean column, a call, a CASE): any value, required boolean.
+        [[nodiscard]] core::error_t resolve_boolean_clause(const validation::validation_context_t& context,
+                                                           expression_ptr& clause,
+                                                           const storage_parameters& parameters,
+                                                           const named_schema* schema_left,
+                                                           const named_schema* schema_right = nullptr) {
+            validation::expression_context_t predicate_context{
+                context.resource,
+                *schema_left,
+                parameters,
+                context.cast_registry,
+                context.function_registry,
+                context.execution_context,
+                components::compute::create_mask(components::compute::function_type_t::vector),
+                context.column_uses,
+                context.parameter_types,
+                schema_right};
+            predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
+            return validation::resolve_expression(clause, predicate_context);
+        }
+
         [[nodiscard]] core::result_wrapper_t<named_schema>
         validate_schema(const validation::validation_context_t& context,
                         node_match_t* node,
@@ -436,19 +508,11 @@ namespace services::dispatcher {
                     auto* expr = reinterpret_cast<compare_expression_t*>(node->expressions()[0].get());
                     return validate_schema(context, expr, parameters, schema_left, schema_right);
                 } else {
-                    validation::expression_context_t predicate_context{
-                        resource,
-                        *schema_left,
-                        parameters,
-                        context.cast_registry,
-                        context.function_registry,
-                        context.execution_context,
-                        components::compute::create_mask(components::compute::function_type_t::vector),
-                        context.column_uses,
-                        context.parameter_types,
-                        schema_right};
-                    predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
-                    if (auto error = validation::resolve_expression(node->expressions()[0], predicate_context);
+                    if (auto error = resolve_boolean_clause(context,
+                                                            node->expressions()[0],
+                                                            parameters,
+                                                            schema_left,
+                                                            schema_right);
                         error.contains_error()) {
                         return error;
                     }
@@ -469,8 +533,9 @@ namespace services::dispatcher {
             const auto* node = statement->insert();
             const auto* table = node->table_metadata();
             if (!table) {
-                return core::error_t(core::error_code_t::table_not_exists,
-                                     std::pmr::string{"INSERT target collection does not exist", resource});
+                return core::error_t(
+                    core::error_code_t::table_not_exists,
+                    std::pmr::string{"relation \"" + node->target().to_string() + "\" does not exist", resource});
             }
             if (table->relkind == 'g') {
                 return core::error_t(
@@ -2877,6 +2942,9 @@ namespace services::dispatcher {
                         if (res.has_error()) {
                             return res;
                         }
+                    } else if (auto error = impl::resolve_boolean_clause(context, having, parameters, &result);
+                               error.contains_error()) {
+                        return error;
                     }
                 }
                 // cleanup of group output schema
@@ -3075,8 +3143,9 @@ namespace services::dispatcher {
                 }
                 const auto* tbl_ins = insert_node->table_metadata();
                 if (!tbl_ins) {
-                    return core::error_t(core::error_code_t::table_not_exists,
-                                         std::pmr::string{"INSERT target collection does not exist", resource});
+                    return core::error_t(
+                        core::error_code_t::table_not_exists,
+                        std::pmr::string{"relation \"" + node->target().to_string() + "\" does not exist", resource});
                 }
 
                 // The target columns type the literals of the source (PostgreSQL: p_resolve_unknowns off).

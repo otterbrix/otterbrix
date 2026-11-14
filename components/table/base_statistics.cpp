@@ -227,6 +227,7 @@ namespace components::table {
                     writer.write<uint16_t>(stats.max_as<uint16_t>());
                     break;
                 case types::logical_type::UINTEGER:
+                case types::logical_type::OID:
                     writer.write<uint32_t>(stats.min_as<uint32_t>());
                     writer.write<uint32_t>(stats.max_as<uint32_t>());
                     break;
@@ -305,6 +306,7 @@ namespace components::table {
                     deserialize_pair<uint16_t>(stats, reader);
                     break;
                 case types::logical_type::UINTEGER:
+                case types::logical_type::OID:
                     deserialize_pair<uint32_t>(stats, reader);
                     break;
                 case types::logical_type::UBIGINT:
@@ -359,6 +361,7 @@ namespace components::table {
                 case types::logical_type::UTINYINT:
                 case types::logical_type::USMALLINT:
                 case types::logical_type::UINTEGER:
+                case types::logical_type::OID:
                 case types::logical_type::UBIGINT:
                 case types::logical_type::FLOAT:
                 case types::logical_type::DOUBLE:
@@ -494,6 +497,7 @@ namespace components::table {
                 update_numeric_stats<uint16_t>(*this, vec, offset, count);
                 break;
             case types::logical_type::UINTEGER:
+            case types::logical_type::OID:
                 update_numeric_stats<uint32_t>(*this, vec, offset, count);
                 break;
             case types::logical_type::UBIGINT:

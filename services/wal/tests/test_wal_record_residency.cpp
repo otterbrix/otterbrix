@@ -46,7 +46,7 @@ namespace {
         return batch;
     }
 
-    constexpr components::catalog::oid_t kResidencyTableOid = 16700;
+    constexpr components::catalog::oid_t kResidencyTableOid{16700};
 
 } // namespace
 

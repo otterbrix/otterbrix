@@ -279,8 +279,8 @@ namespace services::collection {
             const std::string& pinned = described.value();
             const auto row =
                 std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) { return r.oid == binding.refobjid; });
-            const std::string created_over =
-                "function " + pinned + " it was created over (oid " + std::to_string(binding.refobjid) + ")";
+            const std::string created_over = "function " + pinned + " it was created over (oid " +
+                                             std::to_string(static_cast<unsigned>(binding.refobjid)) + ")";
             if (row == rows.end()) {
                 return components::planner::view_stale_error(resource, view.name.t, created_over + " no longer exists");
             }

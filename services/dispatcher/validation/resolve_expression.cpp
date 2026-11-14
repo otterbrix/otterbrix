@@ -674,6 +674,19 @@ namespace services::dispatcher::validation {
                 if (error_.contains_error()) {
                     return;
                 }
+                // x IS [NOT] TRUE / FALSE / UNKNOWN coerces x to boolean (PostgreSQL 18 coerce_to_boolean).
+                const auto& pins = call->pins();
+                if (!call->args().empty() && std::any_of(pins.begin(), pins.end(), [](const auto& pin) {
+                        return pin.uid == components::compute::boolean_test_uid;
+                    })) {
+                    if (!require_type(call->args().front(),
+                                      argument_types.front(),
+                                      boolean_type,
+                                      "argument of IS TRUE / FALSE / UNKNOWN")) {
+                        return;
+                    }
+                    argument_types.front() = boolean_type;
+                }
 
                 // An aggregate's argument is row-wise, so a call inside one is a vector function
                 // however the surrounding clause was masked. Aggregates stay admissible so a

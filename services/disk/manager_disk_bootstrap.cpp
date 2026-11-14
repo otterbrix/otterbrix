@@ -1,7 +1,13 @@
 #include "manager_disk_impl.hpp"
 #include "oid_reservation.hpp"
 
+#include <components/casts/cast_registry.hpp>
+#include <components/casts/default_casts.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/information_schema.hpp>
 #include <core/file/list_dir.hpp>
+
+#include <algorithm>
 
 #include <cassert>
 #include <charconv>
@@ -35,6 +41,7 @@ namespace services::disk {
         struct type_seed_row_t {
             components::catalog::oid_t oid;
             std::string_view name;
+            components::types::logical_type type;
         };
         struct proc_seed_row_t {
             components::catalog::oid_t oid;
@@ -52,57 +59,67 @@ namespace services::disk {
         }
 
         std::vector<type_seed_row_t> builtin_type_rows() {
+            using LT = components::types::logical_type;
             return {
-                // int8_type is otterbrix's 1-byte signed int ("int1"), not PostgreSQL's 8-byte "int8" (aliased below).
-                {wk::boolean_type, "bool"},
-                {wk::int8_type, "int1"},
-                {wk::uint8_type, "uint1"},
-                {wk::int16_type, "int2"},
-                {wk::uint16_type, "uint2"},
-                {wk::int32_type, "int4"},
-                {wk::uint32_type, "uint4"},
-                {wk::int64_type, "int8"},
-                {wk::uint64_type, "uint8"},
-                {wk::int128_type, "int16"},
-                {wk::uint128_type, "uint16"},
-                {wk::float32_type, "float4"},
-                {wk::float64_type, "float8"},
-                {wk::string_type, "string"},
-                {wk::timestamp_type, "timestamp"},
-                {wk::date_type, "date"},
-                {wk::time_type, "time"},
-                {wk::blob_type, "blob"},
-                {wk::numeric_type, "numeric"},
-                {wk::uuid_type, "uuid"},
-                {wk::int64_type, "int8_t"},
-                {wk::string_type, "text"},
-                {wk::string_type, "varchar"},
-                {wk::string_type, "bpchar"},
-                {wk::string_type, "name"},
-                {wk::blob_type, "bytea"},
-                {wk::boolean_type, "boolean"},
-                {wk::int8_type, "tinyint"},
-                {wk::uint8_type, "utinyint"},
-                {wk::int16_type, "smallint"},
-                {wk::uint16_type, "usmallint"},
-                {wk::int32_type, "integer"},
-                {wk::int32_type, "int"},
-                {wk::uint32_type, "uinteger"},
-                {wk::uint32_type, "uint"},
-                {wk::int64_type, "bigint"},
-                {wk::uint64_type, "ubigint"},
-                {wk::int128_type, "hugeint"},
-                {wk::uint128_type, "uhugeint"},
-                {wk::float64_type, "double"},
-                {wk::float64_type, "double precision"},
-                {wk::numeric_type, "decimal"},
-                {wk::timestamp_type, "timestamp"},
-                {wk::timestamp_tz_type, "timestamp with time zone"},
-                {wk::date_type, "date"},
-                {wk::time_type, "time"},
-                {wk::time_tz_type, "time with time zone"},
-                {wk::interval_type, "interval"},
+                {wk::boolean_type, "bool", LT::BOOLEAN},
+                {wk::blob_type, "bytea", LT::BLOB},
+                {wk::int64_type, "int8", LT::BIGINT},
+                {wk::int16_type, "int2", LT::SMALLINT},
+                {wk::int32_type, "int4", LT::INTEGER},
+                {wk::string_type, "text", LT::TEXT},
+                {wk::oid_type, "oid", LT::OID},
+                {wk::float32_type, "float4", LT::FLOAT},
+                {wk::float64_type, "float8", LT::DOUBLE},
+                {wk::date_type, "date", LT::DATE},
+                {wk::time_type, "time", LT::TIME},
+                {wk::timestamp_type, "timestamp", LT::TIMESTAMP},
+                {wk::timestamp_tz_type, "timestamptz", LT::TIMESTAMP_TZ},
+                {wk::interval_type, "interval", LT::INTERVAL},
+                {wk::time_tz_type, "timetz", LT::TIME_TZ},
+                {wk::numeric_type, "numeric", LT::DECIMAL},
+                {wk::uuid_type, "uuid", LT::UUID},
+                {wk::int8_type, "int1", LT::TINYINT},
+                {wk::uint8_type, "uint1", LT::UTINYINT},
+                {wk::uint16_type, "uint2", LT::USMALLINT},
+                {wk::uint32_type, "uint4", LT::UINTEGER},
+                {wk::uint64_type, "uint8", LT::UBIGINT},
+                {wk::int128_type, "int16", LT::HUGEINT},
+                {wk::uint128_type, "uint16", LT::UHUGEINT},
             };
+        }
+
+        struct cast_seed_row_t {
+            components::catalog::oid_t source;
+            components::catalog::oid_t target;
+            char castcontext;
+        };
+
+        components::catalog::oid_t cast_type_oid(const components::types::complex_logical_type& type) {
+            using LT = components::types::logical_type;
+            if (type.type() == LT::TEXT || type.type() == LT::STRING_LITERAL) {
+                return components::catalog::INVALID_OID;
+            }
+            const auto identity = components::catalog::pg_attribute_type_of(type, components::catalog::INVALID_OID);
+            return identity.attndims == 0 ? identity.atttypid : components::catalog::INVALID_OID;
+        }
+
+        std::vector<cast_seed_row_t> builtin_cast_rows(std::pmr::memory_resource* resource) {
+            components::casts::cast_registry_t registry(resource);
+            components::casts::register_default_casts(registry);
+            std::vector<cast_seed_row_t> rows;
+            registry.for_each_simple_cast([&rows](const components::types::complex_logical_type& source,
+                                                  const components::types::complex_logical_type& target,
+                                                  const components::casts::cast_entry& entry) {
+                const auto source_oid = cast_type_oid(source);
+                const auto target_oid = cast_type_oid(target);
+                if (source_oid != components::catalog::INVALID_OID && target_oid != components::catalog::INVALID_OID) {
+                    rows.push_back({source_oid, target_oid, components::casts::castcontext_of(entry.level)});
+                }
+            });
+            std::sort(rows.begin(), rows.end(), [](const cast_seed_row_t& left, const cast_seed_row_t& right) {
+                return left.source != right.source ? left.source < right.source : left.target < right.target;
+            });
+            return rows;
         }
 
         std::vector<proc_seed_row_t> builtin_proc_rows() {
@@ -130,7 +147,8 @@ namespace services::disk {
 
         auto has_builtin_seed_rows = [](catalog::oid_t tbl_oid) {
             return tbl_oid == catalog::well_known_oid::pg_settings_table || tbl_oid == pg_database_oid ||
-                   tbl_oid == pg_namespace_oid_tbl || tbl_oid == pg_type_oid || tbl_oid == pg_proc_oid;
+                   tbl_oid == pg_namespace_oid_tbl || tbl_oid == pg_type_oid || tbl_oid == pg_proc_oid ||
+                   tbl_oid == pg_cast_oid;
         };
 
         auto rows_in_sync = [&](catalog::oid_t tbl_oid) -> std::uint64_t {
@@ -306,6 +324,7 @@ namespace services::disk {
                             chunk.set_value(2, 0, def.namespace_oid);
                             chunk.set_value(3, 0, std::string_view{&relkind_ch, 1});
                             chunk.set_value(4, 0, std::string_view{"d"}); // disk-backed
+                            chunk.set_value(catalog::pg_class_col::reltype, 0, def.row_type_oid);
                         });
                         seed_row(pg_class_oid, cls_def->name, row);
                         ++written;
@@ -319,16 +338,15 @@ namespace services::disk {
                         std::int32_t attnum = 0;
                         for (const auto& col : def.columns) {
                             ++attnum;
-                            // Deterministic identity: a derived attoid never meets the oid generator.
-                            const auto attoid = static_cast<catalog::oid_t>(def.relation_oid * 100 +
-                                                                            static_cast<catalog::oid_t>(attnum));
-                            const auto atttypid = catalog::builtin_type_to_oid(col.type().type());
+                            // The attoid storage numbers the column by (all_system_tables).
+                            const catalog::oid_t attoid = col.attoid();
+                            const auto att_type = catalog::pg_attribute_type_of(col.type(), catalog::INVALID_OID);
                             const std::string typspec = catalog::encode_type_spec(col.type());
                             auto row = make_row(resource(), att_def->columns, [&](data_chunk_t& chunk, auto*) {
                                 chunk.set_value(0, 0, attoid);
                                 chunk.set_value(1, 0, def.relation_oid);
                                 chunk.set_value(2, 0, std::string_view{col.name()});
-                                chunk.set_value(3, 0, atttypid);
+                                chunk.set_value(3, 0, att_type.atttypid);
                                 chunk.set_value(4, 0, attnum);
                                 chunk.set_value(5, 0, col.is_not_null());
                                 chunk.set_value(6, 0, false); // atthasdefault: system columns carry none
@@ -337,6 +355,8 @@ namespace services::disk {
                                 chunk.set_value(9, 0, std::string_view{});
                                 chunk.set_value(10, 0, std::int64_t{0}); // added_at_commit_id
                                 chunk.set_value(11, 0, std::int64_t{0}); // dropped_at_commit_id
+                                chunk.set_value(catalog::pg_attribute_col::atttypmod, 0, att_type.atttypmod);
+                                chunk.set_value(catalog::pg_attribute_col::attndims, 0, att_type.attndims);
                             });
                             seed_row(pg_attribute_oid, att_def->name, row);
                             ++written;
@@ -417,13 +437,42 @@ namespace services::disk {
             if (auto* def = catalog::find_system_table(pg_type_oid)) {
                 std::uint64_t written = 0;
                 for (const auto& trow : builtin_type_rows()) {
-                    auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
-                        chunk.set_value(0, 0, trow.oid);
-                        chunk.set_value(1, 0, trow.name);
-                        chunk.set_value(2, 0, pg_catalog_ns_oid);
-                    });
+                    const auto attributes = catalog::pg_type_attributes_of(trow.type, catalog::INVALID_OID);
+                    auto row =
+                        catalog::make_pg_type_row(resource(), trow.oid, trow.name, pg_catalog_ns_oid, {}, attributes);
                     seed_row(pg_type_oid, def->name, row);
                     ++written;
+                    const std::string array_name = "_" + std::string{trow.name};
+                    auto array_row = catalog::make_pg_type_row(resource(),
+                                                               attributes.typarray,
+                                                               array_name,
+                                                               pg_catalog_ns_oid,
+                                                               {},
+                                                               catalog::array_pg_type_attributes(trow.oid));
+                    seed_row(pg_type_oid, def->name, array_row);
+                    ++written;
+                }
+                // Every system table's row type, as PostgreSQL has one for each catalog.
+                for (const auto& table : catalog::all_system_tables()) {
+                    auto attributes =
+                        catalog::pg_type_attributes_of(components::types::logical_type::STRUCT, table.relation_oid);
+                    attributes.typarray = table.row_array_oid;
+                    const std::string relname{table.name};
+                    auto row = catalog::make_pg_type_row(resource(),
+                                                         table.row_type_oid,
+                                                         relname,
+                                                         pg_catalog_ns_oid,
+                                                         {},
+                                                         attributes);
+                    seed_row(pg_type_oid, def->name, row);
+                    auto array_row = catalog::make_pg_type_row(resource(),
+                                                               table.row_array_oid,
+                                                               "_" + relname,
+                                                               pg_catalog_ns_oid,
+                                                               {},
+                                                               catalog::array_pg_type_attributes(table.row_type_oid));
+                    seed_row(pg_type_oid, def->name, array_row);
+                    written += 2;
                 }
                 RETURN_IF_ERROR(require_seeded(pg_type_oid, def->name, written));
             }
@@ -442,6 +491,51 @@ namespace services::disk {
                     ++written;
                 }
                 RETURN_IF_ERROR(require_seeded(pg_proc_oid, def->name, written));
+            }
+        }
+
+        if (freshly_created.count(pg_cast_oid)) {
+            if (auto* def = catalog::find_system_table(pg_cast_oid)) {
+                const auto casts = builtin_cast_rows(resource());
+                for (std::size_t i = 0; i < casts.size(); ++i) {
+                    auto row = catalog::make_pg_cast_row(
+                        resource(),
+                        catalog::oid_t{static_cast<unsigned>(catalog::FIRST_BUILTIN_CAST_OID) +
+                                       static_cast<std::uint32_t>(i)},
+                        casts[i].source,
+                        casts[i].target,
+                        casts[i].castcontext,
+                        catalog::castmethod::function);
+                    seed_row(pg_cast_oid, def->name, row);
+                }
+                RETURN_IF_ERROR(require_seeded(pg_cast_oid, def->name, casts.size()));
+            }
+        }
+
+        // main's information_schema views, with the namespace that holds them; after the tables whose rows they add
+        // to have been seeded.
+        if (freshly_created.count(pg_namespace_oid_tbl)) {
+            const auto demand = catalog::information_schema_oid_demand();
+            std::vector<catalog::oid_t> view_oids;
+            view_oids.reserve(demand);
+            for (std::size_t index = 0; index < demand; ++index) {
+                view_oids.push_back(catalog::oid_t{static_cast<unsigned>(catalog::FIRST_INFORMATION_SCHEMA_OID) +
+                                                   static_cast<std::uint32_t>(index)});
+            }
+            VALUE_OR_RETURN(auto view_batch, catalog::oid_batch_t::make(resource(), std::move(view_oids), demand));
+            auto writes = catalog::build_information_schema_writes(resource(),
+                                                                   wk::main_database_name,
+                                                                   wk::main_database,
+                                                                   wk::information_schema_namespace,
+                                                                   view_batch);
+            std::unordered_map<catalog::oid_t, std::uint64_t> expected;
+            for (auto& write : writes) {
+                auto& rows = expected.try_emplace(write.table_oid, rows_in_sync(write.table_oid)).first->second;
+                rows += write.row.size();
+                seed_row(write.table_oid, catalog::find_system_table(write.table_oid)->name, write.row);
+            }
+            for (const auto& [table_oid, rows] : expected) {
+                RETURN_IF_ERROR(require_seeded(table_oid, catalog::find_system_table(table_oid)->name, rows));
             }
         }
 
@@ -467,7 +561,7 @@ namespace services::disk {
             return core::error_t::no_error();
         }
 
-        components::catalog::oid_t high_water = components::catalog::FIRST_USER_OID - 1;
+        components::catalog::oid_t high_water{static_cast<unsigned>(components::catalog::FIRST_USER_OID) - 1};
         core::pmr::otterbrix_resource scan_resource;
 
         for (const auto& tbl : catalog::all_system_tables()) {
@@ -480,11 +574,11 @@ namespace services::disk {
             if (table.column_count() == 0 || table.calculate_size() == 0) {
                 continue;
             }
-            // UINTEGER guards pg_settings, whose id_col 0 is a name string, not an oid.
+            // OID guards pg_settings, whose id_col 0 is a name string, not an oid.
             const std::uint64_t id_col = (tbl_oid == catalog::well_known_oid::pg_computed_column_table)
                                              ? catalog::pg_computed_column_col::attoid
                                              : 0;
-            if (table.columns()[id_col].type().type() != components::types::logical_type::UINTEGER) {
+            if (table.columns()[id_col].type().type() != components::types::logical_type::OID) {
                 continue;
             }
             std::vector<components::table::storage_index_t> col_indices;
@@ -505,7 +599,7 @@ namespace services::disk {
                     if (chunk.is_null(0, i)) {
                         continue;
                     }
-                    const auto seen = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    const auto seen = chunk.get_value<components::catalog::oid_t>(0, i);
                     if (seen > high_water) {
                         high_water = seen;
                     }
@@ -520,8 +614,12 @@ namespace services::disk {
                 std::pmr::string{"refusing to start: " + std::string{reserved.error().what.c_str()}, resource()});
         }
         oid_reserved_until_ = reserved.value();
-        if (oid_reserved_until_ != components::catalog::INVALID_OID && oid_reserved_until_ - 1 > high_water) {
-            high_water = oid_reserved_until_ - 1;
+        // The last oid a reservation handed out is one below where it ends.
+        if (oid_reserved_until_ != components::catalog::INVALID_OID) {
+            const components::catalog::oid_t reserved_last{static_cast<unsigned>(oid_reserved_until_) - 1};
+            if (reserved_last > high_water) {
+                high_water = reserved_last;
+            }
         }
         oid_gen_.seed(high_water);
         trace(log_, "manager_disk_t::restore_oid_generator_sync : seeded high_water={}", high_water);
@@ -606,7 +704,7 @@ namespace services::disk {
             if (db_entry.kind != std::filesystem::file_type::directory)
                 continue;
             const auto db_name = db_entry.path.filename().string();
-            std::uint64_t db_oid_raw = 0;
+            std::uint32_t db_oid_raw = 0;
             {
                 auto [ptr, parse_ec] = std::from_chars(db_name.data(), db_name.data() + db_name.size(), db_oid_raw);
                 if (parse_ec != std::errc{})
@@ -621,7 +719,7 @@ namespace services::disk {
                 if (tbl_entry.kind != std::filesystem::file_type::directory)
                     continue;
                 const auto tbl_name = tbl_entry.path.filename().string();
-                std::uint64_t tbl_oid_raw = 0;
+                std::uint32_t tbl_oid_raw = 0;
                 {
                     auto [ptr, parse_ec] =
                         std::from_chars(tbl_name.data(), tbl_name.data() + tbl_name.size(), tbl_oid_raw);
@@ -708,7 +806,7 @@ namespace services::disk {
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(0, i))
                         continue;
-                    const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    const auto oid = chunk.get_value<catalog::oid_t>(0, i);
                     if (oid < catalog::FIRST_USER_OID)
                         continue;
                     if (has_storage(boot, oid))
@@ -729,7 +827,7 @@ namespace services::disk {
                         ++unclosed;
                         continue;
                     }
-                    const auto ns_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    const auto ns_oid = chunk.get_value<catalog::oid_t>(1, i);
                     if (remote_namespaces.contains(ns_oid)) {
                         continue;
                     }
@@ -882,7 +980,7 @@ namespace services::disk {
 
             std::size_t catalog_unidentified = 0;
             for (const auto& def : it->second) {
-                if (def.attoid() == 0) {
+                if (def.attoid() == catalog::INVALID_OID) {
                     ++catalog_unidentified;
                 }
             }
@@ -911,7 +1009,7 @@ namespace services::disk {
             bool identities_agree = true;
             for (uint64_t position = 0; position < loaded_table.columns().size(); position++) {
                 auto stored = loaded_table.columns()[position].attoid();
-                if (stored != 0 && stored != layout[position].attoid()) {
+                if (stored != catalog::INVALID_OID && stored != layout[position].attoid()) {
                     error(log_,
                           "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} position {} holds attoid {} "
                           "in the storage and {} in the catalog — the storage schema is left as it loaded",
@@ -935,7 +1033,7 @@ namespace services::disk {
             for (size_t position = 0; position < loaded_table.columns().size(); position++) {
                 const auto& column = loaded_table.columns()[position];
                 const auto& def = layout[position];
-                if (column.attoid() == 0) {
+                if (column.attoid() == catalog::INVALID_OID) {
                     loaded_table.stamp_column_identity(position, def.attoid());
                 }
                 // A NOT NULL whose storage flag a crash discarded (ALTER ... ADD PRIMARY KEY)
@@ -1032,7 +1130,7 @@ namespace services::disk {
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(att::attrelid, i))
                         continue;
-                    const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attrelid, i));
+                    const auto relid = chunk.get_value<catalog::oid_t>(att::attrelid, i);
                     if (wanted.find(relid) == wanted.end())
                         continue;
                     catalog_col_t rc;
@@ -1046,9 +1144,8 @@ namespace services::disk {
                                 ? 0
                                 : static_cast<uint64_t>(chunk.get_value<std::int64_t>(att::dropped_at_commit_id, i));
                     }
-                    rc.attoid = chunk.is_null(att::attoid, i)
-                                    ? catalog::INVALID_OID
-                                    : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attoid, i));
+                    rc.attoid = chunk.is_null(att::attoid, i) ? catalog::INVALID_OID
+                                                              : chunk.get_value<catalog::oid_t>(att::attoid, i);
                     if (!chunk.is_null(att::attname, i)) {
                         auto attname_v = chunk.get_value<std::string_view>(att::attname, i);
                         rc.name.assign(attname_v.data(), attname_v.size());
@@ -1075,10 +1172,9 @@ namespace services::disk {
                             rc.type = std::move(rc_type_r.value());
                         }
                     } else {
-                        const auto atttypid =
-                            chunk.is_null(att::atttypid, i)
-                                ? catalog::INVALID_OID
-                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::atttypid, i));
+                        const auto atttypid = chunk.is_null(att::atttypid, i)
+                                                  ? catalog::INVALID_OID
+                                                  : chunk.get_value<catalog::oid_t>(att::atttypid, i);
                         rc.type = components::types::complex_logical_type(catalog::oid_to_builtin_type(atttypid));
                     }
                     if (!rc.name.empty() && !rc.type.has_alias()) {
@@ -1112,7 +1208,7 @@ namespace services::disk {
             defs.reserve(cols.size());
             for (auto& c : cols) {
                 defs.emplace_back(c.name, c.type);
-                defs.back().set_attoid(static_cast<std::uint32_t>(c.attoid));
+                defs.back().set_attoid(c.attoid);
                 defs.back().set_default_value(std::move(c.default_value));
                 defs.back().set_added_at(c.added_at);
                 defs.back().set_dropped_at(c.dropped_at);
@@ -1165,21 +1261,20 @@ namespace services::disk {
                    static_cast<int64_t>(catalog::pg_database_col::datconnection),
                    [&remote_databases](const components::vector::data_chunk_t& chunk, uint64_t i) {
                        if (!chunk.get_value<std::string_view>(1, i).empty()) {
-                           remote_databases.insert(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)));
+                           remote_databases.insert(chunk.get_value<catalog::oid_t>(0, i));
                        }
                    });
         if (remote_databases.empty()) {
             return found;
         }
-        scan_pairs(
-            pg_namespace_oid_tbl,
-            static_cast<int64_t>(catalog::pg_namespace_col::oid),
-            static_cast<int64_t>(catalog::pg_namespace_col::nspdatabase),
-            [&](const components::vector::data_chunk_t& chunk, uint64_t i) {
-                if (remote_databases.contains(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)))) {
-                    found.insert(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)));
-                }
-            });
+        scan_pairs(pg_namespace_oid_tbl,
+                   static_cast<int64_t>(catalog::pg_namespace_col::oid),
+                   static_cast<int64_t>(catalog::pg_namespace_col::nspdatabase),
+                   [&](const components::vector::data_chunk_t& chunk, uint64_t i) {
+                       if (remote_databases.contains(chunk.get_value<catalog::oid_t>(1, i))) {
+                           found.insert(chunk.get_value<catalog::oid_t>(0, i));
+                       }
+                   });
         return found;
     }
 
@@ -1213,7 +1308,7 @@ namespace services::disk {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto seen = chunk.get_value<catalog::oid_t>(0, i);
                 if (seen < catalog::FIRST_USER_OID)
                     continue;
                 const auto kind = chunk.get_value<std::string_view>(1, i);
@@ -1222,8 +1317,7 @@ namespace services::disk {
                 const char k = kind.front();
                 if (k != catalog::relkind::regular && k != catalog::relkind::materialized_view)
                     continue;
-                if (!chunk.is_null(2, i) &&
-                    remote_namespaces.contains(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i))))
+                if (!chunk.is_null(2, i) && remote_namespaces.contains(chunk.get_value<catalog::oid_t>(2, i)))
                     continue;
                 live.push_back(seen);
             }
@@ -1271,7 +1365,7 @@ namespace services::disk {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto seen = chunk.get_value<catalog::oid_t>(0, i);
                 if (seen != table_oid)
                     continue;
                 const auto kind = chunk.get_value<std::string_view>(1, i);
@@ -1311,10 +1405,10 @@ namespace services::disk {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto seen = chunk.get_value<catalog::oid_t>(0, i);
                 if (seen != table_oid)
                     continue;
-                result = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                result = chunk.get_value<catalog::oid_t>(1, i);
             }
         }
         return result;
@@ -1371,8 +1465,8 @@ namespace services::disk {
                     if (chunk.is_null(0, i) || chunk.is_null(1, i))
                         continue;
                     pg_index_row_t row{resource_};
-                    row.oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                    row.table_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    row.oid = chunk.get_value<catalog::oid_t>(0, i);
+                    row.table_oid = chunk.get_value<catalog::oid_t>(1, i);
                     // indisvalid → ready_since sentinel (1 = alive, 0 = skip; see pg_index_row_t).
                     const bool valid = chunk.is_null(3, i) ? false : chunk.get_value<bool>(3, i);
                     row.ready_since = valid ? std::uint64_t{1} : std::uint64_t{0};
@@ -1445,7 +1539,7 @@ namespace services::disk {
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         if (chunk.is_null(0, i) || chunk.is_null(1, i))
                             continue;
-                        const auto att_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        const auto att_oid = chunk.get_value<catalog::oid_t>(0, i);
                         auto sv = chunk.get_value<std::string_view>(1, i);
                         attoid_to_name.emplace(att_oid, std::pmr::string{sv.data(), sv.size(), resource_});
                     }
@@ -1461,7 +1555,7 @@ namespace services::disk {
                 std::size_t end = csv.find(',', pos);
                 if (end == std::pmr::string::npos)
                     end = csv.size();
-                std::uint64_t token = 0;
+                std::uint32_t token = 0;
                 auto [ptr, ec] = std::from_chars(csv.data() + pos, csv.data() + end, token);
                 pos = end + 1;
                 if (ec != std::errc{})
@@ -1502,7 +1596,7 @@ namespace services::disk {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i))
                     continue;
-                const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto seen = chunk.get_value<catalog::oid_t>(0, i);
                 if (seen >= catalog::FIRST_USER_OID) {
                     alive.insert(seen);
                 }
@@ -1545,13 +1639,11 @@ namespace services::disk {
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(0, i))
                         continue;
-                    const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    const auto seen = chunk.get_value<catalog::oid_t>(0, i);
                     if (seen < catalog::FIRST_USER_OID) {
                         continue;
                     }
-                    const auto ns = chunk.is_null(1, i)
-                                        ? catalog::INVALID_OID
-                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    const auto ns = chunk.is_null(1, i) ? catalog::INVALID_OID : chunk.get_value<catalog::oid_t>(1, i);
                     ns_by_user_oid[seen] = ns;
                 }
             }

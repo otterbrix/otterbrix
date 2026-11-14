@@ -8,7 +8,8 @@ namespace components::catalog {
         // (classid, objid) is the mark key, not the bare oid: a bare oid could collapse two catalogs' objects sharing
         // it into one and drop from the plan.
         constexpr std::uint64_t mark_key(oid_t cls, oid_t oid) noexcept {
-            return (static_cast<std::uint64_t>(cls) << 32) | static_cast<std::uint64_t>(oid);
+            return (static_cast<std::uint64_t>(static_cast<unsigned>(cls)) << 32) |
+                   static_cast<std::uint64_t>(static_cast<unsigned>(oid));
         }
 
         struct walk_state {

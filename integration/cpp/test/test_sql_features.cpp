@@ -846,6 +846,51 @@ TEST_CASE("integration::cpp::test_sql_features::like_match_mode_is_not_callable_
     CHECK(cur->size() == 1);
 }
 
+// x IS [NOT] TRUE / FALSE / UNKNOWN is never NULL: a NULL x is unknown (PostgreSQL 18 BooleanTest).
+TEST_CASE("integration::cpp::test_sql_features::boolean_test") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/boolean_test"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE SCHEMA bdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE bdb.t (id bigint, a boolean);"));
+    REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO bdb.t (id, a) VALUES (1, true), (2, false), (3, NULL);"));
+
+    SECTION("every test of every value") {
+        auto cur = test_helpers::exec(dispatcher,
+                                      "SELECT a IS TRUE, a IS NOT TRUE, a IS FALSE, a IS NOT FALSE, a IS UNKNOWN, "
+                                      "a IS NOT UNKNOWN FROM bdb.t ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        const std::vector<std::vector<bool>> expected{{true, false, false, true, false, true},
+                                                      {false, true, true, false, false, true},
+                                                      {false, true, false, true, true, false}};
+        const auto& chunk = cur->chunks().front();
+        for (uint64_t row = 0; row < 3; ++row) {
+            for (uint64_t column = 0; column < 6; ++column) {
+                INFO("row " << row << ", test " << column);
+                REQUIRE_FALSE(chunk.is_null(column, row));
+                CHECK(chunk.get_value<bool>(column, row) == expected[row][column]);
+            }
+        }
+    }
+
+    SECTION("as a predicate") {
+        auto cur = test_helpers::exec(dispatcher, "SELECT id FROM bdb.t WHERE a IS NOT TRUE AND NOT (a IS FALSE);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        CHECK(cur->chunks().front().get_value<int64_t>(0, 0) == 3);
+    }
+
+    SECTION("of a value that is not boolean") {
+        auto cur = test_helpers::exec(dispatcher, "SELECT id FROM bdb.t WHERE id IS TRUE;");
+        REQUIRE(cur->is_error());
+        CHECK(cur->get_error().type == core::error_code_t::datatype_mismatch);
+        auto called = test_helpers::exec(dispatcher, "SELECT boolean_test(a, 0::uint1) FROM bdb.t;");
+        REQUIRE(called->is_error());
+        CHECK(called->get_error().type == core::error_code_t::unrecognized_function);
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {
     // RE2 defaults to UTF-8; core::regex_t must compile Latin-1 (byte-wise) so LIKE matches non-UTF-8 bytes.
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_latin1_bytes"));
@@ -3417,6 +3462,57 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cross_logical_same_physical_k
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
+    }
+}
+
+// An FK's two sides of different types meet through the cast registry's assignment casts: a referencing value
+// is looked up as the referenced column's, a referenced one as the referencing column's, and a referenced value
+// no referencing column can hold has no children.
+TEST_CASE("integration::cpp::test_sql_features::fk_keys_of_two_types") {
+    auto config = test_create_config(integration_fixture_path("test_sql_features/fk_keys_of_two_types"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, sql);
+        INFO(sql << " -> " << (cur->is_error() ? cur->get_error().what : "ok"));
+        return cur;
+    };
+    REQUIRE(exec("CREATE SCHEMA s;")->is_success());
+
+    SECTION("an integer key finds its bigint parent") {
+        REQUIRE(exec("CREATE TABLE s.parent (id bigint);")->is_success());
+        REQUIRE(exec("CREATE TABLE s.child (pid integer);")->is_success());
+        REQUIRE(
+            exec("ALTER TABLE s.child ADD CONSTRAINT fk FOREIGN KEY (pid) REFERENCES s.parent (id);")->is_success());
+        REQUIRE(exec("INSERT INTO s.parent (id) VALUES (1);")->is_success());
+        CHECK(exec("INSERT INTO s.child (pid) VALUES (1);")->is_success());
+        CHECK(exec("INSERT INTO s.child (pid) VALUES (2);")->is_error());
+    }
+
+    // 70000 wraps to 4464 in a smallint, and a cast that refused it would refuse the whole DELETE.
+    SECTION("a bigint key out of a smallint's range has no children") {
+        REQUIRE(exec("CREATE TABLE s.parent (id bigint);")->is_success());
+        REQUIRE(exec("CREATE TABLE s.child (pid smallint);")->is_success());
+        REQUIRE(
+            exec("ALTER TABLE s.child ADD CONSTRAINT fk FOREIGN KEY (pid) REFERENCES s.parent (id);")->is_success());
+        REQUIRE(exec("INSERT INTO s.parent (id) VALUES (4464), (70000);")->is_success());
+        REQUIRE(exec("INSERT INTO s.child (pid) VALUES (4464);")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 70000;")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 4464;")->is_error());
+    }
+
+    // 1.50 rounds to 2 in an integer.
+    SECTION("a fractional key has no integer children") {
+        REQUIRE(exec("CREATE TABLE s.parent (id numeric(5, 2));")->is_success());
+        REQUIRE(exec("CREATE TABLE s.child (pid integer);")->is_success());
+        REQUIRE(
+            exec("ALTER TABLE s.child ADD CONSTRAINT fk FOREIGN KEY (pid) REFERENCES s.parent (id);")->is_success());
+        REQUIRE(exec("INSERT INTO s.parent (id) VALUES (1.50), (2.00);")->is_success());
+        REQUIRE(exec("INSERT INTO s.child (pid) VALUES (2);")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 1.50;")->is_success());
+        CHECK(exec("DELETE FROM s.parent WHERE id = 2.00;")->is_error());
     }
 }
 

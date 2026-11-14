@@ -46,7 +46,8 @@ namespace {
             const std::string name = db->path().filename().string();
             char* tail = nullptr;
             const unsigned long oid = std::strtoul(name.c_str(), &tail, 10);
-            if (tail == name.c_str() || *tail != '\0' || oid < components::catalog::FIRST_USER_OID) {
+            if (tail == name.c_str() || *tail != '\0' ||
+                oid < static_cast<unsigned>(components::catalog::FIRST_USER_OID)) {
                 continue;
             }
             for (std::filesystem::directory_iterator table(db->path(), entry_ec), table_end;

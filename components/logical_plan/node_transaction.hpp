@@ -20,6 +20,14 @@ namespace components::logical_plan {
         rollback_to_savepoint
     };
 
+    // BEGIN READ ONLY / READ WRITE, or neither
+    enum class transaction_access_t : uint8_t
+    {
+        as_default,
+        read_only,
+        read_write
+    };
+
     // Transaction-control leaf node (BEGIN / COMMIT / ROLLBACK / SAVEPOINT / RELEASE / ROLLBACK TO), selected by
     // op(). The session id flows through pipeline::context_t::session;
     // operator-side resolution against the txn_manager happens at execution time.
@@ -41,6 +49,10 @@ namespace components::logical_plan {
         // savepoint / release_savepoint / rollback_to_savepoint only
         const std::pmr::string& savepoint_name() const noexcept { return savepoint_name_; }
 
+        // begin only
+        transaction_access_t access() const noexcept { return access_; }
+        void set_access(transaction_access_t access) noexcept { access_ = access; }
+
         // commit-only payload (ignored for begin/abort)
         bool is_ddl_commit() const noexcept { return is_ddl_commit_; }
         void set_is_ddl_commit(bool v) noexcept { is_ddl_commit_ = v; }
@@ -55,6 +67,7 @@ namespace components::logical_plan {
 
         transaction_op op_;
         std::pmr::string savepoint_name_;
+        transaction_access_t access_{transaction_access_t::as_default};
         bool is_ddl_commit_{false};
         std::uint64_t txn_id_{0};
         components::catalog::oid_t database_oid_{components::catalog::INVALID_OID};

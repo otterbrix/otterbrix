@@ -56,10 +56,10 @@ namespace {
         host.db.ok(otterbrix::session_id_t(), "DROP TABLE m2.shop.public." + name + ";");
     }
 
-    std::uint32_t oid_of(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& relname) {
+    components::catalog::oid_t oid_of(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& relname) {
         auto found = run(dispatcher, "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
         REQUIRE(found->size() == 1);
-        return found->chunks().front().get_value<std::uint32_t>(0, 0);
+        return found->chunks().front().get_value<components::catalog::oid_t>(0, 0);
     }
 
     // A statement of a session whose place is m2.shop.public: a column can be qualified by the bare table name.
@@ -286,7 +286,7 @@ TEST_CASE("integration::cpp::host_names::a_view_over_a_storage_table") {
     REQUIRE(read->is_success());
     CHECK(sorted_int_rows(read) == rows_t{{1, 100}, {2, 200}, {3, 300}});
 
-    const auto view_oid = std::to_string(oid_of(dispatcher, "ov"));
+    const auto view_oid = std::to_string(static_cast<unsigned>(oid_of(dispatcher, "ov")));
     const auto orders_oid = oid_of(dispatcher, "orders");
     auto depends =
         run(dispatcher, "SELECT refclassid, refobjid FROM pg_catalog.pg_depend WHERE objid = " + view_oid + ";");
@@ -294,10 +294,10 @@ TEST_CASE("integration::cpp::host_names::a_view_over_a_storage_table") {
     bool on_schema = false;
     for (const auto& chunk : depends->chunks()) {
         for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-            const auto refclassid = chunk.get_value<std::uint32_t>(0, row);
+            const auto refclassid = chunk.get_value<components::catalog::oid_t>(0, row);
             on_schema |= refclassid == components::catalog::well_known_oid::pg_namespace_table;
             on_orders |= refclassid == components::catalog::well_known_oid::pg_class_table &&
-                         chunk.get_value<std::uint32_t>(1, row) == orders_oid;
+                         chunk.get_value<components::catalog::oid_t>(1, row) == orders_oid;
         }
     }
     CHECK(on_schema);
@@ -720,7 +720,7 @@ TEST_CASE("integration::cpp::host_names::an_insert_flushes_on_the_storage_thresh
     CHECK(host.backend().rows(orders) == rows_t{{11, 100}, {12, 200}, {13, 300}});
 }
 
-// A backend's table declares no defaults: a column the INSERT leaves out is NULL, as for a local table without one.
+// A column the INSERT leaves out is not sent: the backend fills it, and this one has no default for it.
 TEST_CASE("integration::cpp::host_names::an_omitted_column_is_null") {
     HOST_TEST_BOILERPLATE("test_host_names/insert_null")
     declare_orders(host);
@@ -735,6 +735,121 @@ TEST_CASE("integration::cpp::host_names::an_omitted_column_is_null") {
         REQUIRE(cursor->is_success());
     }
     CHECK(sorted(host.backend().rows(orders)) == rows_t{{-1, 800}, {1, 100}, {2, 200}, {3, 300}, {4, -1}, {5, -1}});
+}
+
+// What the INSERT does not write, an omitted column or a DEFAULT cell, takes the backend's own default: a message
+// names the columns its rows write, and rows of other DEFAULT cells go in messages of their own, in order.
+TEST_CASE("integration::cpp::host_names::backend_defaults") {
+    HOST_TEST_BOILERPLATE("test_host_names/backend_defaults")
+    declare_orders(host);
+    host.backend().set_default(orders, "id", 77);
+    host.backend().set_rows(orders, {});
+    host.backend().clear_journal();
+
+    SECTION("an omitted column") {
+        REQUIRE(run(dispatcher, "INSERT INTO m2.shop.public.orders (amount) VALUES (1);")->is_success());
+        CHECK(host.backend().rows(orders) == rows_t{{77, 1}});
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " amount:bigint"});
+    }
+
+    SECTION("default cells") {
+        auto inserted = run(dispatcher,
+                            "INSERT INTO m2.shop.public.orders (amount, id) VALUES (2, DEFAULT), (3, DEFAULT), "
+                            "(4, 5), (6, DEFAULT);");
+        INFO(error_of(inserted));
+        REQUIRE(inserted->is_success());
+        CHECK(host.backend().rows(orders) == rows_t{{77, 2}, {77, 3}, {5, 4}, {77, 6}});
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " amount:bigint",
+                                                          "insert " + orders + " id:bigint,amount:bigint",
+                                                          "insert " + orders + " amount:bigint"});
+    }
+
+    SECTION("default values") {
+        auto returned = run(dispatcher, "INSERT INTO m2.shop.public.orders DEFAULT VALUES RETURNING id;");
+        INFO(error_of(returned));
+        REQUIRE(returned->is_success());
+        CHECK(sorted_int_rows(returned) == rows_t{{77}});
+        CHECK(host.backend().rows(orders) == rows_t{{77, -1}});
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " "});
+    }
+}
+
+// ORMs quote a federated prefix as one identifier: a name that is nothing as written is the one its dots spell.
+TEST_CASE("integration::cpp::host_names::spelled_by_dots") {
+    HOST_TEST_BOILERPLATE("test_host_names/spelled_by_dots")
+    declare_orders(host);
+
+    SECTION("a quoted schema") {
+        auto found =
+            run(dispatcher, "SELECT \"m2.shop.public\".\"orders\".id FROM \"m2.shop.public\".\"orders\" ORDER BY id;");
+        INFO(error_of(found));
+        REQUIRE(found->is_success());
+        CHECK(sorted_int_rows(found) == rows_t{{1}, {2}, {3}});
+        REQUIRE(
+            run(dispatcher, "INSERT INTO \"m2.shop.public\".\"orders\" (id, amount) VALUES (4, 400);")->is_success());
+        CHECK(host.backend().rows(orders).size() == 4);
+    }
+
+    SECTION("a quoted relation") {
+        auto found = run(dispatcher, "SELECT id FROM \"m2.shop.public.orders\";");
+        INFO(error_of(found));
+        REQUIRE(found->is_success());
+        CHECK(sorted_int_rows(found) == rows_t{{1}, {2}, {3}});
+        REQUIRE(run(dispatcher, "INSERT INTO \"m2.shop.public.orders\" (id, amount) VALUES (4, 400);")->is_success());
+        CHECK(host.backend().rows(orders).size() == 4);
+    }
+
+    SECTION("a name as written first") {
+        REQUIRE(run(dispatcher, "CREATE SCHEMA \"m2.shop.public\";")->is_success());
+        REQUIRE(run(dispatcher, "CREATE TABLE \"m2.shop.public\".orders (id BIGINT);")->is_success());
+        REQUIRE(run(dispatcher, "INSERT INTO \"m2.shop.public\".orders (id) VALUES (99);")->is_success());
+        auto found = run(dispatcher, "SELECT id FROM \"m2.shop.public\".\"orders\";");
+        INFO(error_of(found));
+        REQUIRE(found->is_success());
+        CHECK(sorted_int_rows(found) == rows_t{{99}});
+        CHECK(host.backend().rows(orders).size() == 3);
+    }
+
+    SECTION("a name that is neither") {
+        auto missing = run(dispatcher, "SELECT id FROM \"m2.shop.public\".\"nothing\";");
+        REQUIRE(missing->is_error());
+        auto not_a_connection = run(dispatcher, "INSERT INTO \"m9.shop.public\".\"orders\" (id) VALUES (1);");
+        REQUIRE(not_a_connection->is_error());
+        CHECK(host.backend().rows(orders).size() == 3);
+    }
+}
+
+// The first value the backend generated for an auto-increment column, as MySQL's OK packet reports it.
+TEST_CASE("integration::cpp::host_names::generated_id") {
+    HOST_TEST_BOILERPLATE("test_host_names/generated_id")
+    declare_orders(host);
+    host.backend().set_auto_increment(orders, "id", 10);
+    host.backend().set_rows(orders, {});
+    const auto generated_by = [&](const std::string& sql) {
+        auto cursor = run(dispatcher, sql);
+        INFO(sql << " -> " << error_of(cursor));
+        REQUIRE(cursor->is_success());
+        return cursor->generated_id();
+    };
+
+    SECTION("of a statement of several rows") {
+        CHECK(generated_by("INSERT INTO m2.shop.public.orders (amount) VALUES (1), (2), (3);") == 10);
+        CHECK(generated_by("INSERT INTO m2.shop.public.orders (amount) VALUES (4);") == 13);
+        CHECK(host.backend().rows(orders) == rows_t{{10, 1}, {11, 2}, {12, 3}, {13, 4}});
+    }
+
+    SECTION("by a later message") {
+        CHECK(generated_by(
+                  "INSERT INTO m2.shop.public.orders (amount, id) VALUES (1, 5), (2, DEFAULT), (3, DEFAULT);") == 10);
+        CHECK(host.backend().rows(orders) == rows_t{{5, 1}, {10, 2}, {11, 3}});
+    }
+
+    SECTION("none") {
+        CHECK(generated_by("INSERT INTO m2.shop.public.orders (id, amount) VALUES (5, 1);") == 0);
+        REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
+        REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT);")->is_success());
+        CHECK(generated_by("INSERT INTO loc.t (id) VALUES (1);") == 0);
+    }
 }
 
 TEST_CASE("integration::cpp::host_names::insert_returning_reads_the_rows_written") {

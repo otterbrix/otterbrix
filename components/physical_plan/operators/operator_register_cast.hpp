@@ -15,7 +15,9 @@ namespace components::operators {
         operator_register_cast_t(std::pmr::memory_resource* resource,
                                  log_t log,
                                  catalog::oid_t source_type_oid,
-                                 catalog::oid_t target_type_oid);
+                                 catalog::oid_t target_type_oid,
+                                 char castcontext,
+                                 char castmethod);
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -24,6 +26,8 @@ namespace components::operators {
 
         catalog::oid_t source_type_oid_;
         catalog::oid_t target_type_oid_;
+        char castcontext_;
+        char castmethod_;
     };
 
     // Finds the cast's oid in pg_cast by its (source, target) pair, then deletes the pg_cast row and its pg_depend

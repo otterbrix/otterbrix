@@ -37,9 +37,7 @@ namespace {
     oid_t pg_class_oid(otterbrix::wrapper_dispatcher_t* d, const std::string& relname) {
         auto cur = run_ok(d, "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
         REQUIRE(cur->size() == 1);
-        auto oid = cur->get<std::uint32_t>(0, 0);
-        REQUIRE_FALSE(oid.has_error());
-        return oid.value();
+        return cur->chunks().front().get_value<oid_t>(0, 0);
     }
 
 } // namespace
@@ -107,7 +105,8 @@ TEST_CASE("integration::cpp::created_oid::a_rolled_back_create_leaves_no_table_w
     REQUIRE(created->is_success());
     const oid_t oid = created->created_oid();
     REQUIRE(oid != INVALID_OID);
-    const std::string by_oid = "SELECT relname FROM pg_catalog.pg_class WHERE oid = " + std::to_string(oid) + ";";
+    const std::string by_oid =
+        "SELECT relname FROM pg_catalog.pg_class WHERE oid = " + std::to_string(static_cast<unsigned>(oid)) + ";";
     auto inside = d->execute_sql(txn, by_oid);
     REQUIRE(inside->is_success());
     REQUIRE(inside->size() == 1);

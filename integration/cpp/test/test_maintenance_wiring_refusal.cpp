@@ -24,8 +24,8 @@ namespace {
     namespace lp = components::logical_plan;
     using components::catalog::oid_t;
 
-    constexpr oid_t some_table_oid = 16401;
-    constexpr oid_t some_index_oid = 16402;
+    constexpr oid_t some_table_oid{16401};
+    constexpr oid_t some_index_oid{16402};
 
 } // namespace
 

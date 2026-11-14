@@ -55,6 +55,11 @@ TEST_CASE("components::compute::registry::basic") {
                 REQUIRE(fn->fn_arity().num_args == 3);
                 REQUIRE(fn->fn_arity().varargs == false);
                 REQUIRE(fn->num_kernels() == 1);
+            } else if (name == "boolean_test") {
+                // boolean_test(value, test)
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == false);
+                REQUIRE(fn->num_kernels() == 1);
             } else if (name == "generate_series") {
                 // generate_series(start, stop[, step]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);
@@ -190,10 +195,11 @@ TEST_CASE("components::compute::registry::every builtin uid is its own DEFAULT_F
     CHECK_FALSE(is_builtin(DEFAULT_FUNCTIONS.size()));
 }
 
-TEST_CASE("components::compute::registry::like_match is the one internal builtin") {
+TEST_CASE("components::compute::registry::internal builtins") {
     REQUIRE(DEFAULT_FUNCTIONS[like_match_uid].first == "like_match");
+    REQUIRE(DEFAULT_FUNCTIONS[boolean_test_uid].first == "boolean_test");
     for (const auto& [name, uid] : DEFAULT_FUNCTIONS) {
         INFO(name);
-        CHECK(is_internal(uid) == (name == "like_match"));
+        CHECK(is_internal(uid) == (name == "like_match" || name == "boolean_test"));
     }
 }

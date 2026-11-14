@@ -48,6 +48,10 @@ namespace components::catalog {
                 return "timestamp without time zone";
             case logical_type::TIME:
                 return "time without time zone";
+            case logical_type::TIMESTAMP_TZ:
+                return "timestamp with time zone";
+            case logical_type::TIME_TZ:
+                return "time with time zone";
             case logical_type::DECIMAL: {
                 const auto* decimal = type.extension_as<decimal_logical_type_extension>();
                 if (decimal == nullptr || !with_typmod) {

@@ -122,6 +122,15 @@ namespace components::casts {
         [[nodiscard]] std::optional<cast_cost> cost_of(const types::complex_logical_type& source,
                                                        const types::complex_logical_type& target) const;
 
+        template<typename Fn>
+        void for_each_simple_cast(Fn&& fn) const {
+            for (const auto& [source, targets] : entries_) {
+                for (const auto& [target, entry] : targets.entries) {
+                    fn(source, target, entry);
+                }
+            }
+        }
+
         //! Warning: works only with simple casts
         // Returns nullptr, if not found
         [[nodiscard]] const cast_entry* find(const types::complex_logical_type& source,

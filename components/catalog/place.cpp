@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <initializer_list>
 
 namespace components::catalog {
 
@@ -114,6 +115,86 @@ namespace components::catalog {
                 : place_t{core::connection_name_t{std::string{connection}}, core::dbname_t{std::string{database}}, {}};
         completed.schema = schema.empty() ? place.schema : core::schema_t{std::string{schema}};
         return completed;
+    }
+
+    namespace {
+        struct written_part_t {
+            std::string_view text;
+            name_level_t level;
+        };
+
+        // The parts the dots inside `written` spell, in order, when the first that holds a dot is at `missing` or after
+        // it and they split into exactly `wanted` non-empty parts.
+        bool spelled_by_dots(std::initializer_list<written_part_t> written,
+                             name_level_t missing,
+                             std::size_t wanted,
+                             parts_t* spelled) {
+            bool dotted = false;
+            spelled->count = 0;
+            for (const auto& [part, level] : written) {
+                if (part.empty()) {
+                    continue;
+                }
+                if (!dotted && part.find('.') != std::string_view::npos) {
+                    if (level < missing) {
+                        return false;
+                    }
+                    dotted = true;
+                }
+                const auto split = parts_of(part);
+                for (std::size_t index = 0; index < split.count; ++index) {
+                    if (spelled->count == wanted || index >= split.part.size() || split.part[index].empty()) {
+                        return false;
+                    }
+                    spelled->part[spelled->count++] = split.part[index];
+                }
+            }
+            return dotted && spelled->count == wanted;
+        }
+    } // namespace
+
+    bool place_spelled_by_dots(std::string_view connection,
+                               std::string_view database,
+                               std::string_view schema,
+                               name_level_t missing,
+                               place_t* spelled) {
+        parts_t parts;
+        if (!spelled_by_dots({{connection, name_level_t::database},
+                              {database, name_level_t::database},
+                              {schema, name_level_t::schema}},
+                             missing,
+                             3,
+                             &parts)) {
+            return false;
+        }
+        *spelled = place_t{core::connection_name_t{std::string{parts.part[0]}},
+                           core::dbname_t{std::string{parts.part[1]}},
+                           core::schema_t{std::string{parts.part[2]}}};
+        return true;
+    }
+
+    bool relation_spelled_by_dots(std::string_view connection,
+                                  std::string_view database,
+                                  std::string_view schema,
+                                  std::string_view relation,
+                                  name_level_t missing,
+                                  place_t* place,
+                                  core::relname_t* spelled) {
+        parts_t parts;
+        if (!spelled_by_dots({{connection, name_level_t::database},
+                              {database, name_level_t::database},
+                              {schema, name_level_t::schema},
+                              {relation, name_level_t::relation}},
+                             missing,
+                             4,
+                             &parts)) {
+            return false;
+        }
+        *place = place_t{core::connection_name_t{std::string{parts.part[0]}},
+                         core::dbname_t{std::string{parts.part[1]}},
+                         core::schema_t{std::string{parts.part[2]}}};
+        *spelled = core::relname_t{std::string{parts.part[3]}};
+        return true;
     }
 
     place_t complete_place(std::string_view value, const place_t& current) {

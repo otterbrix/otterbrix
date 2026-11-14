@@ -79,7 +79,7 @@ namespace components::operators {
 
         catalog::oid_t attoid = catalog::INVALID_OID;
         std::int32_t attnum = 0;
-        catalog::oid_t atttypid = catalog::INVALID_OID;
+        catalog::pg_attribute_type_t att_type;
         bool att_not_null = false, att_has_default = false;
         std::string att_typspec, att_defspec;
         // Captured so the re-appended row keeps the same added_at_commit_id:
@@ -88,11 +88,11 @@ namespace components::operators {
         for (auto& chunk : attr_batches) {
             // Narrower than the columns read below is a genuine schema mismatch, not a legacy-row miss (every
             // row this build writes has all pg_attribute columns) — refuse rather than silently under-read.
-            if (chunk.column_count() <= catalog::pg_attribute_col::added_at_commit_id) {
+            if (chunk.column_count() <= catalog::pg_attribute_col::attndims) {
                 std::string msg = "alter_column_rename: pg_attribute answered with ";
                 msg += std::to_string(chunk.column_count());
                 msg += " column(s), fewer than the ";
-                msg += std::to_string(static_cast<std::size_t>(catalog::pg_attribute_col::added_at_commit_id) + 1);
+                msg += std::to_string(static_cast<std::size_t>(catalog::pg_attribute_col::attndims) + 1);
                 msg += " this build reads — the column cannot be resolved";
                 set_error(
                     core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
@@ -109,12 +109,11 @@ namespace components::operators {
                 const auto attname_cell = chunk.get_value<std::string_view>(2, i);
                 if (attname_cell != old_name_)
                     continue;
-                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto row_attoid = chunk.get_value<catalog::oid_t>(0, i);
                 if (attoid_ != catalog::INVALID_OID && row_attoid != attoid_)
                     continue; // a stamped identity must match the row it names
                 attoid = row_attoid;
-                atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
-                                               : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                att_type = catalog::pg_attribute_type_in(chunk, i);
                 attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
                 att_not_null = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
                 att_has_default = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
@@ -156,7 +155,7 @@ namespace components::operators {
             std::string rel = std::move(rel_id.relname.t);
             if (rel.empty()) {
                 rel = "oid ";
-                rel += std::to_string(table_oid_);
+                rel += std::to_string(static_cast<unsigned>(table_oid_));
             }
             if (rel_id.relkind == catalog::relkind::computed) {
                 std::string msg = "RENAME COLUMN \"";
@@ -200,14 +199,15 @@ namespace components::operators {
             for (const auto& chunk : dependents_r.value()) {
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(catalog::pg_depend_col::classid, i) ||
-                        chunk.get_value<std::uint32_t>(catalog::pg_depend_col::classid, i) !=
+                        chunk.get_value<catalog::oid_t>(catalog::pg_depend_col::classid, i) !=
                             catalog::well_known_oid::pg_class_table) {
                         continue;
                     }
                     std::string msg = "cannot rename column \"";
                     msg += old_name_;
                     msg += "\" because view with oid ";
-                    msg += std::to_string(chunk.get_value<std::uint32_t>(catalog::pg_depend_col::objid, i));
+                    msg += std::to_string(
+                        static_cast<unsigned>(chunk.get_value<catalog::oid_t>(catalog::pg_depend_col::objid, i)));
                     msg += " reads it: renaming a column a view reads is not supported yet (#668)";
                     set_error(core::error_t{core::error_code_t::unimplemented_yet,
                                             std::pmr::string{std::move(msg), resource_}});
@@ -231,13 +231,13 @@ namespace components::operators {
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr);
 
-        // Re-append reusing attoid/attnum/atttypid with the new name; keeps the captured added_at_commit_id
+        // Re-append reusing attoid/attnum/the type with the new name; keeps the captured added_at_commit_id
         // (including 0 — RENAME never widens visibility) and no commit_id backfill marker is emitted.
         auto new_row = catalog::build_pg_attribute_row(resource_,
                                                        attoid,
                                                        table_oid_,
                                                        new_name_,
-                                                       atttypid,
+                                                       att_type,
                                                        attnum,
                                                        att_not_null,
                                                        att_has_default,
@@ -263,7 +263,7 @@ namespace components::operators {
         // for recovery) — hard error, not a mark_executed() lie (same shape as the drop operator's tombstone append).
         if (rng.count == 0) {
             std::string msg = "operator_alter_column_rename: renamed row append produced no rows for attoid ";
-            msg += std::to_string(attoid);
+            msg += std::to_string(static_cast<unsigned>(attoid));
             set_error(core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;

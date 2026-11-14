@@ -312,11 +312,12 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::boolean_column_takes_li
     REQUIRE(exec("CREATE TABLE bl.t (id bigint, flag boolean);")->is_success());
     REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (1, 'true'), (2, 'false');")->is_success());
     REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (3, true);")->is_success());
-    REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (4, 1);")->is_error());
+    // An integer is cast on assignment, as a MySQL client writes a BOOLEAN as 1 / 0.
+    REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (4, 0);")->is_success());
 
     auto stored = exec("SELECT flag FROM bl.t ORDER BY id;");
     REQUIRE(stored->is_success());
-    REQUIRE(stored->size() == 3);
+    REQUIRE(stored->size() == 4);
     auto cell2 = stored->get<bool>(0, 0);
     REQUIRE_FALSE(cell2.has_error());
     REQUIRE(cell2.value());
@@ -326,4 +327,7 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::boolean_column_takes_li
     auto cell4 = stored->get<bool>(0, 2);
     REQUIRE_FALSE(cell4.has_error());
     REQUIRE(cell4.value());
+    auto cell5 = stored->get<bool>(0, 3);
+    REQUIRE_FALSE(cell5.has_error());
+    REQUIRE_FALSE(cell5.value());
 }

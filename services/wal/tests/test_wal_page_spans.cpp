@@ -42,7 +42,7 @@ namespace {
             for (size_t i = 0; i < row_ids.size(); ++i) {
                 row_ids[i] = static_cast<int64_t>(id * 100000 + i);
             }
-            encode_delete(buf, 0, id, id + 1000, 0, 16500, row_ids.data(), row_ids.size());
+            encode_delete(buf, 0, id, id + 1000, 0, components::catalog::oid_t{16500}, row_ids.data(), row_ids.size());
         }
         REQUIRE(buf.size() == size);
         return std::vector<char>(buf.begin(), buf.end());

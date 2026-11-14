@@ -46,11 +46,31 @@ TEST_CASE("catalog::settings::case_insensitive_storage") {
     }
 }
 
+TEST_CASE("catalog::settings::isolation_levels") {
+    for (std::string_view level : {"read uncommitted", "READ COMMITTED", "Repeatable Read"}) {
+        CAPTURE(level);
+        REQUIRE(canonical(setting_id::transaction_isolation, level) == "repeatable read");
+        REQUIRE(canonical(setting_id::default_transaction_isolation, level) == "repeatable read");
+    }
+    REQUIRE(canonical_setting_value(setting_id::transaction_isolation, "serializable", resource).error().type ==
+            core::error_code_t::unimplemented_yet);
+    REQUIRE(canonical_setting_value(setting_id::transaction_isolation, "snapshot", resource).error().type ==
+            core::error_code_t::invalid_parameter);
+    const session_catalog_t cache;
+    REQUIRE(current_setting_value(cache, setting_id::transaction_isolation, resource) == "repeatable read");
+}
+
 TEST_CASE("catalog::settings::the_known_settings") {
-    REQUIRE(all_settings().size() == 3);
+    REQUIRE(all_settings().size() == 9);
     REQUIRE(find_setting_by_sql_name("TimeZone") != nullptr);
     REQUIRE(find_setting_by_sql_name("autocommit") != nullptr);
     REQUIRE(find_setting_by_sql_name("search_path") != nullptr);
+    REQUIRE(find_setting_by_sql_name("default_transaction_read_only") != nullptr);
+    REQUIRE(find_setting_by_sql_name("transaction_read_only") != nullptr);
+    REQUIRE(find_setting_by_sql_name("default_transaction_isolation") != nullptr);
+    REQUIRE(find_setting_by_sql_name("transaction_isolation") != nullptr);
+    REQUIRE(find_setting_by_sql_name("default_transaction_deferrable") != nullptr);
+    REQUIRE(find_setting_by_sql_name("transaction_deferrable") != nullptr);
     REQUIRE(find_setting_by_sql_name("decimal_width") == nullptr);
     REQUIRE(find_setting_by_sql_name("decimal_scale") == nullptr);
 }

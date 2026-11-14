@@ -5,6 +5,7 @@
 #include <components/base/identifier_types.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <cstdint>
 #include <memory_resource>
 #include <string>
 #include <string_view>
@@ -29,6 +30,33 @@ namespace components::catalog {
                                         std::string_view connection,
                                         std::string_view database,
                                         std::string_view schema);
+
+    // The first level of a name the catalog does not have as written.
+    enum class name_level_t : std::uint8_t
+    {
+        database,
+        schema,
+        relation
+    };
+
+    // A name whose parts hold dots, read as the parts the dots spell: ORMs quote a federated prefix as one identifier
+    // ("c.d.s"."t", "c.d.s.t", `c.d.s`.t). The resolves read a name so only where it names nothing as written, and only
+    // from the level that is missing: the parts before it are there as written ("m2.shop".public.t of a database
+    // "m2.shop" is that database's). True, and the parts, when the first part holding a dot is at `missing` or after
+    // it and the parts split into exactly a connection.database.schema (a schema) or a
+    // connection.database.schema.relation (a relation).
+    [[nodiscard]] bool place_spelled_by_dots(std::string_view connection,
+                                             std::string_view database,
+                                             std::string_view schema,
+                                             name_level_t missing,
+                                             place_t* spelled);
+    [[nodiscard]] bool relation_spelled_by_dots(std::string_view connection,
+                                                std::string_view database,
+                                                std::string_view schema,
+                                                std::string_view relation,
+                                                name_level_t missing,
+                                                place_t* place,
+                                                core::relname_t* spelled);
 
     // A search_path value as written ('s' | 'd.s' | 'c.d.s'), its parts lower-cased; one place, no list.
     [[nodiscard]] core::result_wrapper_t<std::pmr::string> canonical_search_path(std::string_view raw,

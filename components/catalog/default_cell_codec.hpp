@@ -162,6 +162,7 @@ namespace components::catalog::cell_codec {
                 append_le<int32_t>(out, cell->data<int32_t>()[at]);
                 return true;
             case logical_type::UINTEGER:
+            case logical_type::OID:
                 append_le<uint32_t>(out, cell->data<uint32_t>()[at]);
                 return true;
             case logical_type::BIGINT:
@@ -291,7 +292,8 @@ namespace components::catalog::cell_codec {
                 const auto v = read_le<int32_t>(in, pos, &read_ok);
                 return read_ok ? scalar(v) : fail();
             }
-            case logical_type::UINTEGER: {
+            case logical_type::UINTEGER:
+            case logical_type::OID: {
                 const auto v = read_le<uint32_t>(in, pos, &read_ok);
                 return read_ok ? scalar(v) : fail();
             }

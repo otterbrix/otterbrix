@@ -46,8 +46,8 @@ using services::index::manager_index_t;
 
 namespace {
 
-    constexpr components::catalog::oid_t kTableOid = 17100;
-    constexpr components::catalog::oid_t kIndexOid = 17101;
+    constexpr components::catalog::oid_t kTableOid{17100};
+    constexpr components::catalog::oid_t kIndexOid{17101};
 
     // A ready future has already run its final_suspend, and unique_future's promise_type destroys its
     // own frame there (unlike behavior_t, which stays suspended until its dtor). coroutine_handle() is

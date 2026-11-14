@@ -403,7 +403,7 @@ namespace services::disk {
                                        std::pmr::vector<components::vector::data_chunk_t> data,
                                        bool returning) {
         const auto txn = ctx.txn;
-        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}};
+        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0};
         data.erase(std::remove_if(data.begin(),
                                   data.end(),
                                   [](const components::vector::data_chunk_t& chunk) { return chunk.size() == 0; }),
@@ -775,9 +775,9 @@ namespace services::disk {
                                        components::table::transaction_data txn,
                                        bool returning) {
         update_receipt_t result{
-            write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}},
+            write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0},
             std::pmr::vector<components::vector::data_chunk_t>{resource()},
-            std::pmr::vector<std::uint32_t>{resource()}};
+            std::pmr::vector<components::catalog::oid_t>{resource()}};
         bool has_rows = false;
         for (const auto& chunk : data) {
             has_rows = has_rows || chunk.size() != 0;
@@ -867,7 +867,7 @@ namespace services::disk {
                                             components::table::row_id_batch_t row_ids,
                                             components::table::transaction_data txn,
                                             bool returning) {
-        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}};
+        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}, 0};
         if (row_ids.empty()) {
             co_return std::move(receipt);
         }
@@ -1219,9 +1219,10 @@ namespace services::disk {
                 bool ambiguous = false;
                 for (size_t c = 0; c < current_columns.size(); ++c) {
                     const auto& cc = current_columns[c];
-                    const bool match = (oc.attoid != 0 && cc.attoid != 0)
-                                           ? oc.attoid == cc.attoid
-                                           : (oc.name == cc.name && all_types[c] == scan.open_types[o]);
+                    const bool match =
+                        (oc.attoid != components::catalog::INVALID_OID && cc.attoid != components::catalog::INVALID_OID)
+                            ? oc.attoid == cc.attoid
+                            : (oc.name == cc.name && all_types[c] == scan.open_types[o]);
                     if (!match) {
                         continue;
                     }
@@ -1493,7 +1494,7 @@ namespace services::disk {
     }
 
     // result[i] = row_ids matching key-tuple i; one streamed pass costs O(table_rows + nkeys), not
-    // O(nkeys * table_rows).
+    // O(nkeys * table_rows). The keys come in the stored columns' types: the caller casts them.
     core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>
     fk_hash_semijoin(std::pmr::memory_resource* resource,
                      components::storage::storage_t& storage,
@@ -1521,70 +1522,26 @@ namespace services::disk {
         }
 
         const auto visible_types = storage.types(txn);
-
-        std::pmr::vector<components::types::complex_logical_type> stored_key_types{resource};
-        stored_key_types.reserve(key_col_indices.size());
-        for (auto ci : key_col_indices) {
-            stored_key_types.push_back(visible_types[ci]);
-        }
-        components::vector::data_chunk_t norm_keys(resource, stored_key_types, nkeys);
-        norm_keys.set_cardinality(nkeys);
-        // A key cell outside the stored domain is a miss, not a refusal — a vector-wide cast would abort the
-        // in-domain keys batched with it, and magnitude-only range checks miss cases like DOUBLE 1.5 -> 1.
-        std::pmr::vector<std::uint8_t> domain_miss(nkeys, std::uint8_t{0}, resource);
         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
-            auto& src = keys.data[j];
-            if (src.get_vector_type() != components::vector::vector_type::FLAT) {
-                src.flatten(nkeys);
+            if (keys.data[j].type() != visible_types[key_col_indices[j]]) {
+                return core::error_t{
+                    core::error_code_t::internal_error,
+                    std::pmr::string{"fk semi-join: a key column's type differs from the stored column's", resource}};
             }
-            if (src.type() == stored_key_types[j]) {
-                components::vector::vector_ops::copy(src, norm_keys.data[j], nkeys, 0, 0);
-                continue;
-            }
-            {
-                components::vector::vector_t null_probe(resource, src.type(), 1);
-                null_probe.set_null(0, true);
-                auto probe = components::vector::vector_ops::cast_vector(resource, null_probe, stored_key_types[j], 1);
-                if (probe.has_error()) {
-                    return probe.error();
-                }
-            }
-            components::vector::vector_t one_src(resource, src.type(), 1);
-            for (std::uint64_t i = 0; i < nkeys; ++i) {
-                if (src.is_null(i)) {
-                    norm_keys.data[j].set_null(i, true);
-                    continue;
-                }
-                components::vector::vector_ops::copy(src, one_src, i + 1, i, 0);
-                auto fwd = components::vector::vector_ops::cast_vector(resource, one_src, stored_key_types[j], 1);
-                if (fwd.has_error()) {
-                    domain_miss[i] = 1;
-                    norm_keys.data[j].set_null(i, true);
-                    continue;
-                }
-                // A fraction like 1.5->1 forward-casts without error, so only the round trip catches it.
-                auto back = components::vector::vector_ops::cast_vector(resource, fwd.value(), src.type(), 1);
-                if (back.has_error() || !components::vector::cells_equal(back.value(), 0, one_src, 0)) {
-                    domain_miss[i] = 1;
-                    norm_keys.data[j].set_null(i, true);
-                    continue;
-                }
-                components::vector::vector_ops::copy(fwd.value(), norm_keys.data[j], 1, 0, i);
+            if (keys.data[j].get_vector_type() != components::vector::vector_type::FLAT) {
+                keys.data[j].flatten(nkeys);
             }
         }
 
         components::vector::vector_t key_hash_vec(resource, components::types::logical_type::UBIGINT, nkeys);
-        std::vector<std::uint64_t> norm_col_ids(key_col_indices.size());
+        std::vector<std::uint64_t> key_ids(key_col_indices.size());
         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
-            norm_col_ids[j] = j;
+            key_ids[j] = j;
         }
-        norm_keys.hash(norm_col_ids, key_hash_vec);
+        keys.hash(key_ids, key_hash_vec);
         const auto* key_hashes = key_hash_vec.data<std::uint64_t>();
         std::pmr::unordered_map<std::uint64_t, std::pmr::vector<std::uint64_t>> key_index{resource};
         for (std::uint64_t i = 0; i < nkeys; ++i) {
-            if (domain_miss[i] != 0) {
-                continue;
-            }
             bool any_null = false;
             for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
                 if (keys.data[j].is_null(i)) {
@@ -1636,7 +1593,7 @@ namespace services::disk {
                     for (std::uint64_t cand : it_h->second) {
                         bool match = true;
                         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
-                            if (!components::vector::cells_equal(norm_keys.data[j], cand, batch.data[j], r)) {
+                            if (!components::vector::cells_equal(keys.data[j], cand, batch.data[j], r)) {
                                 match = false;
                                 break;
                             }
@@ -2533,20 +2490,20 @@ namespace services::disk {
                                                             int64_t{-1},
                                                             false,
                                                             true};
-            switch (table_oid) {
-                case cat::well_known_oid::pg_class_table:
+            switch (static_cast<unsigned>(table_oid)) {
+                case static_cast<unsigned>(cat::well_known_oid::pg_class_table):
                     return &pg_class_key;
-                case cat::well_known_oid::pg_namespace_table:
+                case static_cast<unsigned>(cat::well_known_oid::pg_namespace_table):
                     return &pg_namespace_key;
-                case cat::well_known_oid::pg_database_table:
+                case static_cast<unsigned>(cat::well_known_oid::pg_database_table):
                     return &pg_database_key;
-                case cat::well_known_oid::pg_type_table:
+                case static_cast<unsigned>(cat::well_known_oid::pg_type_table):
                     return &pg_type_key;
-                case cat::well_known_oid::pg_attribute_table:
+                case static_cast<unsigned>(cat::well_known_oid::pg_attribute_table):
                     return &pg_attribute_key;
-                case cat::well_known_oid::pg_proc_table:
+                case static_cast<unsigned>(cat::well_known_oid::pg_proc_table):
                     return &pg_proc_key;
-                case cat::well_known_oid::pg_cast_table:
+                case static_cast<unsigned>(cat::well_known_oid::pg_cast_table):
                     return &pg_cast_key;
                 default:
                     return nullptr;
@@ -2629,9 +2586,9 @@ namespace services::disk {
 
             struct incoming_name_t {
                 std::string_view name;
-                std::uint32_t name_oid;
+                components::catalog::oid_t name_oid;
                 bool has_ns;
-                std::uint32_t ns;
+                components::catalog::oid_t ns;
                 std::string_view ns_text;
                 std::string_view match;
             };
@@ -2639,7 +2596,8 @@ namespace services::disk {
                 return key.oid_name ? std::string_view{} : rows.get_value<std::string_view>(column, i);
             };
             const auto oid_name = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
-                return key.oid_name ? rows.get_value<std::uint32_t>(column, i) : std::uint32_t{0};
+                return key.oid_name ? rows.get_value<components::catalog::oid_t>(column, i)
+                                    : components::catalog::INVALID_OID;
             };
             const auto match_of = [](const components::vector::data_chunk_t& rows, int64_t column, uint64_t i) {
                 return column < 0 || rows.is_null(static_cast<uint64_t>(column), i)
@@ -2647,7 +2605,8 @@ namespace services::disk {
                            : rows.get_value<std::string_view>(static_cast<uint64_t>(column), i);
             };
             const auto oid_scope = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
-                return key.text_scope ? std::uint32_t{0} : rows.get_value<std::uint32_t>(column, i);
+                return key.text_scope ? components::catalog::INVALID_OID
+                                      : rows.get_value<components::catalog::oid_t>(column, i);
             };
             const auto text_scope = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
                 return key.text_scope ? rows.get_value<std::string_view>(column, i) : std::string_view{};
@@ -2662,12 +2621,13 @@ namespace services::disk {
                     key.ns_col >= 0 && in_ns_col >= 0 && !row.is_null(static_cast<uint64_t>(in_ns_col), in_r);
                 const auto ns_col = static_cast<uint64_t>(in_ns_col);
                 const auto name_col = static_cast<uint64_t>(in_name_col);
-                incoming.push_back(incoming_name_t{text_name(row, name_col, in_r),
-                                                   oid_name(row, name_col, in_r),
-                                                   has_ns,
-                                                   has_ns ? oid_scope(row, ns_col, in_r) : 0,
-                                                   has_ns ? text_scope(row, ns_col, in_r) : std::string_view{},
-                                                   match_of(row, in_match_col, in_r)});
+                incoming.push_back(
+                    incoming_name_t{text_name(row, name_col, in_r),
+                                    oid_name(row, name_col, in_r),
+                                    has_ns,
+                                    has_ns ? oid_scope(row, ns_col, in_r) : components::catalog::INVALID_OID,
+                                    has_ns ? text_scope(row, ns_col, in_r) : std::string_view{},
+                                    match_of(row, in_match_col, in_r)});
             }
             if (incoming.empty()) {
                 return core::error_t::no_error();
@@ -2701,7 +2661,7 @@ namespace services::disk {
                     const auto held_match = match_of(chunk, held_match_col, i);
                     bool held_has_ns = held_ns_col >= 0 && !chunk.is_null(static_cast<uint64_t>(held_ns_col), i);
                     const auto ns_col = static_cast<uint64_t>(held_ns_col);
-                    const std::uint32_t held_ns = held_has_ns ? oid_scope(chunk, ns_col, i) : 0;
+                    const auto held_ns = held_has_ns ? oid_scope(chunk, ns_col, i) : components::catalog::INVALID_OID;
                     const std::string_view held_ns_text =
                         held_has_ns ? text_scope(chunk, ns_col, i) : std::string_view{};
                     for (const auto& wanted : incoming) {
@@ -2719,7 +2679,8 @@ namespace services::disk {
                         std::pmr::string msg{key.kind, resource};
                         msg += " '";
                         if (key.oid_name) {
-                            msg += std::to_string(wanted.name_oid) + "' -> '" + std::to_string(wanted.ns);
+                            msg += std::to_string(static_cast<unsigned>(wanted.name_oid)) + "' -> '" +
+                                   std::to_string(static_cast<unsigned>(wanted.ns));
                         } else {
                             msg.append(wanted.name.data(), wanted.name.size());
                         }
@@ -2783,8 +2744,11 @@ namespace services::disk {
                 }
                 auto src_type = row.data[i].type().type();
                 auto tgt_type = column_type->type();
-                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::TEXT) &&
-                    (is_numeric(tgt_type) || tgt_type == logical_type::TEXT)) {
+                // An oid cell is uint32 storage like any unsigned integer cell.
+                const auto converts = [](logical_type type) {
+                    return is_numeric(type) || type == logical_type::OID || type == logical_type::TEXT;
+                };
+                if (src_type != tgt_type && converts(src_type) && converts(tgt_type)) {
                     auto& src_vec = row.data[i];
                     auto target_type = *column_type;
                     if (src_vec.type().has_alias()) {
@@ -2941,8 +2905,7 @@ namespace services::disk {
                             [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                                 if (chunk.is_null(0, i))
                                     return true;
-                                auto v = chunk.get_value<std::uint32_t>(0, i);
-                                if (static_cast<components::catalog::oid_t>(v) == target_oid) {
+                                if (chunk.get_value<components::catalog::oid_t>(0, i) == target_oid) {
                                     row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
                                 }
                                 return true;
@@ -3047,31 +3010,31 @@ namespace services::disk {
         core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
 
-        detail::inline_scan(
-            tbl,
-            all_col_indices,
-            &scan_resource,
-            ctx.txn,
-            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                if (chunk.is_null(0, i))
-                    return true;
-                if (static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) != attoid)
-                    return true;
-                row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
-                for (std::size_t c = 0; c < col_count; ++c) {
-                    if (c == patch_col_idx) {
-                        continue;
-                    }
-                    components::vector::vector_ops::copy(chunk.data[c],
-                                                         patch.data[c],
-                                                         components::vector::indexing_vector_t(resource()),
-                                                         chunk.size(),
-                                                         i,
-                                                         0,
-                                                         1);
-                }
-                return false;
-            });
+        detail::inline_scan(tbl,
+                            all_col_indices,
+                            &scan_resource,
+                            ctx.txn,
+                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                                if (chunk.is_null(0, i))
+                                    return true;
+                                if (chunk.get_value<components::catalog::oid_t>(0, i) != attoid)
+                                    return true;
+                                row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                                for (std::size_t c = 0; c < col_count; ++c) {
+                                    if (c == patch_col_idx) {
+                                        continue;
+                                    }
+                                    components::vector::vector_ops::copy(
+                                        chunk.data[c],
+                                        patch.data[c],
+                                        components::vector::indexing_vector_t(resource()),
+                                        chunk.size(),
+                                        i,
+                                        0,
+                                        1);
+                                }
+                                return false;
+                            });
         if (row_ids.empty()) {
             std::pmr::string what{"update_pg_attribute_commit_id_field: no pg_attribute row visible to this "
                                   "transaction carries attoid ",
@@ -3327,7 +3290,7 @@ namespace services::disk {
             co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& table = it->second->table_storage.table();
-        const auto position = table.find_visible_column(txn, static_cast<std::uint32_t>(attoid));
+        const auto position = table.find_visible_column(txn, attoid);
         if (position == components::table::storage::INVALID_INDEX) {
             std::pmr::string what{"stamp_column_dropped: no storage column with attoid ", resource()};
             what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());

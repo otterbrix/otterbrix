@@ -183,7 +183,7 @@ namespace components::table::test_block_e {
         // Re-stamping is allowed (last-write-wins) — the planner re-runs resolve
         // after invalidation.
         entry.database_oid = oid_t{42};
-        REQUIRE(node->entries()[index].database_oid == 42);
+        REQUIRE(node->entries()[index].database_oid == components::catalog::oid_t{42});
     }
 
 } // namespace components::table::test_block_e

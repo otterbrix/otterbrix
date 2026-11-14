@@ -42,9 +42,9 @@ TEST_CASE("components::planner::ddl_oid_batch::a_full_batch_is_rewritten_and_sta
     auto node = make_create_table(&resource);
 
     const std::size_t need = components::planner::compute_oid_demand(node.get());
-    REQUIRE(need == 3); // pg_class oid + one attoid per column
+    REQUIRE(need == 5); // pg_class oid, its row type and array type, one attoid per column
 
-    const std::vector<oid_t> batch{16384, 16385, 16386};
+    const std::vector<oid_t> batch{oid_t{16384}, oid_t{16385}, oid_t{16386}, oid_t{16387}, oid_t{16388}};
     components::planner::planner_t planner;
     auto rewritten = planner.create_plan(&resource, node, batch, need);
 
@@ -59,7 +59,7 @@ TEST_CASE("components::planner::ddl_oid_batch::a_round_that_delivered_fewer_oids
     auto node = make_create_table(&resource);
 
     const std::size_t need = components::planner::compute_oid_demand(node.get());
-    REQUIRE(need == 3);
+    REQUIRE(need == 5);
 
     // An empty batch is what both failure branches of a refused allocation round answer with.
     components::planner::planner_t planner;
@@ -76,7 +76,7 @@ TEST_CASE("components::planner::ddl_oid_batch::a_rewrite_that_consumes_more_than
     auto node = make_create_table(&resource);
 
     // The drift case: demand and batch agree, but the rewrite needs one more OID, running out inside walk_ddl.
-    const std::vector<oid_t> batch{16384, 16385};
+    const std::vector<oid_t> batch{oid_t{16384}, oid_t{16385}, oid_t{16386}, oid_t{16387}};
     components::planner::planner_t planner;
     auto rewritten = planner.create_plan(&resource, node, batch, batch.size());
 

@@ -106,6 +106,13 @@ namespace services::dispatcher {
                                   components::logical_plan::node_t* root,
                                   const components::logical_plan::storage_parameters& parameters);
 
+    // Stamps every resolved FOREIGN KEY's key columns with the registry's assignment casts between its two column
+    // types: referencing to referenced for an outgoing check, both ways for a referencing (ON DELETE) lookup.
+    // Called once the catalog resolve is done, before anything copies the constraints out of it.
+    [[nodiscard]] core::error_t resolve_fk_key_casts(std::pmr::memory_resource* resource,
+                                                     const components::casts::cast_registry_t& cast_registry,
+                                                     catalog_resolves_t& resolves);
+
     // `cte_schemas` carries recursive-CTE anchor schemas between the recursive_cte_t and
     // cte_scan_t arms; callers pass nullptr and the map is owned internally.
     // `literals` applies to this node's own output only; the nodes it reads from always turn theirs into text.

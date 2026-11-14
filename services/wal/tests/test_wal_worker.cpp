@@ -36,7 +36,7 @@ using namespace components::types;
 
 namespace catalog_ns = components::catalog;
 constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
-constexpr catalog_ns::oid_t kTestTableOid = 16500;
+constexpr catalog_ns::oid_t kTestTableOid{16500};
 
 inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chunk) {
     std::pmr::vector<data_chunk_t> batch(chunk->resource());

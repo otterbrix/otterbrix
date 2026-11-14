@@ -66,8 +66,12 @@ namespace {
         fk.child_col_names = {"pid"};
         fk.parent_col_names = {"id"};
         fk.parent_col_indices = {parent_index};
-        fk.child_table_oid = 42;
-        fk.parent_table_oid = 43;
+        fk.key_columns.push_back(catalog::fk_key_column_t{types::complex_logical_type{types::logical_type::BIGINT},
+                                                          types::complex_logical_type{types::logical_type::BIGINT},
+                                                          {},
+                                                          {}});
+        fk.child_table_oid = components::catalog::oid_t{42};
+        fk.parent_table_oid = components::catalog::oid_t{43};
         fk.del_action = 'r';
         return fk;
     }

@@ -203,6 +203,7 @@ namespace otterbrix {
             case logical_type::UTINYINT:
             case logical_type::USMALLINT:
             case logical_type::UINTEGER:
+            case logical_type::OID:
             case logical_type::UBIGINT:
             case logical_type::HUGEINT:
             case logical_type::UHUGEINT:

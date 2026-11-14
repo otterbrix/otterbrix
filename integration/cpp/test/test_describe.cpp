@@ -375,7 +375,8 @@ TEST_CASE("integration::cpp::describe::a statement that is not a query answers n
         CHECK(described->type_data().empty());
         CHECK(described->parameter_types().empty());
         const auto third = db.ok(session, "CREATE TABLE s.o3 (x INT);")->created_oid();
-        CHECK(third - second == second - first);
+        CHECK(static_cast<unsigned>(third) - static_cast<unsigned>(second) ==
+              static_cast<unsigned>(second) - static_cast<unsigned>(first));
     }
     SECTION("BEGIN opens nothing") {
         auto described = db.described(session, "BEGIN;");

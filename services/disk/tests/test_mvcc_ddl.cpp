@@ -210,7 +210,7 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
 TEST_CASE("services::disk::mvcc::uncommitted_drop_type_invisible") {
     fixture fx;
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns"));
-    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid, std::string("widget"), std::string{});
+    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid, std::string("widget"));
     auto uncommitted = TRANSACTION_ID_START + 88;
     {
         constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
@@ -233,7 +233,8 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     components::catalog::oid_t table_oid = components::catalog::INVALID_OID;
     std::vector<components::pg_catalog_append_range_t> appends_for_test;
     {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + cols.size()});
+        // The table, its row type and array type, and an attoid per column.
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{3 + cols.size()});
         table_oid = oids[0];
         components::catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
@@ -437,7 +438,7 @@ TEST_CASE("services::disk::mvcc::delete_many_counts_each_spec_in_order") {
     constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
 
     // Spec 2 duplicates spec 0, already deleted by it — proves the result is positional.
-    const catalog::oid_t absent_oid = ns_oid + 100000;
+    const catalog::oid_t absent_oid{static_cast<unsigned>(ns_oid) + 100000};
     std::pmr::vector<pg_catalog_delete_spec_t> specs(&fx.resource);
     specs.push_back({pg_ns, std::int64_t{0}, ns_oid});
     specs.push_back({pg_ns, std::int64_t{0}, absent_oid});

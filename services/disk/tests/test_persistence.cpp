@@ -105,13 +105,13 @@ TEST_CASE("services::disk::persistence::test_type_persistence_across_restart") {
     auto dir = persist_dir() + "/type";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t type_oid = 0;
+    oid_t ns_oid{};
+    oid_t type_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "type_ns");
-        type_oid = test_create_type(fd, ns_oid, "money", "scale=2,precision=18");
+        type_oid = test_create_type(fd, ns_oid, "money");
         fd.checkpoint();
     }
     {
@@ -129,8 +129,8 @@ TEST_CASE("services::disk::persistence::test_function_persistence") {
     auto dir = persist_dir() + "/func";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t fn_oid = 0;
+    oid_t ns_oid{};
+    oid_t fn_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -153,9 +153,9 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
     auto dir = persist_dir() + "/constraint";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t parent_oid = 0;
-    oid_t child_oid = 0;
-    oid_t fk_oid = 0;
+    oid_t parent_oid{};
+    oid_t child_oid{};
+    oid_t fk_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -210,8 +210,8 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
     auto dir = persist_dir() + "/oid_persist";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t table_oid = 0;
+    oid_t ns_oid{};
+    oid_t table_oid{};
     std::vector<oid_t> column_oids_before;
     {
         fresh_disk fd(dir);
@@ -253,8 +253,8 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     auto dir = persist_dir() + "/oid_no_reuse";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t dropped_oid = 0;
+    oid_t ns_oid{};
+    oid_t dropped_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -291,13 +291,13 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
     auto dir = persist_dir() + "/pg_class_all";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t reg_oid = 0;
-    oid_t comp_oid = 0;
-    oid_t seq_oid = 0;
-    oid_t view_oid = 0;
-    oid_t macro_oid = 0;
-    oid_t idx_oid = 0;
+    oid_t ns_oid{};
+    oid_t reg_oid{};
+    oid_t comp_oid{};
+    oid_t seq_oid{};
+    oid_t view_oid{};
+    oid_t macro_oid{};
+    oid_t idx_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -351,8 +351,8 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
     auto dir = persist_dir() + "/computing_persist";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t comp_oid = 0;
+    oid_t ns_oid{};
+    oid_t comp_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -379,8 +379,8 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
     auto dir = persist_dir() + "/seq_persist";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t seq_oid = 0;
+    oid_t ns_oid{};
+    oid_t seq_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -442,8 +442,8 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
     auto dir = persist_dir() + "/view_persist";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t view_oid = 0;
+    oid_t ns_oid{};
+    oid_t view_oid{};
     const std::string view_sql = "SELECT id FROM users";
     {
         fresh_disk fd(dir);
@@ -508,8 +508,8 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
     auto dir = persist_dir() + "/macro_persist";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t ns_oid = 0;
-    oid_t macro_oid = 0;
+    oid_t ns_oid{};
+    oid_t macro_oid{};
     const std::string macro_body = "x -> x * 2";
     {
         fresh_disk fd(dir);
@@ -602,7 +602,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
     auto dir = persist_dir() + "/oid_restore";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    oid_t pre_restart_peak = 0;
+    oid_t pre_restart_peak{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -613,7 +613,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
         test_create_view(fd, ns_oid, "v");
         auto probe = fd.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         REQUIRE(probe.size() == 1);
-        pre_restart_peak = probe[0] - 1;
+        pre_restart_peak = oid_t{static_cast<unsigned>(probe[0]) - 1};
         fd.checkpoint();
     }
     {
@@ -699,7 +699,7 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
                                                         col_attoid,
                                                         table_oid,
                                                         std::string("added_col"),
-                                                        well_known_oid::int64_type,
+                                                        catalog::pg_attribute_type_t{well_known_oid::int64_type},
                                                         /*attnum*/ 2,
                                                         /*not_null*/ false,
                                                         /*has_default*/ false,

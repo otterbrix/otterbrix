@@ -99,7 +99,7 @@ namespace components::operators {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(1, i) || chunk.is_null(5, i) || chunk.is_null(6, i))
                     continue;
-                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                const auto row_attoid = chunk.get_value<catalog::oid_t>(1, i);
                 // A stamped attoid narrows the match to its variant; otherwise match by attname.
                 if (attoid_ != catalog::INVALID_OID) {
                     if (row_attoid != attoid_)
@@ -110,9 +110,7 @@ namespace components::operators {
                     if (chunk.get_value<std::string_view>(2, i) != column_name_)
                         continue;
                 }
-                const auto typid = chunk.is_null(3, i)
-                                       ? catalog::INVALID_OID
-                                       : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                const auto typid = chunk.is_null(3, i) ? catalog::INVALID_OID : chunk.get_value<catalog::oid_t>(3, i);
                 const std::string_view typspec =
                     chunk.is_null(4, i) ? std::string_view{} : chunk.get_value<std::string_view>(4, i);
                 auto& slot = variant_slot(typid, typspec);
@@ -159,7 +157,7 @@ namespace components::operators {
             std::string rel = std::move(rel_id.relname.t);
             if (rel.empty()) {
                 rel = "oid ";
-                rel += std::to_string(table_oid_);
+                rel += std::to_string(static_cast<unsigned>(table_oid_));
             }
             std::string msg = "column \"";
             msg += column_name_;

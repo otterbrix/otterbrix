@@ -2,12 +2,24 @@
 
 #include "catalog_oids.hpp"
 
+#include <components/casts/cast_function.hpp>
+#include <components/types/types.hpp>
+
 #include <cstddef>
 #include <limits>
 #include <string>
 #include <vector>
 
 namespace components::catalog {
+
+    struct fk_key_column_t {
+        types::complex_logical_type child_type;
+        types::complex_logical_type parent_type;
+        // A referencing value as the referenced column's: what the FK check looks the parent up by.
+        casts::cast_t to_parent;
+        // A referenced value as the referencing column's: what an ON DELETE looks the children up by.
+        casts::cast_t to_child;
+    };
 
     // FK constraint descriptor resolved at plan-enrich time. Carries enough
     // information for operator_fk_check_t / operator_fk_cascade_t to enforce the
@@ -24,6 +36,8 @@ namespace components::catalog {
         // attdefspec strings for each FK column (parallel to child_col_names).
         // Empty string = column has no default (NULL will be used for SET DEFAULT).
         std::vector<std::string> child_col_default_specs;
+        // Parallel to child_col_names.
+        std::vector<fk_key_column_t> key_columns;
 
         // Resolved at enrich time: child table's {database, schema, collection}.
         // Used by operator_fk_cascade_t to call storage_delete_rows / storage_update

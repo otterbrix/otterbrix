@@ -448,6 +448,10 @@ py::tuple wrapper_cursor::get_error() const {
         case error_code_t::object_in_use:
             type = "object_in_use";
             break;
+
+        case error_code_t::read_only_sql_transaction:
+            type = "read_only_sql_transaction";
+            break;
     }
     return py::make_tuple(type, ptr_->get_error().what);
 }

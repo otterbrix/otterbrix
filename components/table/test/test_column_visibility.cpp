@@ -291,10 +291,10 @@ TEST_CASE("components::table::column_visibility::widen") {
         }
 
         SECTION("a replayed payload is placed by attoid") {
-            constexpr std::uint32_t attoid_a = 20001;
-            constexpr std::uint32_t attoid_b = 20002;
-            constexpr std::uint32_t attoid_c = 20003;
-            constexpr std::uint32_t never_committed = 20009;
+            constexpr components::types::oid_t attoid_a{20001};
+            constexpr components::types::oid_t attoid_b{20002};
+            constexpr components::types::oid_t attoid_c{20003};
+            constexpr components::types::oid_t never_committed{20009};
             table->stamp_column_identity(0, attoid_a);
             table->stamp_column_identity(1, attoid_b);
             table->stamp_column_identity(2, attoid_c);
@@ -305,7 +305,7 @@ TEST_CASE("components::table::column_visibility::widen") {
                 chunk.data[1].data<int64_t>()[row] = 500;
                 chunk.data[2].data<int64_t>()[row] = 700 + static_cast<int64_t>(row);
             }
-            const std::array<std::uint32_t, 3> attoids{attoid_a, never_committed, attoid_b};
+            const std::array<components::types::oid_t, 3> attoids{attoid_a, never_committed, attoid_b};
             REQUIRE_FALSE(table->widen_by_attoid(attoids, chunk).contains_error());
             REQUIRE(chunk.column_count() == 3);
             for (uint64_t row = 0; row < kRows; row++) {

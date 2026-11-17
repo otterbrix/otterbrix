@@ -1019,11 +1019,25 @@ namespace services::dispatcher {
         const bool opens = held == nullptr && txn_manager_.find_transaction(session) == nullptr;
         auto& txn = held != nullptr ? *held : txn_manager_.resolve_transaction(session, scope);
         plan->commits_when_done = txn.scope() == components::table::transaction_scope_t::statement;
-        // The settings as the transaction found them: what ROLLBACK returns to.
+        // The settings as the transaction found them: what ROLLBACK returns to. Its access is fixed as it starts,
+        // BEGIN's own or the default's
         if (opens &&
             (txn.scope() == components::table::transaction_scope_t::until_commit ||
              (statement.is_transaction_control && statement.op == components::logical_plan::transaction_op::begin))) {
-            session_settings_.try_emplace(session, resource()).first->second.begin_transaction();
+            auto& own = session_settings_.try_emplace(session, resource()).first->second;
+            own.begin_transaction();
+            auto read_only = settings.default_transaction_read_only;
+            if (statement.is_transaction_control && statement.op == components::logical_plan::transaction_op::begin) {
+                const auto access =
+                    static_cast<const components::logical_plan::node_transaction_t*>(plan->sub_queries.back().get())
+                        ->access();
+                if (access != components::logical_plan::transaction_access_t::as_default) {
+                    read_only = access == components::logical_plan::transaction_access_t::read_only;
+                }
+            }
+            own.assign(components::catalog::setting_scope_t::local,
+                       components::catalog::setting_id::transaction_read_only,
+                       read_only ? "on" : "off");
         }
         // Each statement of a block is a command of its own: a portal reads the block's writes as of its DECLARE.
         if (txn.scope() == components::table::transaction_scope_t::until_commit) {

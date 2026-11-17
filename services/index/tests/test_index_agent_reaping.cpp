@@ -35,8 +35,8 @@ using services::index::manager_index_t;
 
 namespace {
 
-    constexpr components::catalog::oid_t kTableOid = 17300;
-    constexpr components::catalog::oid_t kIndexOid = 17301;
+    constexpr components::catalog::oid_t kTableOid{17300};
+    constexpr components::catalog::oid_t kIndexOid{17301};
 
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {

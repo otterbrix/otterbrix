@@ -7,6 +7,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -16,6 +17,33 @@
 namespace components::operators {
 
     namespace {
+
+        core::error_t referencing_keys(std::pmr::memory_resource* resource,
+                                       const catalog::fk_key_column_t& column,
+                                       const vector::vector_t& referenced,
+                                       uint64_t count,
+                                       const graph_execution_context& settings,
+                                       vector::vector_t* keys) {
+            if (auto failed = column.to_child(casts::cast_kind::try_cast, referenced, keys, settings, count);
+                failed.contains_error()) {
+                return failed;
+            }
+            vector::vector_t back(resource, column.parent_type, count);
+            if (auto failed = column.to_parent(casts::cast_kind::try_cast, *keys, &back, settings, count);
+                failed.contains_error()) {
+                return failed;
+            }
+            for (uint64_t row = 0; row < count; ++row) {
+                if (referenced.is_null(row) || keys->is_null(row)) {
+                    continue;
+                }
+                if (back.is_null(row) || !vector::cells_equal(back, row, referenced, row)) {
+                    keys->set_null(row, true);
+                }
+            }
+            return core::error_t::no_error();
+        }
+
         table::row_id_batch_t child_row_ids(std::pmr::memory_resource* resource,
                                             const std::pmr::vector<std::pmr::vector<std::int64_t>>& per_row_child_ids) {
             uint64_t total = 0;
@@ -139,13 +167,19 @@ namespace components::operators {
             return core::error_t{core::error_code_t::internal_error, std::move(what)};
         };
 
+        // The children are looked up by their own column's values, one key per parent row.
+        if (fk_.key_columns.size() != par_indices.size()) {
+            co_return core::error_t{
+                core::error_code_t::internal_error,
+                std::pmr::string{"FK constraint: the key columns carry no resolved types", resource_}};
+        }
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(par_indices.size());
         for (std::size_t j = 0; j < par_indices.size(); ++j) {
             if (par_indices[j] >= in_chunks.front().column_count()) {
                 co_return refuse_narrow_parent(in_chunks.front().column_count(), par_indices[j], j);
             }
-            key_types.push_back(in_chunks.front().data[par_indices[j]].type());
+            key_types.push_back(fk_.key_columns[j].child_type);
         }
         for (const auto& chunk : in_chunks) {
             if (chunk.size() == 0) {
@@ -156,7 +190,22 @@ namespace components::operators {
                 if (par_indices[j] >= chunk.column_count()) {
                     co_return refuse_narrow_parent(chunk.column_count(), par_indices[j], j);
                 }
-                components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
+                const auto& column = fk_.key_columns[j];
+                if (!column.to_child) {
+                    components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
+                    continue;
+                }
+                components::vector::vector_t referenced(resource_, chunk.data[par_indices[j]].type(), chunk.size());
+                components::vector::vector_ops::copy(chunk.data[par_indices[j]], referenced, chunk.size(), 0, 0);
+                if (auto failed = referencing_keys(resource_,
+                                                   column,
+                                                   referenced,
+                                                   chunk.size(),
+                                                   ctx->execution_context,
+                                                   &keys.data[j]);
+                    failed.contains_error()) {
+                    co_return failed;
+                }
             }
             keys.set_cardinality(chunk.size());
 

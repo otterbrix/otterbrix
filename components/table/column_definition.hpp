@@ -52,17 +52,17 @@ namespace components::table {
         uint64_t oid() const;
         void set_oid(uint64_t oid);
 
-        // pg_attribute.attoid (uint32_t, 0 = unset). Distinct from oid()/storage_oid().
+        // pg_attribute.attoid (0 = unset). Distinct from oid()/storage_oid().
         // Immutable after first non-zero assignment: re-stamping the same value is a no-op;
         // a DIFFERENT value is refused (the first stamp stays) and reported on stderr, in
         // every build. It does NOT throw: there is no exception channel here.
-        std::uint32_t attoid() const noexcept { return attoid_; }
-        void set_attoid(std::uint32_t v);
+        types::oid_t attoid() const noexcept { return attoid_; }
+        void set_attoid(types::oid_t v);
 
         // Column→type pg_depend: pg_type.oid for this column's type.
         // 0 = unresolved (built-ins fall back to well-known OIDs in the writer).
-        std::uint32_t atttypid() const noexcept { return atttypid_; }
-        void set_atttypid(std::uint32_t v) noexcept { atttypid_ = v; }
+        types::oid_t atttypid() const noexcept { return atttypid_; }
+        void set_atttypid(types::oid_t v) noexcept { atttypid_ = v; }
 
         [[nodiscard]] uint64_t added_at() const noexcept { return added_at_; }
         void set_added_at(uint64_t stamp) noexcept { added_at_ = stamp; }
@@ -94,8 +94,8 @@ namespace components::table {
         types::complex_logical_type type_;
         uint64_t storage_oid_ = storage::INVALID_INDEX;
         uint64_t oid_ = storage::INVALID_INDEX;
-        std::uint32_t attoid_{0};   // catalog::INVALID_OID; not included via header to avoid cycle.
-        std::uint32_t atttypid_{0}; // catalog::INVALID_OID; resolved by the CREATE TABLE pipeline.
+        types::oid_t attoid_{};   // catalog::INVALID_OID
+        types::oid_t atttypid_{}; // catalog::INVALID_OID; resolved by the CREATE TABLE pipeline.
         uint64_t added_at_{0};
         uint64_t dropped_at_{NOT_DELETED_ID};
         uint64_t added_sub_id_{0};

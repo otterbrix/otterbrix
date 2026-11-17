@@ -22,7 +22,7 @@ namespace otterbrix { namespace util {
         if (oid == components::catalog::INVALID_OID) {
             return py::none();
         }
-        return py::int_(oid);
+        return py::int_(static_cast<unsigned>(oid));
     }
 
     py::object error_position_of(const components::cursor::cursor_t& cursor) {

@@ -52,7 +52,7 @@ namespace components::logical_plan {
             case alter_column_op::drop:
                 return "$alter_column_drop[" + column_name_.t + "]";
             case alter_column_op::set_not_null:
-                return "$alter_column_set_not_null[" + std::to_string(attoid_) + "]";
+                return "$alter_column_set_not_null[" + std::to_string(static_cast<unsigned>(attoid_)) + "]";
         }
         return "$alter_column";
     }

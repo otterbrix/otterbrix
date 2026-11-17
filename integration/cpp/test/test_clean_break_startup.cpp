@@ -122,7 +122,7 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
     auto dir = clean_break_dir() + "/oid_seed";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    components::catalog::oid_t high_oid = 0;
+    components::catalog::oid_t high_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -152,7 +152,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
     auto dir = clean_break_dir() + "/ns_rt";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    components::catalog::oid_t ns_oid = 0;
+    components::catalog::oid_t ns_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -183,7 +183,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
     auto dir = clean_break_dir() + "/tab_rt";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    components::catalog::oid_t tbl_oid = 0;
+    components::catalog::oid_t tbl_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -223,8 +223,8 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
     auto dir = clean_break_dir() + "/idx_rt";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    components::catalog::oid_t idx_oid = 0;
-    components::catalog::oid_t ns_oid = 0;
+    components::catalog::oid_t idx_oid{};
+    components::catalog::oid_t ns_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
@@ -291,9 +291,9 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
     auto dir = clean_break_dir() + "/svm";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    components::catalog::oid_t seq_oid = 0;
-    components::catalog::oid_t view_oid = 0;
-    components::catalog::oid_t macro_oid = 0;
+    components::catalog::oid_t seq_oid{};
+    components::catalog::oid_t view_oid{};
+    components::catalog::oid_t macro_oid{};
     {
         fresh_disk fd(dir);
         REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());

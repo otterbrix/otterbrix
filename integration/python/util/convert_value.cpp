@@ -45,6 +45,7 @@ namespace otterbrix { namespace util {
                     result = static_cast<double>(leaf.data<uint16_t>()[i]);
                     return true;
                 case logical_type::UINTEGER:
+                case logical_type::OID:
                     result = static_cast<double>(leaf.data<uint32_t>()[i]);
                     return true;
                 case logical_type::UBIGINT:
@@ -100,6 +101,7 @@ namespace otterbrix { namespace util {
                 case logical_type::USMALLINT:
                     return py::object(py::cast(leaf.data<uint16_t>()[index]));
                 case logical_type::UINTEGER:
+                case logical_type::OID:
                     return py::object(py::cast(leaf.data<uint32_t>()[index]));
                 case logical_type::UBIGINT:
                     return py::object(py::cast(leaf.data<uint64_t>()[index]));

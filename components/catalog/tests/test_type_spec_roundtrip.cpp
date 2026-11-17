@@ -65,7 +65,7 @@ TEST_CASE("catalog::type_spec::empty_spec_scalars_must_have_oid_mapping") {
         logical_type::UBIGINT,   logical_type::HUGEINT, logical_type::UHUGEINT,  logical_type::FLOAT,
         logical_type::DOUBLE,    logical_type::TEXT,    logical_type::TIMESTAMP, logical_type::TIMESTAMP_TZ,
         logical_type::DATE,      logical_type::TIME,    logical_type::TIME_TZ,   logical_type::INTERVAL,
-        logical_type::BLOB,      logical_type::UUID,
+        logical_type::BLOB,      logical_type::UUID,    logical_type::OID,
     };
     std::set<oid_t> seen;
     for (auto lt : empty_spec_scalars) {

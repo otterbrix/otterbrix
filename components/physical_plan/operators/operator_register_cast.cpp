@@ -16,10 +16,14 @@ namespace components::operators {
     operator_register_cast_t::operator_register_cast_t(std::pmr::memory_resource* resource,
                                                        log_t log,
                                                        catalog::oid_t source_type_oid,
-                                                       catalog::oid_t target_type_oid)
+                                                       catalog::oid_t target_type_oid,
+                                                       char castcontext,
+                                                       char castmethod)
         : read_only_operator_t(resource, std::move(log), operator_type::register_cast)
         , source_type_oid_(source_type_oid)
-        , target_type_oid_(target_type_oid) {}
+        , target_type_oid_(target_type_oid)
+        , castcontext_(castcontext)
+        , castmethod_(castmethod) {}
 
     actor_zeta::unique_future<void> operator_register_cast_t::await_async_and_resume(pipeline::context_t* ctx) {
         // The pg_cast row IS the cast (unlike the UDF sibling, this operator mutates no registry), so with
@@ -51,7 +55,12 @@ namespace components::operators {
             co_return;
         }
 
-        auto writes = catalog::build_create_cast_writes(resource_, cast_oid, source_type_oid_, target_type_oid_);
+        auto writes = catalog::build_create_cast_writes(resource_,
+                                                        cast_oid,
+                                                        source_type_oid_,
+                                                        target_type_oid_,
+                                                        castcontext_,
+                                                        castmethod_);
         std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
             write_futures(resource_);
         write_futures.reserve(writes.size());
@@ -126,6 +135,14 @@ namespace components::operators {
             co_return;
         }
         const catalog::oid_t cast_oid = cast_oid_r.value();
+        if (cast_oid != catalog::INVALID_OID && cast_oid < catalog::FIRST_USER_OID) {
+            set_error(core::error_t{core::error_code_t::dependent_objects_still_exist,
+                                    std::pmr::string{"unregister_cast: a built-in cast is required by the database "
+                                                     "system and cannot be dropped",
+                                                     resource_}});
+            mark_failed();
+            co_return;
+        }
         if (cast_oid == catalog::INVALID_OID) {
             // "there is no pg_cast row to delete" is a different accident from "the delete
             // failed", and DROP CAST has to be able to say which one happened.

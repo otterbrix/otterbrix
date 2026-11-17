@@ -4,6 +4,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/types/oid.hpp>
 
 #include <cstdint>
 #include <optional>
@@ -79,12 +80,12 @@ namespace session_sql {
             return out;
         }
 
-        std::vector<std::uint32_t> oids(const otterbrix::session_id_t& session, const std::string& sql) {
+        std::vector<components::types::oid_t> oids(const otterbrix::session_id_t& session, const std::string& sql) {
             auto cursor = ok(session, sql);
-            std::vector<std::uint32_t> out;
+            std::vector<components::types::oid_t> out;
             for (const auto& chunk : cursor->chunks()) {
                 for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-                    out.push_back(chunk.get_value<std::uint32_t>(0, row));
+                    out.push_back(chunk.get_value<components::types::oid_t>(0, row));
                 }
             }
             return out;

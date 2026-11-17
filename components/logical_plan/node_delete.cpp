@@ -22,7 +22,7 @@ namespace components::logical_plan {
 
     std::string node_delete_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$delete: <oid:" << static_cast<std::uint64_t>(table_oid()) << "> {";
+        stream << "$delete: <oid:" << static_cast<unsigned>(table_oid()) << "> {";
         bool is_first = true;
         for (const auto& child : children()) {
             const auto text = child->to_string();

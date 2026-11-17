@@ -10,6 +10,8 @@
 #include <absl/strings/str_cat.h>
 
 #include <charconv>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -318,6 +320,61 @@ namespace components::casts::kernels {
             result->set_value(row, value);
         }
         return core::error_t::no_error();
+    }
+
+    namespace detail {
+
+        // PostgreSQL's oidin: 0..4294967295, and an int4 below zero as its bit pattern (what int4 -> oid gives).
+        [[nodiscard]] inline parse_outcome parse_oid(std::string_view text, uint32_t& out) noexcept {
+            int64_t value = 0;
+            const auto outcome = parse_number<int64_t>(text, value);
+            if (outcome != parse_outcome::parsed) {
+                return outcome;
+            }
+            if (value < std::numeric_limits<int32_t>::min() || value > std::numeric_limits<uint32_t>::max()) {
+                return parse_outcome::out_of_range;
+            }
+            out = static_cast<uint32_t>(value);
+            return parse_outcome::parsed;
+        }
+
+    } // namespace detail
+
+    inline core::error_t string_to_oid_cast(const vector::vector_t& source,
+                                            vector::vector_t* result,
+                                            const graph_execution_context&,
+                                            uint64_t count) noexcept {
+        for (uint64_t row = 0; row < count; ++row) {
+            if (source.is_null(row)) {
+                result->set_null(row, true);
+                continue;
+            }
+            uint32_t value = 0;
+            if (const auto outcome = detail::parse_oid(source.get_value<std::string_view>(row), value);
+                outcome != detail::parse_outcome::parsed) {
+                return detail::parse_refusal(outcome, result->resource());
+            }
+            result->set_value(row, value);
+        }
+        return core::error_t::no_error();
+    }
+
+    inline void string_to_oid_try_cast(const vector::vector_t& source,
+                                       vector::vector_t* result,
+                                       const graph_execution_context&,
+                                       uint64_t count) noexcept {
+        for (uint64_t row = 0; row < count; ++row) {
+            if (source.is_null(row)) {
+                result->set_null(row, true);
+                continue;
+            }
+            uint32_t value = 0;
+            if (detail::parse_oid(source.get_value<std::string_view>(row), value) != detail::parse_outcome::parsed) {
+                result->set_null(row, true);
+                continue;
+            }
+            result->set_value(row, value);
+        }
     }
 
     template<typename Target>

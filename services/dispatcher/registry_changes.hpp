@@ -17,7 +17,7 @@ namespace services::dispatcher {
     // A function a statement registered (`function` set) or dropped (`function` null), by its uid.
     struct function_change_t {
         components::compute::function_uid uid{components::compute::invalid_function_uid};
-        std::uint32_t schema_oid{0};
+        components::types::oid_t schema_oid{};
         components::compute::function_ptr function{components::compute::no_function()};
     };
 

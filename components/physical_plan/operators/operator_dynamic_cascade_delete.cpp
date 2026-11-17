@@ -29,7 +29,8 @@ namespace components::operators {
     namespace {
 
         inline std::uint64_t encode_key(catalog::oid_t cls, catalog::oid_t oid) noexcept {
-            return (static_cast<std::uint64_t>(cls) << 32) | static_cast<std::uint64_t>(oid);
+            return (static_cast<std::uint64_t>(static_cast<unsigned>(cls)) << 32) |
+                   static_cast<std::uint64_t>(static_cast<unsigned>(oid));
         }
 
         // Re-issues, per cascade-plan step, the deletes the planner would emit for explicit drops.
@@ -60,6 +61,7 @@ namespace components::operators {
                 out.push_back({pg_depend_table, 1});
                 out.push_back({pg_depend_table, 3});
             } else if (classid == pg_type_table) {
+                out.push_back({pg_enum_table, 1}); // pg_enum.enumtypid: an enum's labels, which pg_depend does not list
                 out.push_back({pg_type_table, 0});
                 out.push_back({pg_depend_table, 1});
                 out.push_back({pg_depend_table, 3});
@@ -124,7 +126,7 @@ namespace components::operators {
             for (const auto& chunk : rows.value()) {
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                     if (!chunk.is_null(0, i)) {
-                        attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)));
+                        attoids.push_back(chunk.get_value<catalog::oid_t>(0, i));
                     }
                 }
             }
@@ -155,7 +157,7 @@ namespace components::operators {
                 if (chunk.size() != 0 && !chunk.is_null(0, 0)) {
                     const auto kind =
                         chunk.is_null(1, 0) ? std::string_view{"r"} : chunk.get_value<std::string_view>(1, 0);
-                    co_return std::pair{static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0)),
+                    co_return std::pair{chunk.get_value<catalog::oid_t>(0, 0),
                                         kind.empty() ? catalog::relkind::regular : kind[0]};
                 }
             }
@@ -219,10 +221,10 @@ namespace components::operators {
                         return "table " + target.to_string();
                 }
             };
-            switch (classid) {
-                case pg_database_table:
+            switch (static_cast<unsigned>(classid)) {
+                case static_cast<unsigned>(pg_database_table):
                     return "database " + qualified_name_t{target.connection, target.database, {}, {}}.to_string();
-                case pg_namespace_table: {
+                case static_cast<unsigned>(pg_namespace_table): {
                     // A schema is named with its database: an empty one is the place's.
                     const bool placed = target.database.t.empty();
                     return "schema " +
@@ -232,13 +234,13 @@ namespace components::operators {
                                             {}}
                                .to_string();
                 }
-                case pg_type_table:
+                case static_cast<unsigned>(pg_type_table):
                     return "type " + target.to_string();
-                case pg_constraint_table:
+                case static_cast<unsigned>(pg_constraint_table):
                     return "constraint " + target.to_string();
-                case pg_proc_table:
+                case static_cast<unsigned>(pg_proc_table):
                     return "function " + target.to_string();
-                case pg_attribute_table:
+                case static_cast<unsigned>(pg_attribute_table):
                     return "column " + column.t + " of " + relation();
                 default:
                     return relation();
@@ -270,6 +272,41 @@ namespace components::operators {
             }
             constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
 
+            // A type that is part of another object ('i': an array type of its element, a row type of its relation)
+            // is dropped only with its owner, as PostgreSQL refuses "because <owner> requires it". Only for types:
+            // index and constraint edges are 'i' here where PostgreSQL writes 'a', and those drop on their own.
+            if (seed_classid == catalog::well_known_oid::pg_type_table) {
+                std::pmr::vector<std::uint64_t> own_keys(resource);
+                own_keys.emplace_back(catalog::pg_depend_col::classid);
+                own_keys.emplace_back(catalog::pg_depend_col::objid);
+                auto [_od, odf] = actor_zeta::otterbrix::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::read_chunks_by_key,
+                    exec_ctx,
+                    kPgDepend,
+                    std::move(own_keys),
+                    components::operators::make_key_chunk(resource, seed_classid, seed_objid),
+                    std::pmr::vector<std::uint64_t>{resource});
+                auto own_batches_r = co_await std::move(odf);
+                if (own_batches_r.has_error()) {
+                    co_return own_batches_r.error();
+                }
+                for (const auto& chunk : own_batches_r.value()) {
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        auto deptype = catalog::deptype_of(chunk, i);
+                        if (deptype.has_error()) {
+                            co_return core::error_on(resource, deptype.error());
+                        }
+                        if (deptype.value() == catalog::deptype::internal) {
+                            co_return catalog::internal_part_error(
+                                resource,
+                                described(seed_classid, relkind, target, column, ctx->place),
+                                chunk.get_value<catalog::oid_t>(catalog::pg_depend_col::refobjid, i));
+                        }
+                    }
+                }
+            }
+
             // dep_graph doubles as the visited set (present key = already expanded).
             std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>> dep_graph(resource);
             std::pmr::vector<std::uint64_t> stack(resource);
@@ -281,8 +318,8 @@ namespace components::operators {
                 if (dep_graph.count(k))
                     continue;
 
-                const auto ref_cls = static_cast<catalog::oid_t>(k >> 32);
-                const auto ref_oid = static_cast<catalog::oid_t>(k & 0xFFFFFFFFu);
+                const catalog::oid_t ref_cls{static_cast<std::uint32_t>(k >> 32)};
+                const catalog::oid_t ref_oid{static_cast<std::uint32_t>(k & 0xFFFFFFFFu)};
 
                 std::pmr::vector<std::uint64_t> rd_keys(resource);
                 rd_keys.emplace_back(catalog::pg_depend_col::refclassid);
@@ -307,8 +344,8 @@ namespace components::operators {
                         continue;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         catalog::dependency_t d;
-                        d.classid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                        d.objid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                        d.classid = chunk.get_value<catalog::oid_t>(0, i);
+                        d.objid = chunk.get_value<catalog::oid_t>(1, i);
                         auto deptype = catalog::deptype_of(chunk, i);
                         if (deptype.has_error()) {
                             co_return core::error_on(resource, deptype.error());
@@ -346,7 +383,7 @@ namespace components::operators {
             }
             if (plan.status == catalog::ddl_status::cycle_detected) {
                 std::string msg = "DROP: pg_depend cycle detected at oid ";
-                msg += std::to_string(plan.blocking_oid);
+                msg += std::to_string(static_cast<unsigned>(plan.blocking_oid));
                 co_return core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource}};
             }
             co_return std::move(plan);
@@ -593,7 +630,7 @@ namespace components::operators {
                         ctx->dropped_functions.push_back(
                             pipeline::dropped_function_t{chunk.get_value<std::int64_t>(0, i),
                                                          std::string{chunk.get_value<std::string_view>(1, i)},
-                                                         chunk.get_value<std::uint32_t>(2, i),
+                                                         chunk.get_value<catalog::oid_t>(2, i),
                                                          std::string{matchers}});
                     }
                 }
@@ -815,21 +852,19 @@ namespace components::operators {
         std::string attname;
         std::string typspec;
         std::string defspec;
-        catalog::oid_t atttypid = catalog::INVALID_OID;
+        catalog::pg_attribute_type_t att_type;
         std::int32_t attnum = 0;
         bool not_null = false;
         bool has_default = false;
         for (const auto& chunk : rows.value()) {
             for (std::uint64_t i = 0; i < chunk.size() && !found; ++i) {
-                if (chunk.column_count() <= col::attdefspec || chunk.is_null(col::attname, i) ||
+                if (chunk.column_count() <= col::attndims || chunk.is_null(col::attname, i) ||
                     (!chunk.is_null(col::attisdropped, i) && chunk.get_value<bool>(col::attisdropped, i))) {
                     continue;
                 }
                 found = true;
                 attname.assign(chunk.get_value<std::string_view>(col::attname, i));
-                atttypid = chunk.is_null(col::atttypid, i)
-                               ? catalog::INVALID_OID
-                               : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(col::atttypid, i));
+                att_type = catalog::pg_attribute_type_in(chunk, i);
                 attnum = chunk.is_null(col::attnum, i) ? 0 : chunk.get_value<std::int32_t>(col::attnum, i);
                 not_null = !chunk.is_null(col::attnotnull, i) && chunk.get_value<bool>(col::attnotnull, i);
                 has_default = !chunk.is_null(col::atthasdefault, i) && chunk.get_value<bool>(col::atthasdefault, i);
@@ -844,7 +879,8 @@ namespace components::operators {
         if (!found) {
             co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"DROP COLUMN: no live pg_attribute row for attoid " +
-                                                         std::to_string(attoid) + " — the column is not in the catalog",
+                                                         std::to_string(static_cast<unsigned>(attoid)) +
+                                                         " — the column is not in the catalog",
                                                      resource}};
         }
 
@@ -862,7 +898,7 @@ namespace components::operators {
         if (deleted.value().empty() || deleted.value().front() == 0) {
             co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"DROP COLUMN: no pg_attribute row was deleted for attoid " +
-                                                         std::to_string(attoid) +
+                                                         std::to_string(static_cast<unsigned>(attoid)) +
                                                          " — the column is still live in the catalog",
                                                      resource}};
         }
@@ -900,7 +936,7 @@ namespace components::operators {
                                                          attoid,
                                                          table_oid,
                                                          attname,
-                                                         atttypid,
+                                                         att_type,
                                                          attnum,
                                                          not_null,
                                                          has_default,
@@ -919,10 +955,10 @@ namespace components::operators {
             co_return appended.error();
         }
         if (appended.value().count == 0) {
-            co_return core::error_t{
-                core::error_code_t::internal_error,
-                std::pmr::string{"DROP COLUMN: tombstone append produced no rows for attoid " + std::to_string(attoid),
-                                 resource}};
+            co_return core::error_t{core::error_code_t::internal_error,
+                                    std::pmr::string{"DROP COLUMN: tombstone append produced no rows for attoid " +
+                                                         std::to_string(static_cast<unsigned>(attoid)),
+                                                     resource}};
         }
         ctx->pg_catalog_appends.push_back(std::move(appended.value()));
         ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{

@@ -89,6 +89,10 @@ namespace components::cursor {
         [[nodiscard]] std::uint64_t affected_rows() const noexcept;
         [[nodiscard]] bool is_write() const noexcept;
         void set_written(std::uint64_t rows) noexcept;
+        // Of an INSERT, the first value its storage generated for an auto-increment column (MySQL's LAST_INSERT_ID,
+        // the OK packet's last_insert_id); 0 when it generated none.
+        [[nodiscard]] std::uint64_t generated_id() const noexcept;
+        void set_generated_id(std::uint64_t id) noexcept;
 
         [[nodiscard]] catalog::oid_t created_oid() const noexcept;
         void set_created_oid(catalog::oid_t oid) noexcept;
@@ -131,6 +135,7 @@ namespace components::cursor {
         std::pmr::vector<components::types::complex_logical_type> parameter_types_;
         core::error_t error_;
         std::uint64_t affected_rows_ = 0;
+        std::uint64_t generated_id_ = 0;
         bool is_write_ = false;
         catalog::oid_t created_oid_ = catalog::INVALID_OID;
         std::uint64_t portal_id_ = 0;

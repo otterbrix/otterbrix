@@ -45,7 +45,7 @@ namespace {
     using data_chunk_t = components::vector::data_chunk_t;
 
     constexpr auto kMainDb = catalog::well_known_oid::main_database;
-    constexpr catalog::oid_t kTestTableOid = 16711;
+    constexpr catalog::oid_t kTestTableOid{16711};
 
     std::filesystem::path base_path() {
         static std::filesystem::path p =

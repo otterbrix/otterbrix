@@ -94,7 +94,7 @@ namespace {
     };
 
     const catalog::oid_t t_oid{catalog::FIRST_USER_OID};
-    const catalog::oid_t u_oid{catalog::FIRST_USER_OID + 1};
+    const catalog::oid_t u_oid{static_cast<unsigned>(catalog::FIRST_USER_OID) + 1};
 
     components::table::transaction_data open_txn(uint64_t txn_id) {
         components::table::transaction_data td(txn_id, 1);

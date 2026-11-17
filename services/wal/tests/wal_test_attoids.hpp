@@ -10,8 +10,8 @@ namespace wal_test {
     inline services::wal::column_attoids_t attoids_for(const components::vector::data_chunk_t& chunk) {
         services::wal::column_attoids_t attoids(chunk.resource());
         for (uint64_t column = 0; column < chunk.column_count(); column++) {
-            attoids.push_back(components::catalog::FIRST_USER_OID + 100 +
-                              static_cast<components::catalog::oid_t>(column));
+            attoids.push_back(components::catalog::oid_t{static_cast<unsigned>(components::catalog::FIRST_USER_OID) +
+                                                         100 + static_cast<std::uint32_t>(column)});
         }
         return attoids;
     }

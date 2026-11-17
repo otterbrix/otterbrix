@@ -7,19 +7,19 @@
 
 using namespace components::catalog;
 
-// 1. The catalog has exactly 15 system tables (10 original + pg_sequence + pg_rewrite + pg_settings + pg_cast +
-// pg_rewrite_ref).
+// 1. The catalog has exactly 17 system tables (10 original + pg_sequence + pg_rewrite + pg_settings + pg_cast +
+// pg_rewrite_ref + pg_enum + pg_range).
 TEST_CASE("catalog::system_schemas::tables_count_10") {
     auto tables = all_system_tables();
-    REQUIRE(tables.size() == 15);
+    REQUIRE(tables.size() == 17);
 }
 
 // 2. Every system table has a unique relation_oid drawn from the well-known range.
 TEST_CASE("catalog::system_schemas::distinct_well_known_oids") {
     std::unordered_set<oid_t> seen;
     for (const auto& def : all_system_tables()) {
-        REQUIRE(def.relation_oid >= well_known_oid::pg_namespace_table);
-        REQUIRE(def.relation_oid <= well_known_oid::pg_rewrite_ref_table);
+        REQUIRE(def.relation_oid != INVALID_OID);
+        REQUIRE(def.relation_oid < FIRST_USER_OID);
         REQUIRE(seen.insert(def.relation_oid).second);
         REQUIRE(def.namespace_oid == well_known_oid::pg_catalog_namespace);
         REQUIRE(def.relkind == 'r');
@@ -121,7 +121,8 @@ namespace {
 
 TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
     require_layout(well_known_oid::pg_namespace_table, {"oid", "nspname", "nspdatabase"});
-    require_layout(well_known_oid::pg_class_table, {"oid", "relname", "relnamespace", "relkind", "relstoragemode"});
+    require_layout(well_known_oid::pg_class_table,
+                   {"oid", "relname", "relnamespace", "relkind", "relstoragemode", "reltype"});
     require_layout(well_known_oid::pg_attribute_table,
                    {"attoid",
                     "attrelid",
@@ -134,7 +135,9 @@ TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
                     "atttypspec",
                     "attdefspec",
                     "added_at_commit_id",
-                    "dropped_at_commit_id"});
+                    "dropped_at_commit_id",
+                    "atttypmod",
+                    "attndims"});
     require_layout(well_known_oid::pg_index_table, {"indexrelid", "indrelid", "indkey", "indisvalid", "indtype"});
     require_layout(well_known_oid::pg_computed_column_table,
                    {"relid", "attoid", "attname", "atttypid", "atttypspec", "attversion", "attrefcount"});
@@ -183,12 +186,15 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attdefspec, "attdefspec");
     require_col(well_known_oid::pg_attribute_table, pg_attribute_col::added_at_commit_id, "added_at_commit_id");
     require_col(well_known_oid::pg_attribute_table, pg_attribute_col::dropped_at_commit_id, "dropped_at_commit_id");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::atttypmod, "atttypmod");
+    require_col(well_known_oid::pg_attribute_table, pg_attribute_col::attndims, "attndims");
     // pg_class
     require_col(well_known_oid::pg_class_table, pg_class_col::oid, "oid");
     require_col(well_known_oid::pg_class_table, pg_class_col::relname, "relname");
     require_col(well_known_oid::pg_class_table, pg_class_col::relnamespace, "relnamespace");
     require_col(well_known_oid::pg_class_table, pg_class_col::relkind, "relkind");
     require_col(well_known_oid::pg_class_table, pg_class_col::relstoragemode, "relstoragemode");
+    require_col(well_known_oid::pg_class_table, pg_class_col::reltype, "reltype");
     // pg_namespace
     require_col(well_known_oid::pg_namespace_table, pg_namespace_col::oid, "oid");
     require_col(well_known_oid::pg_namespace_table, pg_namespace_col::nspname, "nspname");
@@ -212,6 +218,19 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     require_col(well_known_oid::pg_type_table, pg_type_col::typname, "typname");
     require_col(well_known_oid::pg_type_table, pg_type_col::typnamespace, "typnamespace");
     require_col(well_known_oid::pg_type_table, pg_type_col::typdefspec, "typdefspec");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typlen, "typlen");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typbyval, "typbyval");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typtype, "typtype");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typcategory, "typcategory");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typisdefined, "typisdefined");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typdelim, "typdelim");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typrelid, "typrelid");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typelem, "typelem");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typarray, "typarray");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typnotnull, "typnotnull");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typbasetype, "typbasetype");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typtypmod, "typtypmod");
+    require_col(well_known_oid::pg_type_table, pg_type_col::typndims, "typndims");
     // pg_database
     require_col(well_known_oid::pg_database_table, pg_database_col::oid, "oid");
     require_col(well_known_oid::pg_database_table, pg_database_col::datname, "datname");
@@ -242,4 +261,43 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqmax, "seqmax");
     require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqcycle, "seqcycle");
     require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqlast, "seqlast");
+    // pg_cast
+    require_col(well_known_oid::pg_cast_table, pg_cast_col::oid, "oid");
+    require_col(well_known_oid::pg_cast_table, pg_cast_col::castsource, "castsource");
+    require_col(well_known_oid::pg_cast_table, pg_cast_col::casttarget, "casttarget");
+    require_col(well_known_oid::pg_cast_table, pg_cast_col::castfunc, "castfunc");
+    require_col(well_known_oid::pg_cast_table, pg_cast_col::castcontext, "castcontext");
+    require_col(well_known_oid::pg_cast_table, pg_cast_col::castmethod, "castmethod");
+}
+
+// Every system table has a row type and its array type: PostgreSQL's fixed oids for pg_type, pg_attribute, pg_proc and
+// pg_class, otterbrix's own 8100-8899 for the rest, each once.
+TEST_CASE("catalog::system_schemas::system_row_types") {
+    REQUIRE(find_system_table(well_known_oid::pg_type_table)->row_type_oid == oid_t{71});
+    REQUIRE(find_system_table(well_known_oid::pg_attribute_table)->row_type_oid == oid_t{75});
+    REQUIRE(find_system_table(well_known_oid::pg_proc_table)->row_type_oid == oid_t{81});
+    REQUIRE(find_system_table(well_known_oid::pg_class_table)->row_type_oid == oid_t{83});
+    REQUIRE(find_system_table(well_known_oid::pg_class_table)->row_array_oid == oid_t{273});
+    std::unordered_set<oid_t> seen;
+    for (const auto& def : all_system_tables()) {
+        INFO(def.name);
+        for (const oid_t oid : {def.row_type_oid, def.row_array_oid}) {
+            REQUIRE(oid != INVALID_OID);
+            REQUIRE(seen.insert(oid).second);
+            REQUIRE(oid < FIRST_USER_OID);
+        }
+    }
+}
+
+// System columns are numbered in otterbrix's own range, 9000-9999, each once.
+TEST_CASE("catalog::system_schemas::system_attoids_in_their_range") {
+    std::unordered_set<oid_t> seen;
+    for (const auto& def : all_system_tables()) {
+        for (const auto& column : def.columns) {
+            INFO(def.name << "." << column.name());
+            REQUIRE(column.attoid() >= FIRST_SYSTEM_ATTOID);
+            REQUIRE(static_cast<unsigned>(column.attoid()) <= 9999);
+            REQUIRE(seen.insert(column.attoid()).second);
+        }
+    }
 }

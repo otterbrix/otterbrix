@@ -46,8 +46,7 @@ namespace components::operators {
         uint64_t found_row = 0;
         for (const auto& chunk : rows.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(col::attoid, i) &&
-                    static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(col::attoid, i)) == attoid_ &&
+                if (!chunk.is_null(col::attoid, i) && chunk.get_value<catalog::oid_t>(col::attoid, i) == attoid_ &&
                     (chunk.is_null(col::attisdropped, i) || !chunk.get_value<bool>(col::attisdropped, i))) {
                     found_chunk = &chunk;
                     found_row = i;
@@ -55,8 +54,9 @@ namespace components::operators {
             }
         }
         if (found_chunk == nullptr) {
-            std::string what = "the PRIMARY KEY names column attoid " + std::to_string(attoid_) + ", which table oid " +
-                               std::to_string(table_oid_) + " does not have";
+            std::string what = "the PRIMARY KEY names column attoid " + std::to_string(static_cast<unsigned>(attoid_)) +
+                               ", which table oid " + std::to_string(static_cast<unsigned>(table_oid_)) +
+                               " does not have";
             set_error(core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(what), resource_}});
             co_return;
         }
@@ -92,8 +92,7 @@ namespace components::operators {
             attoid_,
             table_oid_,
             text_of(col::attname),
-            row.is_null(col::atttypid, i) ? catalog::INVALID_OID
-                                          : static_cast<catalog::oid_t>(row.get_value<std::uint32_t>(col::atttypid, i)),
+            catalog::pg_attribute_type_in(row, i),
             row.is_null(col::attnum, i) ? 0 : row.get_value<std::int32_t>(col::attnum, i),
             /*not_null=*/true,
             !row.is_null(col::atthasdefault, i) && row.get_value<bool>(col::atthasdefault, i),

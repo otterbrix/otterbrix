@@ -7,6 +7,7 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/information_schema.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/log/log.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
@@ -256,7 +257,7 @@ TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
     REQUIRE(oids.size() == 2);
     REQUIRE(oids[0] >= FIRST_USER_OID);
-    REQUIRE(oids[1] == oids[0] + 1);
+    REQUIRE(static_cast<unsigned>(oids[1]) == static_cast<unsigned>(oids[0]) + 1);
 
     cleanup_boot_dir();
 }
@@ -461,10 +462,30 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
 
     constexpr auto pg_class = well_known_oid::pg_class_table;
     constexpr auto pg_attribute = well_known_oid::pg_attribute_table;
-    const auto n_sys_tables = all_system_tables().size();
+    // main's information_schema views are part of a fresh catalog too.
+    std::uint64_t n_sys_tables = all_system_tables().size();
     std::uint64_t n_sys_columns = 0;
     for (const auto& def : all_system_tables()) {
         n_sys_columns += def.columns.size();
+    }
+    {
+        auto resource = core::pmr::otterbrix_resource();
+        const auto demand = components::catalog::information_schema_oid_demand();
+        std::vector<components::catalog::oid_t> oids(demand, components::catalog::FIRST_INFORMATION_SCHEMA_OID);
+        auto batch = components::catalog::oid_batch_t::make(&resource, std::move(oids), demand);
+        REQUIRE_FALSE(batch.has_error());
+        for (const auto& write :
+             components::catalog::build_information_schema_writes(&resource,
+                                                                  well_known_oid::main_database_name,
+                                                                  well_known_oid::main_database,
+                                                                  well_known_oid::information_schema_namespace,
+                                                                  batch.value())) {
+            if (write.table_oid == pg_class) {
+                n_sys_tables += write.row.size();
+            } else if (write.table_oid == pg_attribute) {
+                n_sys_columns += write.row.size();
+            }
+        }
     }
 
     components::catalog::oid_t ns_oid = components::catalog::INVALID_OID;

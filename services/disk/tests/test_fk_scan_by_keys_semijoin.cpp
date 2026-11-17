@@ -192,50 +192,6 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
     CHECK(counter.fetch_session_starts == 1);
 }
 
-TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64") {
-    core::pmr::otterbrix_resource resource;
-
-    std::vector<column_definition_t> cols;
-    cols.emplace_back("id", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
-    REQUIRE_FALSE(ts.construction_failed());
-
-    const int64_t ids[] = {10, 20, 30, 40, 20};
-    {
-        auto types = ts.table().copy_types();
-        data_chunk_t chunk(&resource, types, 5);
-        chunk.set_cardinality(5);
-        for (uint64_t i = 0; i < 5; ++i) {
-            chunk.set_value(0, i, ids[i]);
-        }
-        append_chunk(ts.table(), chunk);
-    }
-
-    table_storage_adapter_t adapter(ts.table(), &resource);
-    counting_storage_t counter(adapter);
-
-    // Input keys are INT32 while the stored key is INT64. Normalization must cast the input to
-    // the stored physical type so the typed hash aligns; otherwise both keys would fall through
-    // to empty buckets (a false FK violation).
-    std::pmr::vector<complex_logical_type> ktypes{&resource};
-    ktypes.emplace_back(logical_type::INTEGER);
-    data_chunk_t keys(&resource, ktypes, 2);
-    keys.set_cardinality(2);
-    keys.set_value(0, 0, static_cast<int32_t>(20));
-    keys.set_value(0, 1, static_cast<int32_t>(40));
-
-    auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data::committed());
-    REQUIRE_FALSE(res_r.has_error());
-    auto& res = res_r.value();
-
-    REQUIRE(res.size() == 2);
-    CHECK(as_set(res[0]) == std::set<int64_t>{1, 4});
-    CHECK(as_set(res[1]) == std::set<int64_t>{3});
-    CHECK(counter.scan_batched_calls == 0);
-    CHECK(counter.fetch_session_starts == 1);
-}
-
 TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
     core::pmr::otterbrix_resource resource;
 

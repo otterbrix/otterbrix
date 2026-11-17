@@ -20,7 +20,7 @@ namespace components::operators {
             }
             return types::is_numeric(type.type()) || type.type() == logical_type::DECIMAL || is_temporal(type.type()) ||
                    type.type() == logical_type::INTERVAL || types::is_string(type.type()) ||
-                   type.type() == logical_type::ENUM;
+                   type.type() == logical_type::ENUM || type.type() == logical_type::OID;
         }
 
         bool same_decimal(const complex_logical_type& lhs, const complex_logical_type& rhs) noexcept {

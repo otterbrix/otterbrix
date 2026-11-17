@@ -49,8 +49,8 @@ using services::index::manager_index_t;
 
 namespace {
 
-    constexpr components::catalog::oid_t kTableOid = 17500;
-    constexpr components::catalog::oid_t kIndexOid = 17501;
+    constexpr components::catalog::oid_t kTableOid{17500};
+    constexpr components::catalog::oid_t kIndexOid{17501};
 
     // Duplicated from test_index_delete_horizon.cpp rather than shared, per that file's note.
     template<typename T>

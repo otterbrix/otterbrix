@@ -141,7 +141,7 @@ TEST_CASE("services::disk::pg_depend::index_cascades_with_table") {
 TEST_CASE("services::disk::pg_depend::type_cascades_with_namespace") {
     fixture fx;
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_d"));
-    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid, std::string("widget_type"), std::string{});
+    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid, std::string("widget_type"));
     REQUIRE(type_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_type(fx, type_oid);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
@@ -162,8 +162,7 @@ TEST_CASE("services::disk::pg_depend::function_cascades_with_namespace") {
 TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
     fixture fx;
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_f"));
-    const auto type_oid =
-        disk_test_helpers::test_create_type(fx, ns_oid, std::string("standalone_type"), std::string{});
+    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid, std::string("standalone_type"));
     {
         constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
         constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
@@ -219,9 +218,9 @@ TEST_CASE("services::disk::pg_depend::test_circular_dependency_detection") {
     using namespace services::disk;
     namespace catalog = components::catalog;
 
-    constexpr components::catalog::oid_t CLS = 10;
-    constexpr components::catalog::oid_t OID_A = 100;
-    constexpr components::catalog::oid_t OID_B = 200;
+    constexpr components::catalog::oid_t CLS{10};
+    constexpr components::catalog::oid_t OID_A{100};
+    constexpr components::catalog::oid_t OID_B{200};
 
     core::pmr::otterbrix_resource resource;
     auto fetch = [&](std::pmr::memory_resource* mr,
@@ -245,10 +244,10 @@ TEST_CASE("services::disk::pg_depend::test_no_cycle_linear_chain") {
     using namespace services::disk;
     namespace catalog = components::catalog;
 
-    constexpr components::catalog::oid_t CLS = 10;
-    constexpr components::catalog::oid_t OID_A = 100;
-    constexpr components::catalog::oid_t OID_B = 200;
-    constexpr components::catalog::oid_t OID_C = 300;
+    constexpr components::catalog::oid_t CLS{10};
+    constexpr components::catalog::oid_t OID_A{100};
+    constexpr components::catalog::oid_t OID_B{200};
+    constexpr components::catalog::oid_t OID_C{300};
 
     core::pmr::otterbrix_resource resource;
     auto fetch = [&](std::pmr::memory_resource* mr,

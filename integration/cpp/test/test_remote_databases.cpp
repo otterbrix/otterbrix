@@ -24,20 +24,20 @@ namespace {
         return host.db.ints(any(), "SELECT count(*) FROM " + table + ";").front();
     }
 
-    std::uint32_t oid_of(host_t& host, const std::string& relname) {
+    components::catalog::oid_t oid_of(host_t& host, const std::string& relname) {
         const auto found =
             host.db.oids(any(), "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
         REQUIRE(found.size() == 1);
         return found.front();
     }
 
-    std::vector<std::uint32_t> attoids_of(host_t& host, std::uint32_t table) {
+    std::vector<components::catalog::oid_t> attoids_of(host_t& host, components::catalog::oid_t table) {
         return host.db.oids(any(),
-                            "SELECT attoid FROM pg_catalog.pg_attribute WHERE attrelid = " + std::to_string(table) +
-                                " ORDER BY attnum;");
+                            "SELECT attoid FROM pg_catalog.pg_attribute WHERE attrelid = " +
+                                std::to_string(static_cast<unsigned>(table)) + " ORDER BY attnum;");
     }
 
-    std::uint32_t namespace_of(host_t& host, const std::string& relname) {
+    components::catalog::oid_t namespace_of(host_t& host, const std::string& relname) {
         const auto found =
             host.db.oids(any(), "SELECT relnamespace FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
         REQUIRE(found.size() == 1);
@@ -87,8 +87,9 @@ TEST_CASE("integration::cpp::remote_databases::a_table_of_a_connection_has_no_st
     const auto orders = oid_of(host, "orders");
     CHECK(host.db.strings(any(), "SELECT relkind FROM pg_catalog.pg_class WHERE relname = 'orders';") == strings{"r"});
     CHECK(attoids_of(host, orders).size() == 2);
-    const auto storage =
-        host.db.config.main_path / std::to_string(namespace_of(host, "orders")) / std::to_string(orders);
+    const auto storage = host.db.config.main_path /
+                         std::to_string(static_cast<unsigned>(namespace_of(host, "orders"))) /
+                         std::to_string(static_cast<unsigned>(orders));
     CHECK_FALSE(std::filesystem::exists(storage));
     host.db.restart();
     CHECK(oid_of(host, "orders") == orders);

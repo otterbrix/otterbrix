@@ -223,6 +223,10 @@ namespace components::cursor {
         is_write_ = true;
     }
 
+    std::uint64_t cursor_t::generated_id() const noexcept { return generated_id_; }
+
+    void cursor_t::set_generated_id(std::uint64_t id) noexcept { generated_id_ = id; }
+
     catalog::oid_t cursor_t::created_oid() const noexcept { return created_oid_; }
 
     void cursor_t::set_created_oid(catalog::oid_t oid) noexcept { created_oid_ = oid; }

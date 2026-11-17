@@ -37,6 +37,11 @@ namespace components::operators {
         // place a default is read); push() materialises them so storage never substitutes anything.
         void set_fill_list(logical_plan::insert_fill_list_t fill) { fill_list_ = std::move(fill); }
 
+        // The DEFAULT cells of written columns, with the defaults enrich resolved for them; push() writes them.
+        void set_written_defaults(logical_plan::insert_written_defaults_t written) {
+            written_defaults_ = std::move(written);
+        }
+
         // Stamped by enrich; false skips the index mirror. Defaults to true for unstamped plans.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
         // The table's visible columns, from the catalog: an empty RETURNING has them.
@@ -70,6 +75,14 @@ namespace components::operators {
 
         std::pmr::string explain_label_impl() const override;
 
+        // One write message: its rows and the attoids of their columns.
+        struct write_round_t {
+            chunks_vector_t chunks;
+            std::pmr::vector<catalog::oid_t> attoids;
+        };
+
+        void append_written_runs_(vector::data_chunk_t&& input, uint64_t first_row);
+
         catalog::oid_t table_oid_;
         table::storage_address_t address_;
         std::pmr::string name_;
@@ -80,6 +93,11 @@ namespace components::operators {
         chunks_vector_t returning_accum_{resource_};
         logical_plan::insert_column_bindings_t column_bindings_{resource_};
         logical_plan::insert_fill_list_t fill_list_{resource_};
+        logical_plan::insert_written_defaults_t written_defaults_{resource_};
+        // Rows pushed so far: where the next chunk starts in the numbering of the DEFAULT cells.
+        uint64_t rows_pushed_{0};
+        // A connection's table: the attoids of each buffered chunk's columns, parallel to output_'s chunks.
+        std::pmr::vector<std::pmr::vector<catalog::oid_t>> written_attoids_{resource_};
         bool table_has_indexes_{true};
         std::pmr::vector<types::complex_logical_type> table_types_{resource_};
     };

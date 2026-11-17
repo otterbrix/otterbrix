@@ -48,7 +48,7 @@ namespace {
     catalog::oid_t oid_of(otterbrix::wrapper_dispatcher_t* d, const std::string& relname) {
         auto cur = run_ok(d, "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
         REQUIRE(cur->size() == 1);
-        return static_cast<catalog::oid_t>(cur->chunks().front().get_value<std::uint32_t>(0, 0));
+        return cur->chunks().front().get_value<catalog::oid_t>(0, 0);
     }
 
     std::set<std::int64_t> bigints(const cursor_t_ptr& cur) {
@@ -158,7 +158,7 @@ namespace {
         std::vector<proc_row_t> rows;
         for (const auto& chunk : cur->chunks()) {
             for (std::uint64_t r = 0; r < chunk.size(); ++r) {
-                proc_row_t row{static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, r)), 0, {}, {}};
+                proc_row_t row{chunk.get_value<catalog::oid_t>(0, r), 0, {}, {}};
                 if (!chunk.is_null(1, r)) {
                     row.prouid = chunk.get_value<std::int64_t>(1, r);
                 }
@@ -245,8 +245,9 @@ namespace {
 
     bool depends_on(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t objid, catalog::oid_t refobjid) {
         return run_ok(d,
-                      "SELECT refobjid FROM pg_catalog.pg_depend WHERE objid = " + std::to_string(objid) +
-                          " AND refobjid = " + std::to_string(refobjid) + ";")
+                      "SELECT refobjid FROM pg_catalog.pg_depend WHERE objid = " +
+                          std::to_string(static_cast<unsigned>(objid)) +
+                          " AND refobjid = " + std::to_string(static_cast<unsigned>(refobjid)) + ";")
                    ->size() == 1;
     }
 
@@ -297,8 +298,9 @@ TEST_CASE("integration::cpp::view_binding::the_output_columns_are_the_views_attr
     run_ok(d, "CREATE VIEW vb.v AS SELECT b, a FROM vb.t;");
 
     const auto view_oid = oid_of(d, "v");
-    auto names =
-        run_ok(d, "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = " + std::to_string(view_oid) + ";");
+    auto names = run_ok(d,
+                        "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = " +
+                            std::to_string(static_cast<unsigned>(view_oid)) + ";");
     CHECK(strings(names) == std::set<std::string>{"a", "b"});
 }
 
@@ -338,8 +340,8 @@ TEST_CASE("integration::cpp::view_binding::the_view_depends_on_its_relation_and_
     run_ok(d, "ALTER TABLE vb.t ADD COLUMN c BIGINT;");
     run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t WHERE b = 'x';");
 
-    const auto view_oid = std::to_string(oid_of(d, "v"));
-    const auto table_oid = std::to_string(oid_of(d, "t"));
+    const auto view_oid = std::to_string(static_cast<unsigned>(oid_of(d, "v")));
+    const auto table_oid = std::to_string(static_cast<unsigned>(oid_of(d, "t")));
     auto on_table = run_ok(d,
                            "SELECT deptype FROM pg_catalog.pg_depend WHERE objid = " + view_oid +
                                " AND refobjid = " + table_oid + ";");
@@ -370,7 +372,7 @@ TEST_CASE("integration::cpp::view_binding::drop_table_under_a_view_is_refused") 
     auto refused = exec(d, "DROP TABLE vb.t;");
     INFO("error: " << error_text(refused));
     CHECK(error_text(refused).find("cannot drop table vb.t because other objects depend on it") != std::string::npos);
-    CHECK(error_text(refused).find(std::to_string(oid_of(d, "v"))) != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(static_cast<unsigned>(oid_of(d, "v")))) != std::string::npos);
     CHECK(run_ok(d, "SELECT a FROM vb.v;")->size() == 2);
 }
 
@@ -380,8 +382,8 @@ TEST_CASE("integration::cpp::view_binding::drop_table_cascade_drops_the_views_ov
     seed(d);
     run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
     run_ok(d, "CREATE VIEW vb.w AS SELECT a FROM vb.v;");
-    const auto v_oid = std::to_string(oid_of(d, "v"));
-    const auto w_oid = std::to_string(oid_of(d, "w"));
+    const auto v_oid = std::to_string(static_cast<unsigned>(oid_of(d, "v")));
+    const auto w_oid = std::to_string(static_cast<unsigned>(oid_of(d, "w")));
 
     run_ok(d, "DROP TABLE vb.t CASCADE;");
 
@@ -416,7 +418,7 @@ TEST_CASE("integration::cpp::view_binding::drop_column_the_view_reads_is_refused
     auto refused = exec(d, "ALTER TABLE vb.t DROP COLUMN a;");
     CHECK(error_text(refused) == "cannot drop column a of table vb.t because other objects depend on it\n"
                                  "DETAIL: object with oid " +
-                                     std::to_string(oid_of(d, "v")) +
+                                     std::to_string(static_cast<unsigned>(oid_of(d, "v"))) +
                                      " depends on column a of table vb.t\n"
                                      "HINT: Use DROP ... CASCADE to drop the dependent objects too.");
     CHECK(run_ok(d, "SELECT a FROM vb.v;")->size() == 2);
@@ -440,8 +442,8 @@ TEST_CASE("integration::cpp::view_binding::drop_column_cascade_drops_the_view_wh
     seed(d);
     run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
     run_ok(d, "CREATE VIEW vb.w AS SELECT a FROM vb.v;");
-    const auto v_oid = std::to_string(oid_of(d, "v"));
-    const auto w_oid = std::to_string(oid_of(d, "w"));
+    const auto v_oid = std::to_string(static_cast<unsigned>(oid_of(d, "v")));
+    const auto w_oid = std::to_string(static_cast<unsigned>(oid_of(d, "w")));
 
     run_ok(d, "ALTER TABLE vb.t DROP COLUMN a CASCADE;");
 
@@ -523,7 +525,7 @@ TEST_CASE("integration::cpp::view_binding::rename_of_a_column_the_view_reads_is_
     auto refused = exec(d, "ALTER TABLE vb.t RENAME COLUMN a TO z;");
     INFO("error: " << error_text(refused));
     CHECK(error_text(refused).find("cannot rename column \"a\"") != std::string::npos);
-    CHECK(error_text(refused).find(std::to_string(oid_of(d, "v"))) != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(static_cast<unsigned>(oid_of(d, "v")))) != std::string::npos);
     CHECK(bigints(run_ok(d, "SELECT a FROM vb.v;")) == std::set<std::int64_t>{1, 2});
 }
 
@@ -543,7 +545,7 @@ TEST_CASE("integration::cpp::view_binding::a_column_alias_names_the_view_column"
     seed(d);
     run_ok(d, "CREATE VIEW vb.v AS SELECT a AS z FROM vb.t;");
 
-    const auto view_oid = std::to_string(oid_of(d, "v"));
+    const auto view_oid = std::to_string(static_cast<unsigned>(oid_of(d, "v")));
     CHECK(strings(run_ok(d, "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = " + view_oid + ";")) ==
           std::set<std::string>{"z"});
     CHECK(bigints(run_ok(d, "SELECT z FROM vb.v;")) == std::set<std::int64_t>{1, 2});
@@ -757,7 +759,7 @@ TEST_CASE("integration::cpp::view_binding::drop_column_a_matview_reads_is_refuse
     auto refused = exec(d, "ALTER TABLE vb.t DROP COLUMN a;");
     CHECK(error_text(refused) == "cannot drop column a of table vb.t because other objects depend on it\n"
                                  "DETAIL: object with oid " +
-                                     std::to_string(oid_of(d, "mv")) +
+                                     std::to_string(static_cast<unsigned>(oid_of(d, "mv"))) +
                                      " depends on column a of table vb.t\n"
                                      "HINT: Use DROP ... CASCADE to drop the dependent objects too.");
     run_ok(d, "ALTER TABLE vb.t DROP COLUMN b;");
@@ -774,7 +776,7 @@ TEST_CASE("integration::cpp::view_binding::a_matview_over_two_relations") {
     run_ok(d,
            "CREATE MATERIALIZED VIEW vb.mv AS SELECT t.a AS a, u.c * 2 AS c2 FROM vb.t AS t JOIN vb.u AS u ON t.a = "
            "u.a WITH NO DATA;");
-    const auto mv = std::to_string(oid_of(d, "mv"));
+    const auto mv = std::to_string(static_cast<unsigned>(oid_of(d, "mv")));
     CHECK(strings(run_ok(d, "SELECT relname FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + mv + ";")) ==
           std::set<std::string>{"t", "u"});
     CHECK(strings(run_ok(d, "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = " + mv + ";")) ==
@@ -992,7 +994,7 @@ TEST_CASE("integration::cpp::view_binding::a_view_depends_on_the_overload_it_cal
                                   make_twice(d->resource(), {{logical_type::DOUBLE, logical_type::DOUBLE}}))
                       .contains_error());
     run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
-    const auto v = std::to_string(oid_of(d, "v"));
+    const auto v = std::to_string(static_cast<unsigned>(oid_of(d, "v")));
     const auto rows = proc_rows(d, "twice");
     const components::compute::parameter_type bigint[] = {
         components::compute::parameter_type::exact(logical_type::BIGINT)};
@@ -1004,7 +1006,7 @@ TEST_CASE("integration::cpp::view_binding::a_view_depends_on_the_overload_it_cal
                          "SELECT refobjid FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + v +
                              " AND refkind = 'f' AND relname = 'twice';");
     REQUIRE(pinned->size() == 1);
-    CHECK(pinned->chunks().front().get_value<std::uint32_t>(0, 0) == bigint_row->oid);
+    CHECK(pinned->chunks().front().get_value<catalog::oid_t>(0, 0) == bigint_row->oid);
 
     auto dropped = d->unregister_udf(otterbrix::session_id_t(), "twice", {logical_type::DOUBLE});
     INFO("error: " << dropped.what);
@@ -1037,8 +1039,8 @@ TEST_CASE("integration::cpp::view_binding::a_view_whose_function_oid_has_another
     forge_proc_row(space, fn_oid, "twice", logical_type::DOUBLE, logical_type::DOUBLE);
 
     CHECK(error_text(exec(d, "SELECT t2 FROM vb.v;")) ==
-          "view \"v\" is stale: function twice(int8) it was created over (oid " + std::to_string(fn_oid) +
-              ") is now twice(float8); recreate the view");
+          "view \"v\" is stale: function twice(int8) it was created over (oid " +
+              std::to_string(static_cast<unsigned>(fn_oid)) + ") is now twice(float8); recreate the view");
 }
 
 namespace {
@@ -1104,14 +1106,15 @@ TEST_CASE("integration::cpp::view_binding::a_view_over_an_aggregate_function_is_
     const auto fn_oid = proc_rows(d, "total").front().oid;
     CHECK(depends_on(d, oid_of(d, "v"), fn_oid));
     CHECK(run_ok(d,
-                 "SELECT refobjid FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + std::to_string(oid_of(d, "v")) +
+                 "SELECT refobjid FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " +
+                     std::to_string(static_cast<unsigned>(oid_of(d, "v"))) +
                      " AND refkind = 'f' AND relname = 'total';")
               ->size() == 1);
 
     forge_proc_row(space, fn_oid, "total", logical_type::DOUBLE, logical_type::DOUBLE);
     CHECK(error_text(exec(d, "SELECT s FROM vb.v;")) ==
-          "view \"v\" is stale: function total(int8) it was created over (oid " + std::to_string(fn_oid) +
-              ") is now total(float8); recreate the view");
+          "view \"v\" is stale: function total(int8) it was created over (oid " +
+              std::to_string(static_cast<unsigned>(fn_oid)) + ") is now total(float8); recreate the view");
 }
 
 // A pg_proc signature no encoder writes is a corrupt catalog, not a name to print as it is.

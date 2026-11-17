@@ -9,6 +9,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
@@ -22,6 +23,9 @@ namespace components::sql::parser {
 } // namespace components::sql::parser
 
 namespace components::sql::transform {
+    [[nodiscard]] core::result_wrapper_t<logical_plan::transaction_access_t>
+    transaction_access_of(List* modes, std::pmr::memory_resource* resource);
+
     // There are some differences for expression parsing, depending on where it is placed
     enum class expression_placement_t
     {
@@ -147,6 +151,8 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_set_setting(VariableSetStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_alter_system(AlterSystemStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_show(VariableShowStmt& node,
+                                                                      logical_plan::execution_plan_t* plan);
         // PREPARE keeps its body as written; EXECUTE lowers each argument to a sub-plan SELECT <argument> whose value
         // fills the argument's slot; DEALLOCATE names one statement or ALL.
         core::result_wrapper_t<logical_plan::node_ptr> transform_prepare(PrepareStmt& node);

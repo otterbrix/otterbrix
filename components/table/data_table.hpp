@@ -49,10 +49,10 @@ namespace components::table {
         [[nodiscard]] std::vector<uint64_t> visible_columns(const transaction_data& txn) const;
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> visible_types(const transaction_data& txn) const;
         // Every physical column's attoid, in physical order
-        [[nodiscard]] std::pmr::vector<std::uint32_t> column_attoids() const;
+        [[nodiscard]] std::pmr::vector<types::oid_t> column_attoids() const;
         // A write names its payload's columns: they must be the ones `txn` sees, in their order.
         [[nodiscard]] core::error_t check_payload_columns(const transaction_data& txn,
-                                                          std::span<const std::uint32_t> attoids) const;
+                                                          std::span<const types::oid_t> attoids) const;
         // A widened (physical) chunk: a NULL in a NOT NULL column `txn` sees refuses the write.
         [[nodiscard]] core::error_t refuse_null_values(const transaction_data& txn,
                                                        const vector::data_chunk_t& physical) const;
@@ -60,7 +60,7 @@ namespace components::table {
         [[nodiscard]] vector::data_chunk_t visible_copy(const transaction_data& txn,
                                                         const vector::data_chunk_t& physical) const;
 
-        void stamp_column_identity(uint64_t position, std::uint32_t attoid);
+        void stamp_column_identity(uint64_t position, types::oid_t attoid);
         // The committed NOT NULL pg_attribute holds: a crash before the checkpoint loses the file's flag, not the row.
         void adopt_column_not_null(uint64_t position);
         void stamp_column_added(uint64_t position, uint64_t stamp, uint64_t sub_id);
@@ -87,10 +87,10 @@ namespace components::table {
         // A dynamic-schema table's columns have no identity but their names.
         [[nodiscard]] core::error_t widen_by_name(const transaction_data& txn, vector::data_chunk_t& chunk) const;
         // A column the table does not have is dropped (e.g. ADD never committed); a column the payload lacks was added
-        [[nodiscard]] core::error_t widen_by_attoid(std::span<const std::uint32_t> attoids,
+        [[nodiscard]] core::error_t widen_by_attoid(std::span<const types::oid_t> attoids,
                                                     vector::data_chunk_t& chunk) const;
 
-        [[nodiscard]] uint64_t find_visible_column(const transaction_data& txn, std::uint32_t attoid) const;
+        [[nodiscard]] uint64_t find_visible_column(const transaction_data& txn, types::oid_t attoid) const;
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& types);
 
         void initialize_scan(table_scan_state& state,

@@ -38,8 +38,7 @@ namespace {
                 continue;
             }
             for (std::uint64_t row = 0; row < w.row.size(); ++row) {
-                const auto refclassid =
-                    static_cast<oid_t>(w.row.get_value<std::uint32_t>(pg_depend_col::refclassid, row));
+                const auto refclassid = w.row.get_value<oid_t>(pg_depend_col::refclassid, row);
                 if (refclassid == well_known_oid::pg_attribute_table) {
                     ++edges;
                 }
@@ -138,13 +137,13 @@ TEST_CASE("catalog::row_builders::pg_attribute_row_is_always_full_width") {
                                       /*attoid=*/oid_t{20001},
                                       /*table_oid=*/oid_t{20000},
                                       "id",
-                                      /*atttypid=*/well_known_oid::int64_type,
+                                      pg_attribute_type_t{well_known_oid::int64_type},
                                       /*attnum=*/1,
                                       /*not_null=*/true,
                                       /*has_default=*/false,
                                       /*is_dropped=*/false,
                                       /*typspec=*/std::string{},
                                       /*defspec=*/std::string{});
-    REQUIRE(row.column_count() == 12);
+    REQUIRE(row.column_count() == 14);
     REQUIRE(row.size() == 1);
 }

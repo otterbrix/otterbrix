@@ -874,7 +874,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
     namespace lp = components::logical_plan;
     namespace ops = components::operators;
     using components::catalog::oid_t;
-    constexpr oid_t index_oid = 9001;
+    constexpr oid_t index_oid{9001};
 
     constexpr oid_t pg_index = components::catalog::well_known_oid::pg_index_table;
     constexpr oid_t pg_depend = components::catalog::well_known_oid::pg_depend_table;

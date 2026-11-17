@@ -132,6 +132,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_dml_without_columns.cpp
         test_create_in_missing_database.cpp
         test_schema_level.cpp
+        test_information_schema.cpp
+        test_set_config.cpp
+        test_transaction_access.cpp
+        test_insert_default_cells.cpp
         test_current_place.cpp
         test_remote_databases.cpp
         test_connection_names.cpp
@@ -146,6 +150,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_decorrelation.cpp
         test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp
+        test_oid_type.cpp
         test_alter_add_column_reads.cpp
         test_alter_add_column_types.cpp
         test_typed_null_without_storage.cpp

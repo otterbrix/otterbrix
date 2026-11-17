@@ -99,7 +99,7 @@ TEST_CASE("resolve constraint: an entry whose target is not an index is refused"
     {
         auto pair = make_pair(&resource,
                               /*stamp_table_md=*/true,
-                              /*table_oid=*/42,
+                              /*table_oid=*/catalog::oid_t{42},
                               logical_plan::resolve_entry_t::no_target,
                               /*use_override=*/true);
         std::string err;
@@ -110,7 +110,8 @@ TEST_CASE("resolve constraint: an entry whose target is not an index is refused"
 
     INFO("and an index past the end of the tables node — one entry, target 1");
     {
-        auto pair = make_pair(&resource, /*stamp_table_md=*/true, /*table_oid=*/42, 1, /*use_override=*/true);
+        auto pair =
+            make_pair(&resource, /*stamp_table_md=*/true, /*table_oid=*/catalog::oid_t{42}, 1, /*use_override=*/true);
         std::string err;
         REQUIRE(run_resolve(&resource, pair, &err));
         INFO("error: " << err);

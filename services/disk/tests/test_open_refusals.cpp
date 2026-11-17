@@ -446,7 +446,7 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_is_not_a_regular_table") 
     {
         open_fixture fx(base);
         REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
-        auto unknown = fx.boot.relkind_for_oid_sync(catalog::oid_t{FIRST_USER_OID + 9911});
+        auto unknown = fx.boot.relkind_for_oid_sync(catalog::oid_t{static_cast<unsigned>(FIRST_USER_OID) + 9911});
         REQUIRE_FALSE(unknown.has_error());
         CHECK(unknown.value() == '\0');
         auto kind = fx.boot.relkind_for_oid_sync(doc_oid);
@@ -478,9 +478,9 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
         }
         components::vector::data_chunk_t row(&fx.resource, types, 1);
         row.set_cardinality(1);
-        row.set_value(0, 0, static_cast<std::uint32_t>(orphan));
+        row.set_value(0, 0, orphan);
         row.set_value(1, 0, std::string_view("t_orphan"));
-        row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+        row.set_value(2, 0, ns_oid);
         row.set_value(3, 0, std::string_view("r"));
         row.set_value(4, 0, std::string_view("d"));
         auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
@@ -1104,7 +1104,7 @@ TEST_CASE("services::disk::open::a_commit_id_stamp_that_was_not_applied_is_refus
         CHECK_FALSE(backfill(fx, {attoid}, 4242).contains_error());
         CHECK(added_at_commit_id_of(fx, attoid) == 4242);
 
-        constexpr catalog::oid_t kGhostAttoid = 4000000000u;
+        constexpr catalog::oid_t kGhostAttoid{4000000000u};
         auto refused = backfill(fx, {kGhostAttoid}, 4243);
         INFO("a commit_id stamp that could not be applied must be reported, not skipped");
         CHECK(refused.contains_error());

@@ -211,7 +211,7 @@ namespace services::disk {
         void adopt_catalog_columns(const std::vector<components::table::column_definition_t>& catalog_columns,
                                    std::pmr::memory_resource* res) {
             for (const auto& def : catalog_columns) {
-                if (def.attoid() == 0) {
+                if (def.attoid() == components::catalog::INVALID_OID) {
                     continue;
                 }
                 bool in_storage = false;
@@ -762,11 +762,11 @@ namespace services::disk {
         static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid, std::size_t pool_size) noexcept {
             if (pool_size == 0)
                 return 0;
-            if (static_cast<std::uint32_t>(oid) < components::catalog::FIRST_USER_OID)
+            if (oid < components::catalog::FIRST_USER_OID)
                 return 0;
             if (pool_size == 1)
                 return 0;
-            return 1 + (static_cast<std::size_t>(oid) % (pool_size - 1));
+            return 1 + (static_cast<std::size_t>(static_cast<unsigned>(oid)) % (pool_size - 1));
         }
     };
 

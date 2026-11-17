@@ -43,14 +43,14 @@ namespace services::disk {
         if (file == nullptr) {
             return reservation_error(resource, core::error_code_t::io_error, db_path, "exists but could not be opened");
         }
-        components::catalog::oid_t bound = components::catalog::INVALID_OID;
+        std::uint32_t bound = 0;
         if (core::filesystem::read(fs, *file, &bound, sizeof(bound)) != static_cast<int64_t>(sizeof(bound))) {
             return reservation_error(resource,
                                      core::error_code_t::data_corruption,
                                      db_path,
                                      "does not hold an oid, so the oids handed out before the restart are unknown");
         }
-        return bound;
+        return components::catalog::oid_t{bound};
     }
 
     core::error_t persist_oid_reservation(std::pmr::memory_resource* resource,
@@ -73,8 +73,9 @@ namespace services::disk {
         if (tmp == nullptr) {
             return refuse("the staging file could not be opened");
         }
-        const auto written = tmp->write(&bound, sizeof(bound));
-        if (!written.complete || written.bytes_written != sizeof(bound)) {
+        std::uint32_t raw = static_cast<unsigned>(bound);
+        const auto written = tmp->write(&raw, sizeof(raw));
+        if (!written.complete || written.bytes_written != sizeof(raw)) {
             tmp.reset();
             return refuse("the staging write was short");
         }

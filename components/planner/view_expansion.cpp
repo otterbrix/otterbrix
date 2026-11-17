@@ -329,7 +329,7 @@ namespace components::planner {
                                                 "\"" + written +
                                                     "\" in this statement no longer names the relation it was bound "
                                                     "to (oid " +
-                                                    std::to_string(pin.oid) + ")");
+                                                    std::to_string(static_cast<unsigned>(pin.oid)) + ")");
                     }
                     existing.pin = pin;
                 }

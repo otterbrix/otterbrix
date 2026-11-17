@@ -41,7 +41,7 @@ namespace {
 
     namespace catalog_ns = components::catalog;
     constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
-    constexpr catalog_ns::oid_t kTableOid = 16711;
+    constexpr catalog_ns::oid_t kTableOid{16711};
 
     std::filesystem::path base_path() {
         return std::filesystem::path{"/tmp/otterbrix_test_wal_txn_reuse_" + std::to_string(::getpid())};

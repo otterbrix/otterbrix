@@ -41,8 +41,8 @@ namespace {
         entry.written.schema = core::schema_t{dbname};
         entry.written.collection = core::relname_t{relname};
         logical_plan::resolved_table_metadata_t md;
-        md.table_oid = 4242;
-        md.namespace_oid = 7;
+        md.table_oid = components::catalog::oid_t{4242};
+        md.namespace_oid = components::catalog::oid_t{7};
         md.relkind = relkind;
         md.name = core::relname_t{relname};
         md.view_sql = view_sql;
@@ -55,7 +55,7 @@ namespace {
         auto agg =
             logical_plan::make_node_aggregate(res(),
                                               qualified_name_t{core::schema_t{dbname}, core::relname_t{relname}});
-        agg->set_table_oid(4242);
+        agg->set_table_oid(components::catalog::oid_t{4242});
         return agg;
     }
 
@@ -221,7 +221,7 @@ namespace {
                                       core::dbname_t{},
                                       core::schema_t{"db"},
                                       core::relname_t{"t"},
-                                      16500,
+                                      components::catalog::oid_t{16500},
                                       std::string{},
                                       std::string{}});
         return view;
@@ -241,7 +241,7 @@ TEST_CASE("planner::view_expansion::a body name is pinned to the oid it was boun
     auto body = body_naming("t");
 
     REQUIRE_FALSE(pin_view_body_names(res(), body, view_bound_to_t()).contains_error());
-    CHECK(body.tables->entries().front().pin.oid == 16500);
+    CHECK(body.tables->entries().front().pin.oid == components::catalog::oid_t{16500});
 }
 
 TEST_CASE("planner::view_expansion::a body name without a binding is refused as stale") {
@@ -256,7 +256,7 @@ TEST_CASE("planner::view_expansion::a body name without a binding is refused as 
 TEST_CASE("planner::view_expansion::a pin the statement disagrees with is refused as stale") {
     auto statement = body_naming("t");
     logical_plan::resolved_table_metadata_t other;
-    other.table_oid = 16600;
+    other.table_oid = components::catalog::oid_t{16600};
     statement.tables->entries().front().table_md = std::move(other);
     auto body = body_naming("t");
     REQUIRE_FALSE(pin_view_body_names(res(), body, view_bound_to_t()).contains_error());
@@ -272,7 +272,7 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
     matview.name = "mv";
     matview.database = "main";
     matview.schema = "db";
-    matview.table_oid = 4243;
+    matview.table_oid = components::catalog::oid_t{4243};
     matview.relkind = components::catalog::relkind::materialized_view;
     matview.view_sql = "SELECT a FROM db.t";
     matview.view_bindings.push_back({components::catalog::view_refkind::relation,
@@ -280,7 +280,7 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
                                      core::dbname_t{},
                                      core::schema_t{"db"},
                                      core::relname_t{"t"},
-                                     16500,
+                                     components::catalog::oid_t{16500},
                                      std::string{},
                                      std::string{}});
 
@@ -305,11 +305,11 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
     const auto* t = plan.catalog_resolves.table_entry(
         qualified_name_t{core::schema_t{std::string{"db"}}, core::relname_t{std::string{"t"}}});
     REQUIRE(t != nullptr);
-    CHECK(t->pin.oid == 16500);
+    CHECK(t->pin.oid == components::catalog::oid_t{16500});
     const auto* mv = plan.catalog_resolves.table_entry(qualified_name_t{core::dbname_t{std::string{"main"}},
                                                                         core::schema_t{std::string{"db"}},
                                                                         core::relname_t{std::string{"mv"}}});
     REQUIRE(mv != nullptr);
-    CHECK(mv->relation_oid == 4243);
+    CHECK(mv->relation_oid == components::catalog::oid_t{4243});
     CHECK(collect_view_references(res(), plan.catalog_resolves, plan.sub_queries.back().get()).empty());
 }

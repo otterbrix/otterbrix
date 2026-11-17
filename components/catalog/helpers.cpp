@@ -24,11 +24,11 @@ namespace components::catalog {
             } else {
                 // Reads straight into oid_t: from_chars flags out-of-range directly -- a wider int
                 // cast down would wrap 2^32+N into N, silently binding the key to the wrong column.
-                oid_t v{};
+                std::uint32_t v{};
                 const auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), v);
                 // The whole token must match, or "12x" would silently read as 12 (from_chars alone accepts it).
                 if (ec == std::errc{} && ptr == tok.data() + tok.size()) {
-                    out.push_back(v);
+                    out.push_back(oid_t{v});
                 } else {
                     ok = false;
                 }
@@ -46,7 +46,7 @@ namespace components::catalog {
         for (std::size_t i = 0; i < oids.size(); ++i) {
             if (i)
                 out += ',';
-            out += std::to_string(oids[i]);
+            out += std::to_string(static_cast<unsigned>(oids[i]));
         }
         return out;
     }
@@ -54,10 +54,10 @@ namespace components::catalog {
     services::disk::resolve_function_result_t decode_pg_proc_row(const vector::data_chunk_t& chunk, std::uint64_t row) {
         services::disk::resolve_function_result_t r;
         r.found = true;
-        r.oid = static_cast<oid_t>(chunk.get_value<std::uint32_t>(pg_proc_col::oid, row));
+        r.oid = chunk.get_value<oid_t>(pg_proc_col::oid, row);
         r.name = std::string{chunk.get_value<std::string_view>(pg_proc_col::proname, row)};
         if (!chunk.is_null(pg_proc_col::pronamespace, row)) {
-            r.namespace_oid = static_cast<oid_t>(chunk.get_value<std::uint32_t>(pg_proc_col::pronamespace, row));
+            r.namespace_oid = chunk.get_value<oid_t>(pg_proc_col::pronamespace, row);
         }
         if (!chunk.is_null(pg_proc_col::pronargs, row)) {
             r.signature.pronargs = chunk.get_value<std::int32_t>(pg_proc_col::pronargs, row);
@@ -75,6 +75,20 @@ namespace components::catalog {
         return r;
     }
 
+    pg_attribute_type_t pg_attribute_type_in(const vector::data_chunk_t& chunk, std::uint64_t row) {
+        pg_attribute_type_t out;
+        if (!chunk.is_null(pg_attribute_col::atttypid, row)) {
+            out.atttypid = chunk.get_value<oid_t>(pg_attribute_col::atttypid, row);
+        }
+        if (!chunk.is_null(pg_attribute_col::atttypmod, row)) {
+            out.atttypmod = chunk.get_value<std::int32_t>(pg_attribute_col::atttypmod, row);
+        }
+        if (!chunk.is_null(pg_attribute_col::attndims, row)) {
+            out.attndims = chunk.get_value<std::int16_t>(pg_attribute_col::attndims, row);
+        }
+        return out;
+    }
+
     core::result_wrapper_t<char> deptype_of(const vector::data_chunk_t& chunk, std::uint64_t row) {
         if (!chunk.is_null(pg_depend_col::deptype, row)) {
             const auto text = chunk.get_value<std::string_view>(pg_depend_col::deptype, row);
@@ -83,8 +97,9 @@ namespace components::catalog {
             }
         }
         const auto oid_at = [&chunk, row](std::uint64_t column) {
-            return chunk.is_null(column, row) ? std::string{"?"}
-                                              : std::to_string(chunk.get_value<std::uint32_t>(column, row));
+            return chunk.is_null(column, row)
+                       ? std::string{"?"}
+                       : std::to_string(static_cast<unsigned>(chunk.get_value<oid_t>(column, row)));
         };
         return core::error_t{core::error_code_t::data_corruption,
                              std::pmr::string{"the pg_depend row " + oid_at(pg_depend_col::classid) + "/" +

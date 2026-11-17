@@ -62,6 +62,7 @@ namespace components::table {
                 case types::logical_type::UTINYINT:
                 case types::logical_type::USMALLINT:
                 case types::logical_type::UINTEGER:
+                case types::logical_type::OID:
                 case types::logical_type::UBIGINT:
                 case types::logical_type::UHUGEINT:
                     return slot::unsigned_int;

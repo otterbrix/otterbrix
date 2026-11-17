@@ -29,7 +29,7 @@ namespace {
     }
 
     // User tables live under <root>/<db oid>/<table oid>/table.otbx with db oid >= 16384; system tables (db dir
-    // "4") are megabytes right after bootstrap and must not be mistaken for the table under test.
+    // "5") are megabytes right after bootstrap and must not be mistaken for the table under test.
     bool is_user_otbx(const std::filesystem::path& p) {
         const auto db_dir = p.parent_path().parent_path().filename().string();
         return std::stoull(db_dir) >= 16384;

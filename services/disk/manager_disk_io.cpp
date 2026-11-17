@@ -194,7 +194,7 @@ namespace services::disk {
         {
             bool needs_identity = false;
             for (const auto& col : columns) {
-                if (col.attoid() == 0) {
+                if (col.attoid() == components::catalog::INVALID_OID) {
                     needs_identity = true;
                     break;
                 }
@@ -209,7 +209,8 @@ namespace services::disk {
                          ++position) {
                         auto& col = columns[position];
                         const auto& def = found->second[position];
-                        if (col.attoid() == 0 && def.attoid() != 0) {
+                        if (col.attoid() == components::catalog::INVALID_OID &&
+                            def.attoid() != components::catalog::INVALID_OID) {
                             col.set_attoid(def.attoid());
                         }
                         col.set_dropped_at(def.dropped_at());

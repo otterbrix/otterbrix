@@ -451,7 +451,7 @@ namespace services::disk {
         struct active_scan_t {
             // attoid (0 = never stamped) is the identity that survives a RENAME; 0 falls back to (name, type).
             struct open_column_t {
-                std::uint32_t attoid{0};
+                components::catalog::oid_t attoid{};
                 std::string name;
             };
             components::catalog::oid_t table_oid{components::catalog::INVALID_OID}; // gates compact() on this oid

@@ -47,4 +47,7 @@ namespace components::catalog {
     core::error_t
     dependent_objects_error(std::pmr::memory_resource* resource, std::string_view target, oid_t blocking_oid);
 
+    // The refusal to drop an internal part of another object
+    core::error_t internal_part_error(std::pmr::memory_resource* resource, std::string_view target, oid_t owner_oid);
+
 } // namespace components::catalog

@@ -30,7 +30,7 @@ namespace {
                            catalog::oid_t oid) {
         auto cur = exec(d,
                         "SELECT " + column + " FROM pg_catalog." + table + " WHERE " + column + " = " +
-                            std::to_string(oid) + ";");
+                            std::to_string(static_cast<unsigned>(oid)) + ";");
         REQUIRE(cur->is_success());
         return cur->size();
     }
@@ -40,7 +40,7 @@ namespace {
         REQUIRE(cur->is_success());
         for (const auto& chunk : cur->chunks()) {
             if (chunk.size() != 0) {
-                return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
+                return chunk.get_value<catalog::oid_t>(0, 0);
             }
         }
         return catalog::INVALID_OID;
@@ -53,8 +53,8 @@ namespace {
     // The PK row carries no confrelid, so this key selects the FK alone.
     catalog::oid_t fk_oid_referencing(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t parent_oid) {
         return first_oid(d,
-                         "SELECT oid FROM pg_catalog.pg_constraint WHERE confrelid = " + std::to_string(parent_oid) +
-                             " AND contype = 'f';");
+                         "SELECT oid FROM pg_catalog.pg_constraint WHERE confrelid = " +
+                             std::to_string(static_cast<unsigned>(parent_oid)) + " AND contype = 'f';");
     }
 
     // Forges the edge instead of deleting a real row: a td{0,0} delete would leave a ghost the
@@ -96,7 +96,7 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
     const auto parent_oid = table_oid_named(d, "parent");
     REQUIRE(parent_oid != catalog::INVALID_OID);
 
-    const catalog::oid_t ghost_oid = catalog::FIRST_USER_OID + 777777;
+    const catalog::oid_t ghost_oid{static_cast<unsigned>(catalog::FIRST_USER_OID) + 777777};
     REQUIRE(rows_where(d, "pg_constraint", "oid", ghost_oid) == 0);
     forge_depend_edge(space,
                       catalog::well_known_oid::pg_constraint_table,

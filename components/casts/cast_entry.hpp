@@ -1,9 +1,11 @@
 #pragma once
 
 #include <components/casts/cast_function.hpp>
+#include <components/catalog/catalog_codes.hpp>
 
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 
 namespace components::casts {
 
@@ -13,6 +15,18 @@ namespace components::casts {
         assignment = 1,
         explicit_only = 2
     };
+
+    [[nodiscard]] constexpr char castcontext_of(cast_type type) noexcept {
+        switch (type) {
+            case cast_type::implicit:
+                return catalog::castcontext::implicit;
+            case cast_type::assignment:
+                return catalog::castcontext::assignment;
+            case cast_type::explicit_only:
+                return catalog::castcontext::explicit_only;
+        }
+        std::abort();
+    }
 
     [[nodiscard]] constexpr bool allowed_in(cast_type type, cast_type allowed_type) noexcept {
         return static_cast<uint8_t>(type) <= static_cast<uint8_t>(allowed_type);

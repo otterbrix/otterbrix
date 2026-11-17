@@ -20,8 +20,8 @@ namespace components::logical_plan {
 
         const std::string& function_name() const noexcept { return function_name_; }
         // The schema of the session's place, the one the overload is dropped from: the executor stamps it.
-        void set_schema_oid(std::uint32_t schema_oid) noexcept { schema_oid_ = schema_oid; }
-        std::uint32_t schema_oid() const noexcept { return schema_oid_; }
+        void set_schema_oid(types::oid_t schema_oid) noexcept { schema_oid_ = schema_oid; }
+        types::oid_t schema_oid() const noexcept { return schema_oid_; }
         const std::pmr::vector<types::complex_logical_type>& inputs() const noexcept { return inputs_; }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
 
@@ -32,7 +32,7 @@ namespace components::logical_plan {
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
         components::catalog::drop_behavior_t behavior_;
-        std::uint32_t schema_oid_{0};
+        types::oid_t schema_oid_{};
     };
 
     using node_unregister_udf_ptr = boost::intrusive_ptr<node_unregister_udf_t>;

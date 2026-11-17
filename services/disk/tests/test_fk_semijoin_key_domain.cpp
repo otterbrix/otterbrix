@@ -1,7 +1,7 @@
-// fk_hash_semijoin normalizes each key cell to the stored column's type before hashing: a cell
-// normalizes only if it round-trips EXACTLY, otherwise it's a domain miss (empty bucket), never an
-// error. A pair of TYPES that cannot be compared at all is different: a refusal (third test below).
-// Runs the free function directly, same as test_fk_scan_by_keys_semijoin.cpp.
+// fk_hash_semijoin takes its keys in the stored columns' types: the FK operators cast them through the cast
+// registry. A key of another type is a refusal, not an empty bucket: ON DELETE CASCADE/RESTRICT reads an empty
+// bucket as "this parent has no children". Runs the free function directly, same as
+// test_fk_scan_by_keys_semijoin.cpp.
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>
@@ -18,7 +18,6 @@
 
 #include <filesystem>
 #include <memory_resource>
-#include <set>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -38,17 +37,6 @@ namespace {
         table.finalize_append(state, transaction_data::committed());
     }
 
-    std::pmr::vector<std::uint64_t> key_indices(std::pmr::memory_resource* res,
-                                                std::initializer_list<std::uint64_t> v) {
-        std::pmr::vector<std::uint64_t> out{res};
-        for (auto x : v) {
-            out.push_back(x);
-        }
-        return out;
-    }
-
-    std::set<int64_t> as_set(const std::pmr::vector<int64_t>& v) { return std::set<int64_t>(v.begin(), v.end()); }
-
     std::filesystem::path fresh_otbx(const char* tag) {
         const auto path = std::filesystem::path("/tmp") / ("test_otterbrix_fk_key_domain_" + std::string(tag) + "_" +
                                                            std::to_string(::getpid()) + ".otbx");
@@ -58,105 +46,13 @@ namespace {
 
 } // namespace
 
-// A DOUBLE key 1.5 has no exact BIGINT representation and must not be probed as 1.
-// BEFORE: res[0] == {0} — key 1.5 matched the row holding 1.
-TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer_row") {
+// An INTEGER key against a BIGINT column holding the same value: a disk that converted keys itself would match it.
+TEST_CASE("services::disk::fk_hash_semijoin::a_key_of_another_type_is_refused") {
     core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_otbx("fraction"));
-    REQUIRE_FALSE(ts.construction_failed());
-
-    const int64_t ids[] = {1, 2, 3};
-    {
-        auto types = ts.table().copy_types();
-        data_chunk_t chunk(&resource, types, 3);
-        chunk.set_cardinality(3);
-        for (uint64_t i = 0; i < 3; ++i) {
-            chunk.set_value(0, i, ids[i]);
-        }
-        append_chunk(ts.table(), chunk);
-    }
-
-    table_storage_adapter_t adapter(ts.table(), &resource);
-
-    std::pmr::vector<complex_logical_type> ktypes{&resource};
-    ktypes.emplace_back(logical_type::DOUBLE);
-    data_chunk_t keys(&resource, ktypes, 3);
-    keys.set_cardinality(3);
-    keys.set_value(0, 0, double{1.5});
-    keys.set_value(0, 1, double{2.0});
-    keys.set_value(0, 2, double{3.25});
-
-    auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
-    REQUIRE_FALSE(res_r.has_error());
-    auto& res = res_r.value();
-    REQUIRE(res.size() == 3);
-
-    INFO("1.5 truncated to 1 and matched the row holding 1 — a false FK match");
-    CHECK(res[0].empty());
-    CHECK(as_set(res[1]) == std::set<int64_t>{1});
-    INFO("3.25 truncated to 3 and matched the row holding 3");
-    CHECK(res[2].empty());
-}
-
-// A key the stored column cannot hold is answered "no match", not a failed statement -- a
-// A cast refusal here would abort the whole FK check, taking in-domain keys down with it.
-TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead_of_failing") {
-    core::pmr::otterbrix_resource resource;
-
-    std::vector<column_definition_t> cols;
-    cols.emplace_back("id", logical_type::SMALLINT); // stored physical INT16
-    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_otbx("domain"));
-    REQUIRE_FALSE(ts.construction_failed());
-
-    const int16_t ids[] = {10, 20, 4464};
-    {
-        auto types = ts.table().copy_types();
-        data_chunk_t chunk(&resource, types, 3);
-        chunk.set_cardinality(3);
-        for (uint64_t i = 0; i < 3; ++i) {
-            chunk.set_value(0, i, ids[i]);
-        }
-        append_chunk(ts.table(), chunk);
-    }
-
-    table_storage_adapter_t adapter(ts.table(), &resource);
-
-    // 70000 truncates to exactly 4464 (the row deliberately holds that id); 20 is in-domain,
-    // -70000 is out of range the other way.
-    std::pmr::vector<complex_logical_type> ktypes{&resource};
-    ktypes.emplace_back(logical_type::BIGINT);
-    data_chunk_t keys(&resource, ktypes, 3);
-    keys.set_cardinality(3);
-    keys.set_value(0, 0, int64_t{70000});
-    keys.set_value(0, 1, int64_t{20});
-    keys.set_value(0, 2, int64_t{-70000});
-
-    auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
-
-    INFO("an out-of-domain key is an evaluable request with an empty answer, not a failure");
-    REQUIRE_FALSE(res_r.has_error());
-    auto& res = res_r.value();
-    REQUIRE(res.size() == 3);
-
-    CHECK(res[0].empty());
-    CHECK(as_set(res[1]) == std::set<int64_t>{1});
-    CHECK(res[2].empty());
-}
-
-// A pair of TYPES that cannot be compared at all must stay a refusal, not an empty bucket: ON
-// DELETE CASCADE/RESTRICT reads an empty bucket as "this parent has no children". Without a
-// per-column probe, a TEXT key against a BIGINT parent would silently match nothing instead.
-TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_instead_of_missing") {
-    core::pmr::otterbrix_resource resource;
-
-    std::vector<column_definition_t> cols;
-    cols.emplace_back("id", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_otbx("typepair"));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_otbx("key_type"));
     REQUIRE_FALSE(ts.construction_failed());
 
     {
@@ -171,16 +67,13 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_i
     table_storage_adapter_t adapter(ts.table(), &resource);
 
     std::pmr::vector<complex_logical_type> ktypes{&resource};
-    ktypes.emplace_back(logical_type::TEXT);
-    data_chunk_t keys(&resource, ktypes, 2);
-    keys.set_cardinality(2);
-    keys.set_value(0, 0, std::string_view{"10"});
-    keys.set_value(0, 1, std::string_view{"nope"});
+    ktypes.emplace_back(logical_type::INTEGER);
+    data_chunk_t keys(&resource, ktypes, 1);
+    keys.set_cardinality(1);
+    keys.set_value(0, 0, int32_t{20});
 
-    auto kidx = key_indices(&resource, {0});
+    std::pmr::vector<std::uint64_t> kidx{&resource};
+    kidx.push_back(0);
     auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
-
-    INFO("a key type the stored key type cannot be compared against is an unevaluable "
-         "request, and an empty bucket would read as 'this parent has no children'");
     REQUIRE(res_r.has_error());
 }

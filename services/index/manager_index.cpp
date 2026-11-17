@@ -1521,11 +1521,11 @@ namespace services::index {
             // Returns an empty list rather than aborting: refusing the database over one unreadable note is worse.
             return pending;
         }
-        unsigned long long table_oid = 0;
-        unsigned long long index_oid = 0;
+        std::uint32_t table_oid = 0;
+        std::uint32_t index_oid = 0;
         while (in >> table_oid >> index_oid) {
-            pending.push_back(pending_index_rebuild_t{static_cast<components::catalog::oid_t>(table_oid),
-                                                      static_cast<components::catalog::oid_t>(index_oid)});
+            pending.push_back(
+                pending_index_rebuild_t{components::catalog::oid_t{table_oid}, components::catalog::oid_t{index_oid}});
         }
         return pending;
     }

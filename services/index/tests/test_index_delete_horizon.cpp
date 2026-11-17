@@ -46,8 +46,8 @@ namespace {
 
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
-    constexpr components::catalog::oid_t kTableOid = 17400;
-    constexpr components::catalog::oid_t kIndexOid = 17401;
+    constexpr components::catalog::oid_t kTableOid{17400};
+    constexpr components::catalog::oid_t kIndexOid{17401};
 
     // Copied from test_index_agent_reaping.cpp deliberately: a shared helper header for two test
     // files would be the start of a test framework nobody asked for.

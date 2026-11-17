@@ -3,6 +3,7 @@
 #include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -518,6 +519,254 @@ TEST_CASE("name_resolution::type_name::a_type_is_created_and_altered_in_its_sche
     run_ok(db, "DROP TABLE shop.moods;");
     run_ok(db, "DROP TYPE shop.mood;");
     CHECK(run_ok(db, "SELECT typname FROM pg_catalog.pg_type WHERE typname = 'mood';")->size() == 0);
+}
+
+// One pg_type row per built-in type, under PostgreSQL 18's oid and typname (pg_type.dat); otterbrix's own in 8000-.
+TEST_CASE("name_resolution::type_name::builtin_pg_type_rows") {
+    database_t db(integration_fixture_path("test_name_resolution/builtin_pg_type_rows"));
+    struct builtin_t {
+        std::uint32_t oid;
+        std::string typname;
+        std::int16_t typlen;
+        bool typbyval;
+        std::string typcategory;
+        std::uint32_t typarray;
+    };
+    const std::vector<builtin_t> builtins = {
+        {16, "bool", 1, true, "B", 1000},          {17, "bytea", -1, false, "U", 1001},
+        {20, "int8", 8, true, "N", 1016},          {21, "int2", 2, true, "N", 1005},
+        {23, "int4", 4, true, "N", 1007},          {25, "text", -1, false, "S", 1009},
+        {26, "oid", 4, true, "N", 1028},           {700, "float4", 4, true, "N", 1021},
+        {701, "float8", 8, true, "N", 1022},       {1082, "date", 4, true, "D", 1182},
+        {1083, "time", 8, true, "D", 1183},        {1114, "timestamp", 8, true, "D", 1115},
+        {1184, "timestamptz", 8, true, "D", 1185}, {1186, "interval", 16, false, "T", 1187},
+        {1266, "timetz", 12, false, "D", 1270},    {1700, "numeric", -1, false, "N", 1231},
+        {2950, "uuid", 16, false, "U", 2951},      {8000, "int1", 1, true, "N", 8050},
+        {8001, "uint1", 1, true, "N", 8051},       {8002, "uint2", 2, true, "N", 8052},
+        {8003, "uint4", 4, true, "N", 8053},       {8004, "uint8", 8, true, "N", 8054},
+        {8005, "int16", 16, false, "N", 8055},     {8006, "uint16", 16, false, "N", 8056},
+    };
+    const std::string columns = "SELECT typname, typlen, typbyval, typtype, typcategory, typdelim, typrelid, typelem, "
+                                "typarray, typbasetype, typtypmod FROM pg_catalog.pg_type WHERE oid = ";
+    for (const auto& builtin : builtins) {
+        INFO("pg_type.oid " << builtin.oid);
+        auto cursor = run_ok(db, columns + std::to_string(builtin.oid) + ";");
+        REQUIRE(cursor->size() == 1);
+        const auto& row = cursor->chunks().front();
+        CHECK(row.get_value<std::string_view>(0, 0) == builtin.typname);
+        CHECK(row.get_value<std::int16_t>(1, 0) == builtin.typlen);
+        CHECK(row.get_value<bool>(2, 0) == builtin.typbyval);
+        CHECK(row.get_value<std::string_view>(3, 0) == "b");
+        CHECK(row.get_value<std::string_view>(4, 0) == builtin.typcategory);
+        CHECK(row.get_value<std::string_view>(5, 0) == ",");
+        CHECK(row.get_value<std::uint32_t>(6, 0) == 0);
+        CHECK(row.get_value<std::uint32_t>(7, 0) == 0);
+        CHECK(row.get_value<std::uint32_t>(8, 0) == builtin.typarray);
+        CHECK(row.get_value<std::uint32_t>(9, 0) == 0);
+        CHECK(row.get_value<std::int32_t>(10, 0) == -1);
+
+        auto array_cursor = run_ok(db, columns + std::to_string(builtin.typarray) + ";");
+        REQUIRE(array_cursor->size() == 1);
+        const auto& array_row = array_cursor->chunks().front();
+        CHECK(array_row.get_value<std::string_view>(0, 0) == "_" + builtin.typname);
+        CHECK(array_row.get_value<std::int16_t>(1, 0) == -1);
+        CHECK_FALSE(array_row.get_value<bool>(2, 0));
+        CHECK(array_row.get_value<std::string_view>(3, 0) == "b");
+        CHECK(array_row.get_value<std::string_view>(4, 0) == "A");
+        CHECK(array_row.get_value<std::uint32_t>(7, 0) == builtin.oid);
+        CHECK(array_row.get_value<std::uint32_t>(8, 0) == 0);
+    }
+    // Each built-in type and its array type, and each system table's row type and its array type.
+    CHECK(run_ok(db, "SELECT oid FROM pg_catalog.pg_type WHERE typnamespace = 11;")->size() ==
+          2 * builtins.size() + 2 * components::catalog::all_system_tables().size());
+    auto pg_class_row = run_ok(db,
+                               "SELECT t.oid, t.typtype FROM pg_catalog.pg_class c JOIN pg_catalog.pg_type t "
+                               "ON c.reltype = t.oid AND t.typrelid = c.oid WHERE c.relname = 'pg_class';");
+    REQUIRE(pg_class_row->size() == 1);
+    CHECK(pg_class_row->chunks().front().get_value<std::uint32_t>(0, 0) == 83);
+    CHECK(pg_class_row->chunks().front().get_value<std::string_view>(1, 0) == "c");
+}
+
+// CREATE TYPE writes the type and its array type "_name"; DROP TYPE takes both.
+TEST_CASE("name_resolution::type_name::user_type_array_type") {
+    database_t db(integration_fixture_path("test_name_resolution/user_type_array_type"));
+    run_ok(db, "CREATE TYPE mood AS ENUM ('sad', 'happy');");
+    run_ok(db, "CREATE TYPE pair_t AS (a BIGINT, b TEXT);");
+    for (const std::string name : {"mood", "pair_t"}) {
+        INFO(name);
+        auto cursor = run_ok(db,
+                             "SELECT a.typname, a.typcategory, a.typarray FROM pg_catalog.pg_type t "
+                             "JOIN pg_catalog.pg_type a ON t.typarray = a.oid AND a.typelem = t.oid "
+                             "WHERE t.typname = '" +
+                                 name + "';");
+        REQUIRE(cursor->size() == 1);
+        const auto& row = cursor->chunks().front();
+        CHECK(row.get_value<std::string_view>(0, 0) == "_" + name);
+        CHECK(row.get_value<std::string_view>(1, 0) == "A");
+        CHECK(row.get_value<std::uint32_t>(2, 0) == 0);
+    }
+    // `_mood` is a type (mood[]), but part of mood: it is dropped only with it.
+    auto dropped_array = db.run("DROP TYPE _mood;");
+    REQUIRE(dropped_array->is_error());
+    CHECK(dropped_array->get_error().type == core::error_code_t::dependent_objects_still_exist);
+    run_ok(db, "DROP TYPE mood;");
+    CHECK(run_ok(db, "SELECT oid FROM pg_catalog.pg_type WHERE typname = '_mood';")->size() == 0);
+    CHECK(run_ok(db, "SELECT oid FROM pg_catalog.pg_type WHERE typname = '_pair_t';")->size() == 1);
+}
+
+// An enum's labels are pg_enum rows, numbered 1, 2, ... in CREATE order; DROP TYPE takes them. pg_range is empty.
+TEST_CASE("name_resolution::type_name::pg_enum_and_pg_range") {
+    database_t db(integration_fixture_path("test_name_resolution/pg_enum_and_pg_range"));
+    run_ok(db, "CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');");
+    auto cursor = run_ok(db,
+                         "SELECT e.enumlabel, e.enumsortorder FROM pg_catalog.pg_enum e "
+                         "JOIN pg_catalog.pg_type t ON e.enumtypid = t.oid WHERE t.typname = 'mood' "
+                         "ORDER BY e.enumsortorder;");
+    REQUIRE(cursor->size() == 3);
+    const auto& chunk = cursor->chunks().front();
+    const std::vector<std::string> labels = {"sad", "ok", "happy"};
+    for (std::size_t row = 0; row < labels.size(); ++row) {
+        CHECK(chunk.get_value<std::string_view>(0, row) == labels[row]);
+        CHECK(static_cast<std::int64_t>(chunk.get_value<float>(1, row)) == static_cast<std::int64_t>(row + 1));
+    }
+    run_ok(db, "DROP TYPE mood;");
+    CHECK(run_ok(db, "SELECT oid FROM pg_catalog.pg_enum;")->size() == 0);
+    CHECK(run_ok(db, "SELECT rngtypid FROM pg_catalog.pg_range;")->size() == 0);
+}
+
+// A table or a view has a row type: a composite pg_type row named after it, its array type "_name", and
+// pg_class.reltype pointing at it. An index has none; a composite type's reltype is its own pg_type row.
+TEST_CASE("name_resolution::type_name::relation_row_types") {
+    database_t db(integration_fixture_path("test_name_resolution/relation_row_types"));
+    run_ok(db, "CREATE TABLE items (id BIGINT);");
+    run_ok(db, "CREATE VIEW items_v AS SELECT id FROM items;");
+    run_ok(db, "CREATE INDEX items_id ON items (id);");
+    run_ok(db, "CREATE TYPE pair_t AS (a BIGINT);");
+    for (const std::string relname : {"items", "items_v", "pair_t"}) {
+        INFO(relname);
+        auto cursor = run_ok(db,
+                             "SELECT t.typtype, t.typcategory, a.typname FROM pg_catalog.pg_class c "
+                             "JOIN pg_catalog.pg_type t ON c.reltype = t.oid AND t.typrelid = c.oid "
+                             "JOIN pg_catalog.pg_type a ON t.typarray = a.oid WHERE c.relname = '" +
+                                 relname + "';");
+        REQUIRE(cursor->size() == 1);
+        const auto& row = cursor->chunks().front();
+        CHECK(row.get_value<std::string_view>(0, 0) == "c");
+        CHECK(row.get_value<std::string_view>(1, 0) == "C");
+        CHECK(row.get_value<std::string_view>(2, 0) == "_" + relname);
+    }
+    auto index = run_ok(db, "SELECT reltype FROM pg_catalog.pg_class WHERE relname = 'items_id';");
+    REQUIRE(index->size() == 1);
+    CHECK(index->chunks().front().get_value<std::uint32_t>(0, 0) == 0);
+
+    // The row type holds the name in pg_type, as in PostgreSQL.
+    CHECK(db.run("CREATE TYPE items AS ENUM ('a');")->is_error());
+
+    run_ok(db, "DROP TABLE items CASCADE;");
+    CHECK(run_ok(db,
+                 "SELECT oid FROM pg_catalog.pg_type WHERE typname = 'items' OR typname = '_items' OR "
+                 "typname = 'items_v' OR typname = '_items_v';")
+              ->size() == 0);
+}
+
+// `_int4` names int4's array type, as int4[] does.
+TEST_CASE("name_resolution::type_name::array_type_name_as_column_type") {
+    database_t db(integration_fixture_path("test_name_resolution/array_type_name_as_column_type"));
+    run_ok(db, "CREATE TABLE arrays (a _int4, b int4[]);");
+    auto cursor = run_ok(db,
+                         "SELECT a.atttypspec FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c "
+                         "ON a.attrelid = c.oid WHERE c.relname = 'arrays' ORDER BY a.attnum;");
+    REQUIRE(cursor->size() == 2);
+    const auto& chunk = cursor->chunks().front();
+    CHECK(chunk.get_value<std::string_view>(0, 0) == "LIST(int4)");
+    CHECK(chunk.get_value<std::string_view>(0, 1) == "LIST(int4)");
+}
+
+// CREATE TYPE ... AS ENUM is typtype 'e'; a composite is 'c', its typrelid the pg_class row of its attributes.
+TEST_CASE("name_resolution::type_name::user_pg_type_rows") {
+    database_t db(integration_fixture_path("test_name_resolution/user_pg_type_rows"));
+    run_ok(db, "CREATE TYPE mood AS ENUM ('sad', 'happy');");
+    run_ok(db, "CREATE TYPE pair_t AS (a BIGINT, b TEXT);");
+    {
+        auto cursor = run_ok(db,
+                             "SELECT typtype, typcategory, typlen, typbyval, typrelid FROM pg_catalog.pg_type "
+                             "WHERE typname = 'mood';");
+        REQUIRE(cursor->size() == 1);
+        const auto& row = cursor->chunks().front();
+        CHECK(row.get_value<std::string_view>(0, 0) == "e");
+        CHECK(row.get_value<std::string_view>(1, 0) == "E");
+        CHECK(row.get_value<std::int16_t>(2, 0) == 4);
+        CHECK(row.get_value<bool>(3, 0));
+        CHECK(row.get_value<std::uint32_t>(4, 0) == 0);
+    }
+    {
+        auto cursor = run_ok(db,
+                             "SELECT t.typtype, t.typcategory, c.relkind FROM pg_catalog.pg_type t "
+                             "JOIN pg_catalog.pg_class c ON t.typrelid = c.oid WHERE t.typname = 'pair_t';");
+        REQUIRE(cursor->size() == 1);
+        const auto& row = cursor->chunks().front();
+        CHECK(row.get_value<std::string_view>(0, 0) == "c");
+        CHECK(row.get_value<std::string_view>(1, 0) == "C");
+        CHECK(row.get_value<std::string_view>(2, 0) == "c");
+    }
+}
+
+// What psycopg2 asks at connect (SQLAlchemy's psycopg2 dialect looks up hstore): no hstore, no rows, no error.
+TEST_CASE("name_resolution::type_name::psycopg2_hstore_lookup") {
+    database_t db(integration_fixture_path("test_name_resolution/psycopg2_hstore_lookup"));
+    CHECK(run_ok(db,
+                 "SELECT t.oid, typarray FROM pg_type t JOIN pg_namespace ns "
+                 "ON typnamespace = ns.oid WHERE typname = 'hstore';")
+              ->size() == 0);
+}
+
+// A column takes the type its name resolves to, whether the name is a pg_type row (int8, timestamptz) or an alias.
+TEST_CASE("name_resolution::type_name::column_atttypid_by_type_name") {
+    database_t db(integration_fixture_path("test_name_resolution/column_atttypid_by_type_name"));
+    run_ok(db, "CREATE TABLE typed (a int8, b name, c timestamptz, d utinyint, e integer);");
+    auto cursor = run_ok(db,
+                         "SELECT a.atttypid FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c "
+                         "ON a.attrelid = c.oid WHERE c.relname = 'typed' ORDER BY a.attnum;");
+    const std::vector<std::uint32_t> expected = {20, 25, 1184, 8001, 23};
+    REQUIRE(cursor->size() == expected.size());
+    const auto& chunk = cursor->chunks().front();
+    for (std::size_t row = 0; row < expected.size(); ++row) {
+        INFO("attnum " << row + 1);
+        CHECK(chunk.get_value<std::uint32_t>(0, row) == expected[row]);
+    }
+}
+
+// pg_attribute records a column's type as PostgreSQL does: numeric(p,s) is numeric with atttypmod ((p << 16) | s) + 4,
+// an array column is its element's array type with attndims dimensions.
+TEST_CASE("name_resolution::type_name::column_atttypmod_and_attndims") {
+    database_t db(integration_fixture_path("test_name_resolution/column_atttypmod_and_attndims"));
+    run_ok(db, "CREATE TABLE shaped (a numeric(10,2), b int4[], c int4[3], d text, e numeric(10,2)[], f int8[][]);");
+    auto cursor = run_ok(db,
+                         "SELECT a.atttypid, a.atttypmod, a.attndims FROM pg_catalog.pg_attribute a "
+                         "JOIN pg_catalog.pg_class c ON a.attrelid = c.oid WHERE c.relname = 'shaped' "
+                         "ORDER BY a.attnum;");
+    struct expected_t {
+        std::uint32_t atttypid;
+        std::int32_t atttypmod;
+        std::int16_t attndims;
+    };
+    constexpr std::int32_t numeric_10_2 = ((10 << 16) | 2) + 4;
+    const std::vector<expected_t> expected = {
+        {1700, numeric_10_2, 0},
+        {1007, -1, 1},
+        {1007, -1, 1},
+        {25, -1, 0},
+        {1231, numeric_10_2, 1},
+        {1016, -1, 2},
+    };
+    REQUIRE(cursor->size() == expected.size());
+    const auto& chunk = cursor->chunks().front();
+    for (std::size_t row = 0; row < expected.size(); ++row) {
+        INFO("attnum " << row + 1);
+        CHECK(chunk.get_value<std::uint32_t>(0, row) == expected[row].atttypid);
+        CHECK(chunk.get_value<std::int32_t>(1, row) == expected[row].atttypmod);
+        CHECK(chunk.get_value<std::int16_t>(2, row) == expected[row].attndims);
+    }
 }
 
 TEST_CASE("name_resolution::type_name::type_name_over_three_parts_rejected") {

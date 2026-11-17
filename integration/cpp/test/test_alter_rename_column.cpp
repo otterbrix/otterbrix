@@ -44,7 +44,7 @@ namespace {
             const std::string oid_dir = entry.path().parent_path().filename().string();
             char* end = nullptr;
             const unsigned long oid = std::strtoul(oid_dir.c_str(), &end, 10);
-            if (end == nullptr || *end != '\0' || oid < FIRST_USER_OID) {
+            if (end == nullptr || *end != '\0' || oid < static_cast<unsigned>(FIRST_USER_OID)) {
                 continue;
             }
             found = entry.path();
@@ -55,7 +55,7 @@ namespace {
     struct offline_walk_t {
         otterbrix_test::walk_report_t report;
         std::vector<std::string> columns;
-        std::vector<std::uint32_t> attoids;
+        std::vector<components::catalog::oid_t> attoids;
     };
 
     offline_walk_t walk_offline(const std::filesystem::path& otbx, std::pmr::memory_resource* resource) {
@@ -293,8 +293,8 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
     REQUIRE_FALSE(before.report.root_data.empty());
     INFO("durable attoids: " << before.attoids[0] << ", " << before.attoids[1]);
     REQUIRE(before.attoids.size() == 2);
-    CHECK(before.attoids[0] != 0);
-    CHECK(before.attoids[1] != 0);
+    CHECK(before.attoids[0] != components::catalog::INVALID_OID);
+    CHECK(before.attoids[1] != components::catalog::INVALID_OID);
     CHECK(before.attoids[0] != before.attoids[1]);
 
     INFO("phase 2: a second committed round, then RENAME COLUMN, then KILL before any checkpoint");
@@ -476,7 +476,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_add_column_are
     CHECK(after.attoids[0] == before.attoids[0]);
     CHECK(after.attoids[1] == before.attoids[1]);
     INFO("attoid of the materialized ADD COLUMN: " << after.attoids[2]);
-    CHECK(after.attoids[2] != 0);
+    CHECK(after.attoids[2] != components::catalog::INVALID_OID);
     CHECK(after.attoids[2] != after.attoids[0]);
     CHECK(after.attoids[2] != after.attoids[1]);
 

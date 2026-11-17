@@ -368,11 +368,11 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
 
     const session_id_t orphan_session{};
     txn_accumulate_payload_t payload;
-    payload.base_appends.push_back(components::table::dml_append_range_t{4242, 0, 7});
-    payload.base_deletes.push_back(components::table::dml_delete_range_t{4242, 99});
-    payload.pg_catalog_appends.push_back(components::pg_catalog_append_range_t{1259, 0, 1});
-    payload.dropped_storage_oids.push_back(4243);
-    payload.created_storage_oids.push_back(4244);
+    payload.base_appends.push_back(components::table::dml_append_range_t{components::catalog::oid_t{4242}, 0, 7});
+    payload.base_deletes.push_back(components::table::dml_delete_range_t{components::catalog::oid_t{4242}, 99});
+    payload.pg_catalog_appends.push_back(components::pg_catalog_append_range_t{components::catalog::oid_t{1259}, 0, 1});
+    payload.dropped_storage_oids.push_back(components::catalog::oid_t{4243});
+    payload.created_storage_oids.push_back(components::catalog::oid_t{4244});
     REQUIRE_FALSE(payload.empty());
 
     const uint64_t no_such_transaction = 1;

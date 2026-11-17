@@ -196,6 +196,8 @@ namespace components::operators {
 
         // The rows a write changed; the executor reads it from the plan root of an INSERT / UPDATE / DELETE.
         [[nodiscard]] uint64_t written() const noexcept { return written_; }
+        // Of an INSERT, the first value its storage generated for an auto-increment column; 0 when it generated none.
+        [[nodiscard]] uint64_t generated_id() const noexcept { return generated_id_; }
 
         // Covers per-run streaming state reset_for_reuse() doesn't reach (a source's cursor, a
         // sink's built accumulator); the recursive-CTE driver calls both on every node per pass.
@@ -269,6 +271,7 @@ namespace components::operators {
         operator_write_data_ptr modified_{nullptr};
         operator_data_ptr constraint_input_{nullptr};
         uint64_t written_ = 0;
+        uint64_t generated_id_ = 0;
 
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);

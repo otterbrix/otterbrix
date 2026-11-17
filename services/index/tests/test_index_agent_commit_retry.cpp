@@ -45,8 +45,8 @@ namespace {
 
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
-    constexpr components::catalog::oid_t kTableOid = 17400;
-    constexpr components::catalog::oid_t kIndexOid = 17401;
+    constexpr components::catalog::oid_t kTableOid{17400};
+    constexpr components::catalog::oid_t kIndexOid{17401};
 
     std::filesystem::path fresh_index_root(const char* name) {
         const std::filesystem::path path{services::index::tests::index_fixture_path(name)};

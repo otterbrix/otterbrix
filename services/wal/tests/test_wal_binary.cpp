@@ -68,7 +68,7 @@ static std::pmr::vector<components::types::complex_logical_type> wal_test_types(
 }
 
 // WAL records key by table_oid (4 bytes), not (database, collection) strings.
-constexpr components::catalog::oid_t kTestTableOid = 16500;
+constexpr components::catalog::oid_t kTestTableOid{16500};
 
 TEST_CASE("wal_binary::encode_decode_insert") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);

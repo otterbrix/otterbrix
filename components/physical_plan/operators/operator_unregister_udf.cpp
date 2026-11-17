@@ -31,7 +31,7 @@ namespace components::operators {
                                                          std::string function_name,
                                                          std::pmr::vector<types::complex_logical_type> inputs,
                                                          components::catalog::drop_behavior_t behavior,
-                                                         std::uint32_t schema_oid)
+                                                         components::catalog::oid_t schema_oid)
         : read_only_operator_t(resource, std::move(log), operator_type::unregister_udf)
         , function_name_(std::move(function_name))
         , inputs_(std::move(inputs))

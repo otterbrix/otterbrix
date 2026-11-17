@@ -91,7 +91,7 @@ namespace {
         std::atomic<bool> released{false};
 
         bool hold(catalog::oid_t table_oid, uint64_t /*cursor_id*/) override {
-            if (static_cast<uint32_t>(table_oid) < static_cast<uint32_t>(catalog::FIRST_USER_OID)) {
+            if (table_oid < catalog::FIRST_USER_OID) {
                 return false;
             }
             reached.store(true, std::memory_order_release);

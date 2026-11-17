@@ -146,7 +146,7 @@ namespace services::disk::test_probe {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!chunk.data[0].is_null(i)) {
                     out.found = true;
-                    out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                    out.oid = chunk.data[0].template get_value<catalog::oid_t>(i);
                     return out;
                 }
             }
@@ -190,7 +190,7 @@ namespace services::disk::test_probe {
                     if (chunk.data[0].is_null(i))
                         continue;
                     out.found = true;
-                    out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                    out.oid = chunk.data[0].template get_value<catalog::oid_t>(i);
                     out.name = name;
                     if (!chunk.data[3].is_null(i)) {
                         const auto ks = chunk.data[3].template get_value<std::string_view>(i);
@@ -234,16 +234,13 @@ namespace services::disk::test_probe {
                     continue;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                     cc_row_t row;
-                    row.attoid = chunk.data[1].is_null(i)
-                                     ? catalog::INVALID_OID
-                                     : static_cast<catalog::oid_t>(chunk.data[1].template get_value<std::uint32_t>(i));
+                    row.attoid = chunk.data[1].is_null(i) ? catalog::INVALID_OID
+                                                          : chunk.data[1].template get_value<catalog::oid_t>(i);
                     if (!chunk.data[2].is_null(i)) {
                         row.attname = std::string(chunk.data[2].template get_value<std::string_view>(i));
                     }
-                    row.atttypid =
-                        chunk.data[3].is_null(i)
-                            ? catalog::INVALID_OID
-                            : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                    row.atttypid = chunk.data[3].is_null(i) ? catalog::INVALID_OID
+                                                            : chunk.data[3].template get_value<catalog::oid_t>(i);
                     if (!chunk.data[4].is_null(i)) {
                         row.atttypspec = std::string(chunk.data[4].template get_value<std::string_view>(i));
                     }
@@ -310,12 +307,12 @@ namespace services::disk::test_probe {
                             continue;
                     }
                     probe_column_info_t info;
-                    info.attoid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                    info.attoid = chunk.data[0].template get_value<catalog::oid_t>(i);
                     if (!chunk.data[2].is_null(i)) {
                         info.attname = std::string(chunk.data[2].template get_value<std::string_view>(i));
                     }
                     if (!chunk.data[3].is_null(i))
-                        info.atttypid = static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                        info.atttypid = chunk.data[3].template get_value<catalog::oid_t>(i);
                     info.attnum = chunk.data[4].template get_value<std::int32_t>(i);
                     info.attnotnull = !chunk.data[5].is_null(i) && chunk.data[5].template get_value<bool>(i);
                     info.atthasdefault = !chunk.data[6].is_null(i) && chunk.data[6].template get_value<bool>(i);
@@ -365,7 +362,7 @@ namespace services::disk::test_probe {
                     if (chunk.data[0].is_null(i))
                         continue;
                     out.found = true;
-                    out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                    out.oid = chunk.data[0].template get_value<catalog::oid_t>(i);
                     out.name = name;
                     if (!chunk.data[3].is_null(i)) {
                         out.typdefspec = std::string(chunk.data[3].template get_value<std::string_view>(i));
@@ -398,7 +395,7 @@ namespace services::disk::test_probe {
                     const auto kind_s = chunk.data[3].template get_value<std::string_view>(i);
                     if (kind_s.empty() || kind_s.front() != catalog::relkind::composite_type)
                         continue;
-                    composite_oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                    composite_oid = chunk.data[0].template get_value<catalog::oid_t>(i);
                     stop = true;
                     break;
                 }
@@ -430,7 +427,7 @@ namespace services::disk::test_probe {
                         r.attname = std::string(chunk.data[2].template get_value<std::string_view>(i));
                     }
                     if (!chunk.data[3].is_null(i))
-                        r.atttypid = static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                        r.atttypid = chunk.data[3].template get_value<catalog::oid_t>(i);
                     r.attnum = chunk.data[4].template get_value<std::int32_t>(i);
                     if (!chunk.data[8].is_null(i)) {
                         r.atttypspec = std::string(chunk.data[8].template get_value<std::string_view>(i));
@@ -498,7 +495,7 @@ namespace services::disk::test_probe {
                 if (chunk.data[0].is_null(i))
                     continue;
                 out.found = true;
-                out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                out.oid = chunk.data[0].template get_value<catalog::oid_t>(i);
                 out.name = name;
                 if (!chunk.data[3].is_null(i))
                     out.pronargs = chunk.data[3].template get_value<std::int32_t>(i);

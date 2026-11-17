@@ -31,8 +31,7 @@ namespace {
         std::atomic<bool> released{false};
 
         bool hold(components::catalog::oid_t table_oid) override {
-            if (!armed.load(std::memory_order_acquire) ||
-                static_cast<uint32_t>(table_oid) < static_cast<uint32_t>(components::catalog::FIRST_USER_OID)) {
+            if (!armed.load(std::memory_order_acquire) || table_oid < components::catalog::FIRST_USER_OID) {
                 return false;
             }
             reached.store(true, std::memory_order_release);

@@ -10,20 +10,21 @@
 using namespace components::table;
 
 TEST_CASE("components::table::column_definition::a_disagreeing_attoid_restamp_is_refused_not_applied") {
+    using components::types::oid_t;
     column_definition_t col("price", components::types::logical_type::DOUBLE);
-    REQUIRE(col.attoid() == 0);
+    REQUIRE(col.attoid() == oid_t{});
 
-    col.set_attoid(42);
-    REQUIRE(col.attoid() == 42);
+    col.set_attoid(oid_t{42});
+    REQUIRE(col.attoid() == oid_t{42});
 
     // Idempotent re-stamp: legal, and already covered by components/catalog/tests/test_oids.cpp.
-    col.set_attoid(42);
-    REQUIRE(col.attoid() == 42);
+    col.set_attoid(oid_t{42});
+    REQUIRE(col.attoid() == oid_t{42});
 
     // Disagreeing re-stamp: refused, first stamp (42) wins.
-    col.set_attoid(43);
+    col.set_attoid(oid_t{43});
     INFO("attoid after a disagreeing re-stamp: " << col.attoid());
-    REQUIRE(col.attoid() == 42);
+    REQUIRE(col.attoid() == oid_t{42});
 }
 
 // vector_t copies are shallow, and a column_definition_t is sent between actors: the copy must own its default.

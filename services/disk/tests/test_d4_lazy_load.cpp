@@ -110,7 +110,7 @@ TEST_CASE("services::disk::d4::all_system_tables_loaded_after_bootstrap") {
 TEST_CASE("services::disk::d4::user_table_not_in_storages_at_start") {
     fixture fx;
     // An unallocated user oid (FIRST_USER_OID would be the next allocated), so definitely not loaded.
-    REQUIRE_FALSE(fx.boot.has_storage(catalog::oid_t{FIRST_USER_OID + 1000}));
+    REQUIRE_FALSE(fx.boot.has_storage(catalog::oid_t{static_cast<unsigned>(FIRST_USER_OID) + 1000}));
 }
 
 TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
@@ -196,8 +196,8 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
 TEST_CASE("services::disk::d4::peek_checkpoint_wal_id_unknown_returns_zero") {
     fixture fx;
     // "No sidecar" is the only state that still answers 0; one that exists but can't be read reports an error.
-    auto v =
-        fx.boot.peek_checkpoint_wal_id_from_disk(catalog::oid_t{FIRST_USER_OID + 9000}, well_known_oid::main_database);
+    auto v = fx.boot.peek_checkpoint_wal_id_from_disk(catalog::oid_t{static_cast<unsigned>(FIRST_USER_OID) + 9000},
+                                                      well_known_oid::main_database);
     REQUIRE_FALSE(v.has_error());
     REQUIRE(v.value() == services::wal::id_t{0});
 }

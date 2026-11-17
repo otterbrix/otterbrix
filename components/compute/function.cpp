@@ -436,23 +436,23 @@ namespace components::compute {
         return functions_.erase(uid) > 0;
     }
 
-    void function_registry_t::set_schema(function_uid uid, std::uint32_t schema_oid) { schemas_[uid] = schema_oid; }
+    void function_registry_t::set_schema(function_uid uid, types::oid_t schema_oid) { schemas_[uid] = schema_oid; }
 
-    std::uint32_t function_registry_t::schema_of(function_uid uid) const noexcept {
+    types::oid_t function_registry_t::schema_of(function_uid uid) const noexcept {
         const auto it = schemas_.find(uid);
-        return it == schemas_.end() ? 0 : it->second;
+        return it == schemas_.end() ? types::oid_t{} : it->second;
     }
 
     bool function_registry_t::reaches(const function_scope_t& scope, function_uid uid) const noexcept {
         if (is_builtin(uid)) {
             return scope.builtins;
         }
-        return scope.schema_oid != 0 && schema_of(uid) == scope.schema_oid;
+        return scope.schema_oid != types::oid_t{} && schema_of(uid) == scope.schema_oid;
     }
 
     function_uid function_registry_t::find_overload(std::string_view name,
                                                     const std::pmr::vector<types::complex_logical_type>& inputs,
-                                                    std::uint32_t schema_oid) const {
+                                                    types::oid_t schema_oid) const {
         for (const auto& [uid, func] : functions_) {
             if (is_builtin(uid) || !func || func->name() != name || schema_of(uid) != schema_oid) {
                 continue;

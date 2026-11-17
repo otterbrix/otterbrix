@@ -57,6 +57,28 @@ namespace components::operators {
                 if (entry.namespace_oid != catalog::INVALID_OID) {
                     entry.found_place =
                         catalog::place_t{found.value().connection, found.value().database, completed.schema};
+                    continue;
+                }
+                const auto missing = entry.database_oid == catalog::INVALID_OID ? catalog::name_level_t::database
+                                                                                : catalog::name_level_t::schema;
+                catalog::place_t spelled;
+                if (!catalog::place_spelled_by_dots(entry.written.connection.t,
+                                                    entry.written.database.t,
+                                                    entry.written.schema.t,
+                                                    missing,
+                                                    &spelled)) {
+                    continue;
+                }
+                auto dotted = co_await lookup_schema(resource_, ctx, spelled);
+                if (dotted.has_error()) {
+                    set_error(dotted.error());
+                    co_return;
+                }
+                if (dotted.value().namespace_oid != catalog::INVALID_OID) {
+                    entry.database_oid = dotted.value().database_oid;
+                    entry.namespace_oid = dotted.value().namespace_oid;
+                    entry.found_place =
+                        catalog::place_t{dotted.value().connection, dotted.value().database, spelled.schema};
                 }
             }
         }

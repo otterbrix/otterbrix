@@ -13,6 +13,7 @@ namespace components::catalog {
     namespace deptype {
         inline constexpr char normal = 'n';
         inline constexpr char auto_dep = 'a';
+        inline constexpr char internal = 'i'; // part of the referenced object: dropped with it, never alone
 
         inline constexpr bool blocks_restrict(char dt) noexcept { return dt == normal; }
     } // namespace deptype

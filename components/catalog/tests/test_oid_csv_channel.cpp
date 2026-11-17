@@ -7,6 +7,16 @@
 
 using namespace components::catalog;
 
+namespace {
+    std::vector<oid_t> oids_of(std::initializer_list<std::uint32_t> raw) {
+        std::vector<oid_t> out;
+        for (const auto value : raw) {
+            out.emplace_back(value);
+        }
+        return out;
+    }
+} // namespace
+
 // Parses pg_constraint.conkey/confkey. Every downstream guard checks such a list against
 // itself, so a token silently dropped on the way in still passes every guard and the engine
 // enforces a different constraint than the one written; `ok` is the only place that can surface.
@@ -15,7 +25,7 @@ TEST_CASE("parse_oid_csv: a well-formed list reads back whole and clean", "[oid_
     bool ok = false;
     const auto out = parse_oid_csv("7,11,13", ok);
     REQUIRE(ok);
-    REQUIRE(out == std::vector<oid_t>{7, 11, 13});
+    REQUIRE(out == oids_of({7, 11, 13}));
 }
 
 TEST_CASE("parse_oid_csv: an empty string is empty, not unreadable", "[oid_csv]") {
@@ -29,7 +39,7 @@ TEST_CASE("parse_oid_csv: a token that is not a number is reported, not dropped"
     bool ok = true;
     const auto out = parse_oid_csv("7,zz,13", ok);
     INFO("the surviving tokens are a shorter, DIFFERENT key — nothing downstream can see the loss");
-    REQUIRE(out == std::vector<oid_t>{7, 13});
+    REQUIRE(out == oids_of({7, 13}));
     REQUIRE_FALSE(ok);
 }
 
@@ -47,7 +57,7 @@ TEST_CASE("parse_oid_csv: an empty token between commas is reported", "[oid_csv]
     bool ok = true;
     const auto out = parse_oid_csv("7,,13", ok);
     REQUIRE_FALSE(ok);
-    REQUIRE(out == std::vector<oid_t>{7, 13});
+    REQUIRE(out == oids_of({7, 13}));
 }
 
 TEST_CASE("parse_oid_csv: a list that lost EVERY token is empty AND unreadable", "[oid_csv]") {
@@ -58,7 +68,8 @@ TEST_CASE("parse_oid_csv: a list that lost EVERY token is empty AND unreadable",
 }
 
 TEST_CASE("parse_oid_csv: everything encode_oid_csv writes reads back ok", "[oid_csv]") {
-    for (const std::vector<oid_t>& oids : std::vector<std::vector<oid_t>>{{}, {0}, {16384}, {1, 2, 3, 4, 5}}) {
+    for (const std::vector<oid_t>& oids :
+         std::vector<std::vector<oid_t>>{oids_of({}), oids_of({0}), oids_of({16384}), oids_of({1, 2, 3, 4, 5})}) {
         bool ok = false;
         const auto text = encode_oid_csv(oids);
         INFO("encoded: '" << text << "'");
@@ -74,14 +85,14 @@ TEST_CASE("parse_oid_csv: a list cut off at a comma is reported, not silently sh
     bool ok = true;
     const auto out = parse_oid_csv("7,11,", ok);
     INFO("a two-column key was written; a two-column key reads back — but the third is gone");
-    REQUIRE(out == std::vector<oid_t>{7, 11});
+    REQUIRE(out == oids_of({7, 11}));
     REQUIRE_FALSE(ok);
 }
 
 TEST_CASE("parse_oid_csv: a lone trailing comma is an empty token, not an empty list", "[oid_csv]") {
     bool ok = true;
     const auto out = parse_oid_csv("7,", ok);
-    REQUIRE(out == std::vector<oid_t>{7});
+    REQUIRE(out == oids_of({7}));
     REQUIRE_FALSE(ok);
 }
 
@@ -98,5 +109,5 @@ TEST_CASE("parse_oid_csv: the largest representable oid still reads back", "[oid
     bool ok = false;
     const auto out = parse_oid_csv("4294967295", ok);
     REQUIRE(ok);
-    REQUIRE(out == std::vector<oid_t>{4294967295u});
+    REQUIRE(out == oids_of({4294967295u}));
 }

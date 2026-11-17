@@ -10,7 +10,7 @@ namespace components::catalog {
     // ODR anchor: forces the well-known OID constants to be addressable through this
     // translation unit. (constexpr inline already gives them external linkage; this is
     // a defensive no-op for tooling that scans for symbol presence.)
-    static_assert(INVALID_OID == 0, "INVALID_OID must be 0 (PostgreSQL convention)");
-    static_assert(FIRST_USER_OID > 0, "FIRST_USER_OID must be positive");
+    static_assert(static_cast<unsigned>(INVALID_OID) == 0, "INVALID_OID must be 0 (PostgreSQL convention)");
+    static_assert(FIRST_USER_OID > INVALID_OID, "FIRST_USER_OID must be positive");
 
 } // namespace components::catalog

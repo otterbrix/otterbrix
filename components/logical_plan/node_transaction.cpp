@@ -22,12 +22,21 @@ namespace components::logical_plan {
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(op_));
         boost::hash_combine(hash_value, std::hash<std::string_view>{}(savepoint_name_));
+        boost::hash_combine(hash_value, static_cast<uint8_t>(access_));
         return hash_value;
     }
 
     std::string node_transaction_t::to_string_impl() const {
         switch (op_) {
             case transaction_op::begin:
+                switch (access_) {
+                    case transaction_access_t::read_only:
+                        return "$begin_transaction: read only";
+                    case transaction_access_t::read_write:
+                        return "$begin_transaction: read write";
+                    case transaction_access_t::as_default:
+                        break;
+                }
                 return "$begin_transaction";
             case transaction_op::commit:
                 return "$commit_transaction";

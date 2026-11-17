@@ -359,8 +359,8 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
     compute::function_registry_t registry(res);
 
     using components::catalog::oid_t;
-    constexpr oid_t left_table_oid = 42;
-    constexpr oid_t right_table_oid = 43;
+    constexpr oid_t left_table_oid{42};
+    constexpr oid_t right_table_oid{43};
 
     // Returns the key-column name of whichever physical child became the hash build: "lk" means swapped, "rk" default.
     auto build_side_key_name =
@@ -582,8 +582,8 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
     compute::function_registry_t registry(res);
 
     using components::catalog::oid_t;
-    constexpr oid_t big_oid = 52;
-    constexpr oid_t tiny_oid = 53;
+    constexpr oid_t big_oid{52};
+    constexpr oid_t tiny_oid{53};
 
     auto lower = [&](uint64_t big_rows, uint64_t tiny_rows) {
         services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});

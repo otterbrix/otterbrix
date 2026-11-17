@@ -394,7 +394,7 @@ TEST_CASE("services::dispatcher::conkey_csv::a_conkey_truncated_at_a_comma_is_no
                                 planted.table_oid,
                                 "uq_id_code",
                                 {planted.id_attoid, planted.code_attoid},
-                                std::to_string(planted.id_attoid) + ",");
+                                std::to_string(static_cast<unsigned>(planted.id_attoid)) + ",");
 
     test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 100);");
     auto first = test.take_result();
@@ -420,8 +420,8 @@ TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bin
     test_dispatcher test(mr.get(), catalog_dir("conkey_out_of_range"));
     const auto planted = create_two_column_table(test);
 
-    const std::string shifted =
-        std::to_string(static_cast<std::uint64_t>(planted.code_attoid) + (std::uint64_t{1} << 32));
+    const std::string shifted = std::to_string(static_cast<std::uint64_t>(static_cast<unsigned>(planted.code_attoid)) +
+                                               (std::uint64_t{1} << 32));
     plant_unique_constraint_row(test, mr.get(), planted.table_oid, "uq_id", {planted.id_attoid}, shifted);
 
     test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 100);");
@@ -451,7 +451,7 @@ TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is
                                 planted.table_oid,
                                 "uq_id_kindless",
                                 {planted.id_attoid},
-                                std::to_string(planted.id_attoid),
+                                std::to_string(static_cast<unsigned>(planted.id_attoid)),
                                 /*contype_text=*/"");
 
     test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 100);");

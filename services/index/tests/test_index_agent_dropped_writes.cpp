@@ -38,8 +38,8 @@ namespace {
     // +500000 keeps txn_id and commit_id apart: reusing one number let an earlier COMMIT vouch for a later frame.
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
-    constexpr components::catalog::oid_t kTableOid = 17200;
-    constexpr components::catalog::oid_t kIndexOid = 17201;
+    constexpr components::catalog::oid_t kTableOid{17200};
+    constexpr components::catalog::oid_t kIndexOid{17201};
 
     std::filesystem::path fresh_index_root(const char* name) {
         const std::filesystem::path path{services::index::tests::index_fixture_path(name)};

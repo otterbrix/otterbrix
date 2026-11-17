@@ -32,10 +32,10 @@ namespace services::wal {
         const char* last = first + name.size();
         const auto [ptr, ec] = std::from_chars(first, last, parsed);
         if (ec != std::errc{} || ptr != last || std::to_string(parsed) != name ||
-            parsed > std::numeric_limits<components::catalog::oid_t>::max()) {
+            parsed > std::numeric_limits<std::uint32_t>::max()) {
             return false;
         }
-        out = static_cast<components::catalog::oid_t>(parsed);
+        out = components::catalog::oid_t{static_cast<std::uint32_t>(parsed)};
         return true;
     }
 

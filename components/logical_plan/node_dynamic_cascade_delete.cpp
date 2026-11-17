@@ -18,8 +18,8 @@ namespace components::logical_plan {
 
     std::string node_dynamic_cascade_delete_t::to_string_impl() const {
         const char* mode = behavior_ == components::catalog::drop_behavior_t::cascade_ ? "CASCADE" : "RESTRICT";
-        return "$dynamic_cascade_delete[classid=" + std::to_string(seed_classid_) +
-               ",oid=" + std::to_string(seed_objid_) + "," + mode + "]";
+        return "$dynamic_cascade_delete[classid=" + std::to_string(static_cast<unsigned>(seed_classid_)) +
+               ",oid=" + std::to_string(static_cast<unsigned>(seed_objid_)) + "," + mode + "]";
     }
 
 } // namespace components::logical_plan

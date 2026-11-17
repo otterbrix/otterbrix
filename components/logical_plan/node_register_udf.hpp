@@ -16,12 +16,12 @@ namespace components::logical_plan {
 
         // The uid the dispatcher reserved for the function and the schema of the session's place, which the
         // executor stamps before the plan is lowered.
-        void set_identity(components::compute::function_uid uid, std::uint32_t schema_oid) noexcept {
+        void set_identity(components::compute::function_uid uid, types::oid_t schema_oid) noexcept {
             uid_ = uid;
             schema_oid_ = schema_oid;
         }
         components::compute::function_uid uid() const noexcept { return uid_; }
-        std::uint32_t schema_oid() const noexcept { return schema_oid_; }
+        types::oid_t schema_oid() const noexcept { return schema_oid_; }
 
     private:
         hash_t hash_impl() const override;
@@ -29,7 +29,7 @@ namespace components::logical_plan {
 
         components::compute::function_ptr function_;
         components::compute::function_uid uid_{components::compute::invalid_function_uid};
-        std::uint32_t schema_oid_{0};
+        types::oid_t schema_oid_{};
     };
 
     using node_register_udf_ptr = boost::intrusive_ptr<node_register_udf_t>;

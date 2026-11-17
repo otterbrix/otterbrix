@@ -40,13 +40,15 @@ namespace {
 
     registry_changes_t registered(std::pmr::memory_resource* resource, components::compute::function_uid uid) {
         registry_changes_t changes;
-        changes.functions.push_back(function_change_t{uid, 7, probe(resource, "f" + std::to_string(uid))});
+        changes.functions.push_back(
+            function_change_t{uid, components::types::oid_t{7}, probe(resource, "f" + std::to_string(uid))});
         return changes;
     }
 
     registry_changes_t dropped(components::compute::function_uid uid) {
         registry_changes_t changes;
-        changes.functions.push_back(function_change_t{uid, 7, components::compute::no_function()});
+        changes.functions.push_back(
+            function_change_t{uid, components::types::oid_t{7}, components::compute::no_function()});
         return changes;
     }
 

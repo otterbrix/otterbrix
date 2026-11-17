@@ -33,7 +33,7 @@ namespace components::operators {
         catalog::oid_t first_oid(const chunks_vector_t& batches) {
             for (const auto& chunk : batches) {
                 if (chunk.size() != 0 && chunk.column_count() >= 1 && !chunk.is_null(0, 0)) {
-                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
+                    return chunk.get_value<catalog::oid_t>(0, 0);
                 }
             }
             return catalog::INVALID_OID;
@@ -228,12 +228,11 @@ namespace components::operators {
         std::pmr::vector<std::uint64_t> keys(resource);
         keys.emplace_back(catalog::pg_class_col::relname);
         keys.emplace_back(catalog::pg_class_col::relnamespace);
-        co_return co_await read_oid(
-            resource,
-            ctx,
-            catalog::well_known_oid::pg_class_table,
-            std::move(keys),
-            make_key_chunk(resource, std::string_view{relname.t}, static_cast<std::uint32_t>(namespace_oid)));
+        co_return co_await read_oid(resource,
+                                    ctx,
+                                    catalog::well_known_oid::pg_class_table,
+                                    std::move(keys),
+                                    make_key_chunk(resource, std::string_view{relname.t}, namespace_oid));
     }
 
     namespace {
@@ -263,7 +262,7 @@ namespace components::operators {
         for (const auto& chunk : schema_rows.value()) {
             if (chunk.size() != 0 && !chunk.is_null(1, 0)) {
                 named.schema = text_of(chunk, 0);
-                database_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, 0));
+                database_oid = chunk.get_value<catalog::oid_t>(1, 0);
                 break;
             }
         }

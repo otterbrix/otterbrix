@@ -485,7 +485,7 @@ namespace {
         components::vector::data_chunk_t row(resource, types, 1);
         row.set_cardinality(1);
         row.set_value(1, 0, std::string_view("wal_cast_probe"));
-        row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+        row.set_value(2, 0, ns_oid);
         row.set_value(3, 0, std::string_view("r"));
         row.set_value(4, 0, std::string_view("d"));
         return row;
@@ -548,13 +548,13 @@ TEST_CASE("services::disk::wal_catalog::a_casted_catalog_append_journals_the_cas
     auto dir = wal_cat_dir() + "/casted_append";
     cleanup_dir(dir);
     constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
-    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 4321;
+    constexpr catalog::oid_t probe_oid{static_cast<unsigned>(FIRST_USER_OID) + 4321};
     {
         fixture fx(dir);
         auto row = pg_class_probe_row(&fx.resource,
                                       components::types::complex_logical_type{components::types::logical_type::DOUBLE},
                                       FIRST_USER_OID);
-        row.set_value(0, 0, static_cast<double>(probe_oid));
+        row.set_value(0, 0, static_cast<double>(static_cast<unsigned>(probe_oid)));
         disk_test_helpers::append_ok(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row)));
     }
@@ -563,8 +563,8 @@ TEST_CASE("services::disk::wal_catalog::a_casted_catalog_append_journals_the_cas
     REQUIRE(records.size() == 1);
     REQUIRE(records.front().physical_data.size() == 1);
     const auto& journaled = records.front().physical_data.front();
-    CHECK(journaled.data[0].type().type() == components::types::logical_type::UINTEGER);
-    CHECK(journaled.get_value<std::uint32_t>(0, 0) == probe_oid);
+    CHECK(journaled.data[0].type().type() == components::types::logical_type::OID);
+    CHECK(journaled.get_value<catalog::oid_t>(0, 0) == probe_oid);
     cleanup_dir(dir);
 }
 
@@ -572,8 +572,8 @@ TEST_CASE("services::disk::wal_catalog::a_partial_aliased_row_is_casted_by_colum
     auto dir = wal_cat_dir() + "/partial_aliased";
     cleanup_dir(dir);
     constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
-    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 4322;
-    constexpr catalog::oid_t ns_oid = FIRST_USER_OID + 9;
+    constexpr catalog::oid_t probe_oid{static_cast<unsigned>(FIRST_USER_OID) + 4322};
+    constexpr catalog::oid_t ns_oid{static_cast<unsigned>(FIRST_USER_OID) + 9};
     {
         fixture fx(dir);
         namespace ct = components::types;
@@ -590,8 +590,8 @@ TEST_CASE("services::disk::wal_catalog::a_partial_aliased_row_is_casted_by_colum
         components::vector::data_chunk_t row(&fx.resource, types, 1);
         row.set_cardinality(1);
         row.set_value(0, 0, std::string_view("partial_probe"));
-        row.set_value(1, 0, static_cast<double>(probe_oid));
-        row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+        row.set_value(1, 0, static_cast<double>(static_cast<unsigned>(probe_oid)));
+        row.set_value(2, 0, ns_oid);
         disk_test_helpers::append_ok(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row)));
 
@@ -611,9 +611,9 @@ TEST_CASE("services::disk::wal_catalog::a_partial_aliased_row_is_casted_by_colum
     using catalog::pg_class_col::oid;
     using catalog::pg_class_col::relname;
     using catalog::pg_class_col::relnamespace;
-    CHECK(journaled.data[oid].type().type() == components::types::logical_type::UINTEGER);
-    CHECK(journaled.get_value<std::uint32_t>(oid, 0) == probe_oid);
-    CHECK(journaled.get_value<std::uint32_t>(relnamespace, 0) == ns_oid);
+    CHECK(journaled.data[oid].type().type() == components::types::logical_type::OID);
+    CHECK(journaled.get_value<catalog::oid_t>(oid, 0) == probe_oid);
+    CHECK(journaled.get_value<catalog::oid_t>(relnamespace, 0) == ns_oid);
     CHECK(journaled.get_value<std::string_view>(relname, 0) == "partial_probe");
     for (std::uint64_t column = 0; column < journaled.column_count(); column++) {
         if (column != oid && column != relname && column != relnamespace) {
@@ -675,8 +675,7 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
         std::size_t found = 0;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(0, i) &&
-                    static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) == idx_oid)
+                if (!chunk.is_null(0, i) && chunk.get_value<catalog::oid_t>(0, i) == idx_oid)
                     ++found;
             }
         }

@@ -53,7 +53,7 @@ namespace {
             const std::string oid_dir = entry.path().parent_path().filename().string();
             char* end = nullptr;
             const unsigned long oid = std::strtoul(oid_dir.c_str(), &end, 10);
-            if (end == nullptr || *end != '\0' || oid < components::catalog::FIRST_USER_OID) {
+            if (end == nullptr || *end != '\0' || oid < static_cast<unsigned>(components::catalog::FIRST_USER_OID)) {
                 continue;
             }
             found = entry.path();

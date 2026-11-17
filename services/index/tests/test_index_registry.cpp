@@ -43,20 +43,21 @@ TEST_CASE("services::index::dropping_one_index_over_a_key_keeps_its_twin") {
     index_records_t records(&resource);
 
     const auto k = one_key(&resource, "k");
-    records.push_back(make_record(201u, one_key(&resource, "k"), index_type::single));
-    records.push_back(make_record(202u, one_key(&resource, "k"), index_type::hashed));
+    records.push_back(make_record(components::catalog::oid_t{201}, one_key(&resource, "k"), index_type::single));
+    records.push_back(make_record(components::catalog::oid_t{202}, one_key(&resource, "k"), index_type::hashed));
     REQUIRE(records.size() == 2);
 
-    REQUIRE(match_index_relid(records, 201u) != nullptr);
-    REQUIRE(match_index_relid(records, 202u) != nullptr);
-    REQUIRE(match_index_relid(records, 201u) != match_index_relid(records, 202u));
+    REQUIRE(match_index_relid(records, components::catalog::oid_t{201}) != nullptr);
+    REQUIRE(match_index_relid(records, components::catalog::oid_t{202}) != nullptr);
+    REQUIRE(match_index_relid(records, components::catalog::oid_t{201}) !=
+            match_index_relid(records, components::catalog::oid_t{202}));
 
     records.erase(records.begin() + 1);
 
     INFO("the ordered index is still registered, so it still counts");
     CHECK(records.size() == 1);
-    CHECK(match_index_relid(records, 201u) != nullptr);
-    CHECK(match_index_relid(records, 202u) == nullptr);
+    CHECK(match_index_relid(records, components::catalog::oid_t{201}) != nullptr);
+    CHECK(match_index_relid(records, components::catalog::oid_t{202}) == nullptr);
 
     INFO("a table holding an index must not report as having no indexed keys");
     auto keys = indexed_keys(records, &resource);
@@ -65,7 +66,7 @@ TEST_CASE("services::index::dropping_one_index_over_a_key_keeps_its_twin") {
 
     CHECK(match_index(records, k, index_type::single) != nullptr);
     CHECK(match_index(records, k, index_type::hashed) == nullptr);
-    CHECK(match_index(records, k) == match_index_relid(records, 201u));
+    CHECK(match_index(records, k) == match_index_relid(records, components::catalog::oid_t{201}));
 
     auto descriptions = indexed_descriptions(records, &resource);
     REQUIRE(descriptions.size() == 1);
@@ -80,9 +81,9 @@ TEST_CASE("services::index::indexed_keys_are_a_set_not_a_bag") {
 
     const auto k = one_key(&resource, "k");
     const auto j = one_key(&resource, "j");
-    records.push_back(make_record(301u, one_key(&resource, "k"), index_type::single));
-    records.push_back(make_record(302u, one_key(&resource, "k"), index_type::hashed));
-    records.push_back(make_record(303u, one_key(&resource, "j"), index_type::single));
+    records.push_back(make_record(components::catalog::oid_t{301}, one_key(&resource, "k"), index_type::single));
+    records.push_back(make_record(components::catalog::oid_t{302}, one_key(&resource, "k"), index_type::hashed));
+    records.push_back(make_record(components::catalog::oid_t{303}, one_key(&resource, "j"), index_type::single));
 
     CHECK(records.size() == 3);
     auto keys = indexed_keys(records, &resource);
@@ -99,11 +100,11 @@ TEST_CASE("services::index::untyped_lookup_prefers_the_ordered_index") {
     index_records_t records(&resource);
 
     const auto k = one_key(&resource, "k");
-    records.push_back(make_record(401u, one_key(&resource, "k"), index_type::hashed));
-    records.push_back(make_record(402u, one_key(&resource, "k"), index_type::single));
+    records.push_back(make_record(components::catalog::oid_t{401}, one_key(&resource, "k"), index_type::hashed));
+    records.push_back(make_record(components::catalog::oid_t{402}, one_key(&resource, "k"), index_type::single));
 
-    const auto* hashed = match_index_relid(records, 401u);
-    const auto* ordered = match_index_relid(records, 402u);
+    const auto* hashed = match_index_relid(records, components::catalog::oid_t{401});
+    const auto* ordered = match_index_relid(records, components::catalog::oid_t{402});
     REQUIRE(hashed != nullptr);
     REQUIRE(ordered != nullptr);
     REQUIRE_FALSE(hashed->ordered);
@@ -112,7 +113,7 @@ TEST_CASE("services::index::untyped_lookup_prefers_the_ordered_index") {
     CHECK(match_index(records, k) == ordered);
 
     records.erase(records.begin() + 1);
-    CHECK(match_index(records, k) == match_index_relid(records, 401u));
+    CHECK(match_index(records, k) == match_index_relid(records, components::catalog::oid_t{401}));
     CHECK(records.size() == 1);
     CHECK(indexed_keys(records, &resource).size() == 1);
 }
@@ -124,7 +125,7 @@ TEST_CASE("services::index::no_valid_names_no_backend") {
     index_records_t records(&resource);
 
     const auto k = one_key(&resource, "k");
-    records.push_back(make_record(501u, one_key(&resource, "k"), index_type::single));
+    records.push_back(make_record(components::catalog::oid_t{501}, one_key(&resource, "k"), index_type::single));
 
     CHECK(match_index(records, k, index_type::no_valid) == nullptr);
     CHECK(match_index(records, k) != nullptr);

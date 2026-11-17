@@ -136,8 +136,8 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
-    std::pmr::vector<std::uint32_t> data_table_t::column_attoids() const {
-        std::pmr::vector<std::uint32_t> attoids(resource_);
+    std::pmr::vector<types::oid_t> data_table_t::column_attoids() const {
+        std::pmr::vector<types::oid_t> attoids(resource_);
         attoids.reserve(column_definitions_.size());
         for (const auto& column : column_definitions_) {
             attoids.push_back(column.attoid());
@@ -157,7 +157,7 @@ namespace components::table {
     }
 
     core::error_t data_table_t::check_payload_columns(const transaction_data& txn,
-                                                      std::span<const std::uint32_t> attoids) const {
+                                                      std::span<const types::oid_t> attoids) const {
         const auto visible = visible_columns(txn);
         bool same = visible.size() == attoids.size();
         for (uint64_t index = 0; same && index < visible.size(); index++) {
@@ -212,7 +212,7 @@ namespace components::table {
         return copy;
     }
 
-    void data_table_t::stamp_column_identity(uint64_t position, std::uint32_t attoid) {
+    void data_table_t::stamp_column_identity(uint64_t position, types::oid_t attoid) {
         assert(position < column_definitions_.size() && "stamp_column_identity: no such column");
         column_definitions_[position].set_attoid(attoid);
         mark_modified();
@@ -606,14 +606,14 @@ namespace components::table {
         return core::error_t::no_error();
     }
 
-    core::error_t data_table_t::widen_by_attoid(std::span<const std::uint32_t> attoids,
+    core::error_t data_table_t::widen_by_attoid(std::span<const types::oid_t> attoids,
                                                 vector::data_chunk_t& chunk) const {
         assert(attoids.size() == chunk.column_count() && "widen_by_attoid: every payload column names its attoid");
         std::vector<vector::vector_t> physical;
         physical.reserve(column_definitions_.size());
         for (uint64_t position = 0; position < column_definitions_.size(); position++) {
             const auto attoid = column_definitions_[position].attoid();
-            assert(attoid != 0 && "widen_by_attoid: a regular table's column always carries its attoid");
+            assert(attoid != types::oid_t{} && "widen_by_attoid: a regular table's column always carries its attoid");
             const auto source = std::find(attoids.begin(), attoids.end(), attoid);
             if (source == attoids.end()) {
                 physical.push_back(default_column(position, chunk));
@@ -628,8 +628,8 @@ namespace components::table {
         return core::error_t::no_error();
     }
 
-    uint64_t data_table_t::find_visible_column(const transaction_data& txn, std::uint32_t attoid) const {
-        if (attoid == 0) {
+    uint64_t data_table_t::find_visible_column(const transaction_data& txn, types::oid_t attoid) const {
+        if (attoid == types::oid_t{}) {
             return storage::INVALID_INDEX;
         }
         for (uint64_t position = 0; position < column_definitions_.size(); position++) {
@@ -1102,7 +1102,7 @@ namespace components::table {
             writer.write_data(type_spec.data(), type_spec.size());
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
             // Identity (attoid), not name: a rename can race the catalog ahead of the next checkpoint.
-            writer.write<uint32_t>(col.attoid());
+            writer.write<uint32_t>(static_cast<unsigned>(col.attoid()));
             writer.write<uint64_t>(col.added_at());
             writer.write<uint64_t>(col.dropped_at());
         }
@@ -1146,7 +1146,7 @@ namespace components::table {
             reader.read_data(type_spec.data(), spec_size);
             auto not_null = reader.read<uint8_t>() != 0;
             // 0 means the column never learned its attoid; not refused here (reconcile_storage_with_catalog_sync).
-            const auto attoid = reader.read<uint32_t>();
+            const types::oid_t attoid{reader.read<uint32_t>()};
             const auto added_at = reader.read<uint64_t>();
             const auto dropped_at = reader.read<uint64_t>();
             if (reader.has_error()) {

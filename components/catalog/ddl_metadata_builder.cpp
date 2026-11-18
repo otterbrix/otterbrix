@@ -243,6 +243,7 @@ namespace components::catalog {
                     set_str(c, pg_class_col::relkind, 0, relkind_str, r);
                     set_str(c, pg_class_col::relstoragemode, 0, storagemode_str, r);
                     set_oid(c, pg_class_col::reltype, 0, reltype);
+                    set_bool(c, pg_class_col::relispartition, 0, false);
                 }));
         }
 

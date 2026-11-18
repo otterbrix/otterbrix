@@ -79,6 +79,11 @@ TEST_CASE("components::compute::registry::basic") {
                 } else {
                     REQUIRE(fn->num_kernels() == 5);
                 }
+            } else if (name == "format_type") {
+                // format_type(type_oid, typmod) and the three lists of the types the place sees the executor binds
+                REQUIRE(fn->fn_arity().num_args == 5);
+                REQUIRE(fn->fn_arity().varargs == false);
+                REQUIRE(fn->num_kernels() == 1);
             } else if (name == "date_trunc") {
                 // date_trunc(unit, timestamp | timestamptz [, zone] | date | interval) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);

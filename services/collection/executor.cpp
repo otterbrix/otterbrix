@@ -20,6 +20,7 @@
 #include <components/catalog/type_display.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/planner/planner.hpp>
+#include <components/vector/vector_buffer.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
@@ -2227,6 +2228,11 @@ namespace services::collection::executor {
                     resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_)
                         .add(components::logical_plan::resolve_entry_t{});
                 }
+                // format_type names its oid from the types the place sees.
+                if (name.function.t == components::compute::format_type_name) {
+                    resolves.ensure(resource, components::logical_plan::resolve_kind::type_names)
+                        .add(components::logical_plan::resolve_entry_t{});
+                }
             };
             auto visit = [&](const auto& call, const auto&, bool) { register_schema(call.full_name()); };
             components::logical_plan::for_each_plan_call(root, visit);
@@ -2361,6 +2367,78 @@ namespace services::collection::executor {
                                                                             components::types::logical_type::TEXT});
                     call.args().emplace_back(
                         parameters.add_parameter(std::move(bound), components::vector::parameter_kind::literal));
+                }
+            };
+            components::logical_plan::for_each_plan_call(root, visit);
+            return refused;
+        }
+
+        // format_type(type_oid, typmod): the types the place sees, the type_names resolve's, bound as three more
+        // arguments (their oids, names and array element types), one list each.
+        core::error_t bind_type_name_calls(std::pmr::memory_resource* resource,
+                                           components::logical_plan::node_t* root,
+                                           const components::logical_plan::catalog_resolves_t& resolves,
+                                           components::logical_plan::parameter_node_t& parameters) {
+            using components::types::complex_logical_type;
+            using components::types::logical_type;
+            const auto* seen = resolves.type_names_entry();
+            core::error_t refused = core::error_t::no_error();
+            core::parameter_id_t bound[3]{};
+            bool built = false;
+            auto visit = [&](auto& call, const auto&, bool) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(call)>,
+                                             components::expressions::function_expression_t>) {
+                    const auto& name = call.full_name();
+                    if (names_a_user_schema(name) || name.function.t != components::compute::format_type_name) {
+                        return;
+                    }
+                    if (call.args().size() != 2) {
+                        if (!refused.contains_error()) {
+                            refused = core::error_t{
+                                core::error_code_t::unrecognized_function,
+                                std::pmr::string{"function " + name.to_string() + " takes two arguments", resource}};
+                        }
+                        return;
+                    }
+                    if (seen == nullptr) {
+                        if (!refused.contains_error()) {
+                            refused = core::error_t{core::error_code_t::internal_error,
+                                                    std::pmr::string{"format_type ran without the types the place "
+                                                                     "sees",
+                                                                     resource}};
+                        }
+                        return;
+                    }
+                    if (!built) {
+                        const auto count = seen->type_names.size();
+                        const complex_logical_type oid_type{logical_type::OID};
+                        const complex_logical_type text_type{logical_type::TEXT};
+                        components::vector::vector_t oids(resource, oid_type, std::max<uint64_t>(count, 1));
+                        components::vector::vector_t names(resource, text_type, std::max<uint64_t>(count, 1));
+                        components::vector::vector_t elements(resource, oid_type, std::max<uint64_t>(count, 1));
+                        for (uint64_t at = 0; at < count; ++at) {
+                            const auto& named = seen->type_names[at];
+                            oids.set_value(at, named.oid);
+                            names.set_value(at, std::string_view{named.name});
+                            elements.set_value(at, named.element);
+                        }
+                        const components::vector::vector_t* columns[3]{&oids, &names, &elements};
+                        const complex_logical_type* element_types[3]{&oid_type, &text_type, &oid_type};
+                        for (std::size_t position = 0; position < 3; ++position) {
+                            auto list = components::vector::make_list(resource, *element_types[position], {});
+                            auto* buffer =
+                                static_cast<components::vector::list_vector_buffer_t*>(list.auxiliary().get());
+                            buffer->reserve(count);
+                            buffer->append(*columns[position], count);
+                            list.data<components::types::list_entry_t>()[0] = components::types::list_entry_t{0, count};
+                            bound[position] =
+                                parameters.add_parameter(std::move(list), components::vector::parameter_kind::literal);
+                        }
+                        built = true;
+                    }
+                    for (const auto id : bound) {
+                        call.args().emplace_back(id);
+                    }
                 }
             };
             components::logical_plan::for_each_plan_call(root, visit);
@@ -3178,8 +3256,12 @@ namespace services::collection::executor {
 
         auto collect_resolve_nodes = [](const components::logical_plan::catalog_resolves_t& resolves,
                                         std::pmr::vector<components::logical_plan::node_ptr>& out) {
-            for (const auto* slot :
-                 {&resolves.database, &resolves.namespaces, &resolves.tables, &resolves.types, &resolves.constraints}) {
+            for (const auto* slot : {&resolves.database,
+                                     &resolves.namespaces,
+                                     &resolves.tables,
+                                     &resolves.types,
+                                     &resolves.constraints,
+                                     &resolves.type_names}) {
                 if (*slot && !(*slot)->empty()) {
                     out.push_back(*slot);
                 }
@@ -3308,6 +3390,13 @@ namespace services::collection::executor {
         }
         if (auto refused =
                 bind_place_calls(resource(), plan.sub_queries.back().get(), plan.catalog_resolves, *plan.parameters);
+            refused.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+        }
+        if (auto refused = bind_type_name_calls(resource(),
+                                                plan.sub_queries.back().get(),
+                                                plan.catalog_resolves,
+                                                *plan.parameters);
             refused.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(refused))};
         }

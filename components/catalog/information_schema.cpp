@@ -20,12 +20,19 @@ namespace components::catalog {
             logical_type type;
         };
 
-        // A view: its output columns, the pg_catalog relations its body reads, and its body for one database.
+        // What the views of a database show, as PostgreSQL 18's information_schema shows its database's: `catalog`,
+        // the name its rows are of, and `objects`, a condition on the pg_namespace row `n` (its pg_database row `d`).
+        struct shown_t {
+            std::string catalog;
+            std::string objects;
+        };
+
+        // A view: its output columns, the pg_catalog relations its body reads, and its body.
         struct system_view_t {
             const char* name;
             std::vector<view_column_t> columns;
             std::vector<oid_t> reads;
-            std::string (*body)(const std::string& catalog, oid_t database_oid);
+            std::string (*body)(const shown_t& shown);
         };
 
         // `text` as an SQL string literal.
@@ -41,27 +48,37 @@ namespace components::catalog {
             return out;
         }
 
-        // The objects a view of the database of `database_oid` shows: the database's own and pg_catalog's.
-        std::string of_database(const std::string& namespace_alias, oid_t database_oid) {
-            return "(" + namespace_alias + ".nspdatabase = " + std::to_string(static_cast<unsigned>(database_oid)) +
-                   " OR " + namespace_alias +
-                   ".oid = " + std::to_string(static_cast<unsigned>(well_known_oid::pg_catalog_namespace)) + ")";
+        // The database's own objects and pg_catalog's. A connection's database has no information_schema of its own
+        // and reaches main's: on a connection's place main's views show that database, named as it is.
+        shown_t shown_by(const std::string& database, oid_t database_oid) {
+            const std::string pg_catalog =
+                "n.oid = " + std::to_string(static_cast<unsigned>(well_known_oid::pg_catalog_namespace));
+            const std::string own = "n.nspdatabase = " + std::to_string(static_cast<unsigned>(database_oid));
+            if (database_oid != well_known_oid::main_database) {
+                return {quoted_literal(database), "(" + pg_catalog + " OR " + own + ")"};
+            }
+            return {"CASE WHEN current_connection() = '' THEN " + quoted_literal(database) +
+                        " ELSE current_database() END",
+                    "(" + pg_catalog + " OR (current_connection() = '' AND " + own +
+                        ") OR (current_connection() <> '' AND d.datname = current_database() AND d.datconnection = "
+                        "current_connection()))"};
         }
 
-        std::string schemata_body(const std::string& catalog, oid_t database_oid) {
-            return "SELECT CAST(" + catalog +
+        std::string schemata_body(const shown_t& shown) {
+            return "SELECT CAST(" + shown.catalog +
                    " AS text) AS catalog_name, CAST(n.nspname AS text) AS schema_name, CAST(NULL AS text) AS "
                    "schema_owner, CAST(NULL AS text) AS default_character_set_catalog, CAST(NULL AS text) AS "
                    "default_character_set_schema, CAST(NULL AS text) AS default_character_set_name, CAST(NULL AS "
-                   "text) AS sql_path FROM pg_catalog.pg_namespace n WHERE " +
-                   of_database("n", database_oid);
+                   "text) AS sql_path FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_database d ON d.oid = "
+                   "n.nspdatabase WHERE " +
+                   shown.objects;
         }
 
         // data_type spells a type as PostgreSQL 18's information_schema does: the SQL standard name of a built-in
         // type, ARRAY, a pg_catalog type's own name, or USER-DEFINED. column_default is NULL: pg_attribute keeps a
         // default encoded, not as the text PostgreSQL shows.
-        std::string columns_body(const std::string& catalog, oid_t database_oid) {
-            return "SELECT CAST(" + catalog +
+        std::string columns_body(const shown_t& shown) {
+            return "SELECT CAST(" + shown.catalog +
                    " AS text) AS table_catalog, CAST(n.nspname AS text) AS table_schema, CAST(c.relname AS text) AS "
                    "table_name, CAST(a.attname AS text) AS column_name, CAST(a.attnum AS integer) AS "
                    "ordinal_position, CAST(NULL AS text) AS column_default, CAST(CASE WHEN a.attnotnull = true THEN "
@@ -87,7 +104,7 @@ namespace components::catalog {
                    "collation_catalog, CAST(NULL AS text) AS collation_schema, CAST(NULL AS text) AS collation_name, "
                    "CAST(NULL AS text) AS domain_catalog, CAST(NULL AS text) AS domain_schema, CAST(NULL AS text) AS "
                    "domain_name, CAST(" +
-                   catalog +
+                   shown.catalog +
                    " AS text) AS udt_catalog, CAST(tn.nspname AS text) AS udt_schema, CAST(t.typname AS text) AS "
                    "udt_name, CAST(NULL AS text) AS scope_catalog, CAST(NULL AS text) AS scope_schema, CAST(NULL AS "
                    "text) AS scope_name, CAST(NULL AS integer) AS maximum_cardinality, CAST(a.attnum AS text) AS "
@@ -98,9 +115,10 @@ namespace components::catalog {
                    "CAST(NULL AS text) AS generation_expression, CAST(CASE WHEN c.relkind = 'r' THEN 'YES' ELSE 'NO' "
                    "END AS text) AS is_updatable FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid "
                    "= a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace JOIN pg_catalog.pg_type t "
-                   "ON t.oid = a.atttypid JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace WHERE a.attnum "
-                   "> 0 AND a.attisdropped = false AND c.relkind IN ('r', 'v', 'm', 'f', 'p') AND " +
-                   of_database("n", database_oid);
+                   "ON t.oid = a.atttypid JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace JOIN "
+                   "pg_catalog.pg_database d ON d.oid = n.nspdatabase WHERE a.attnum > 0 AND a.attisdropped = false "
+                   "AND c.relkind IN ('r', 'v', 'm', 'f', 'p') AND " +
+                   shown.objects;
         }
 
         const std::vector<system_view_t>& system_views() {
@@ -113,7 +131,7 @@ namespace components::catalog {
                   {"default_character_set_schema", logical_type::TEXT},
                   {"default_character_set_name", logical_type::TEXT},
                   {"sql_path", logical_type::TEXT}},
-                 {well_known_oid::pg_namespace_table},
+                 {well_known_oid::pg_namespace_table, well_known_oid::pg_database_table},
                  &schemata_body},
                 {"columns",
                  {{"table_catalog", logical_type::TEXT},
@@ -163,7 +181,8 @@ namespace components::catalog {
                  {well_known_oid::pg_attribute_table,
                   well_known_oid::pg_class_table,
                   well_known_oid::pg_namespace_table,
-                  well_known_oid::pg_type_table},
+                  well_known_oid::pg_type_table,
+                  well_known_oid::pg_database_table},
                  &columns_body},
             };
             return views;
@@ -187,7 +206,7 @@ namespace components::catalog {
                                                                  oid_t database_oid,
                                                                  oid_t namespace_oid,
                                                                  oid_batch_t& oid_batch) {
-        const std::string catalog = quoted_literal(database);
+        const shown_t shown = shown_by(database, database_oid);
         std::vector<catalog_write_t> writes;
         for (const auto& view : system_views()) {
             const oid_t view_oid = oid_batch.allocate();
@@ -225,7 +244,7 @@ namespace components::catalog {
                                                namespace_oid,
                                                rule_oid,
                                                name,
-                                               view.body(catalog, database_oid),
+                                               view.body(shown),
                                                relkind::view,
                                                oid_batch);
             writes.insert(writes.end(), std::make_move_iterator(body.begin()), std::make_move_iterator(body.end()));

@@ -77,6 +77,7 @@ namespace components::catalog {
         constexpr std::uint64_t relkind = 3;
         constexpr std::uint64_t relstoragemode = 4;
         constexpr std::uint64_t reltype = 5;
+        constexpr std::uint64_t relispartition = 6;
     } // namespace pg_class_col
     namespace pg_namespace_col {
         constexpr std::uint64_t oid = 0;

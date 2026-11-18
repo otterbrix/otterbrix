@@ -68,6 +68,15 @@ namespace components::logical_plan {
         std::string typdefspec;
     };
 
+    // A type the session's place sees, as format_type names it: pg_catalog's and those of the place's database, the
+    // name schema-qualified when its schema is not the place's (PostgreSQL 18 TypeIsVisible), quoted when it must be.
+    // `element`: the element type of a true array (typcategory 'A'), else INVALID_OID.
+    struct resolved_type_name_t {
+        components::catalog::oid_t oid{components::catalog::INVALID_OID};
+        std::string name;
+        components::catalog::oid_t element{components::catalog::INVALID_OID};
+    };
+
     // namespace_ is spelled that way because namespace is a C++ keyword.
     enum class resolve_kind : uint8_t
     {
@@ -75,7 +84,9 @@ namespace components::logical_plan {
         namespace_,
         database,
         type,
-        constraint
+        constraint,
+        // Every type the place sees (type_names): a statement that calls format_type.
+        type_names
     };
 
     // outgoing scans pg_constraint by conrelid (INSERT/UPDATE) into fks()/check_exprs();
@@ -139,6 +150,8 @@ namespace components::logical_plan {
         std::vector<std::string> pk_columns;
         // Every pg_constraint row (conname, oid); enrich stamps DROP CONSTRAINT subcommands from it.
         std::vector<std::pair<std::string, components::catalog::oid_t>> constraint_oids;
+        // A type_names entry: the types the place sees, by oid.
+        std::vector<resolved_type_name_t> type_names;
 
         bool operator==(const resolve_entry_t& other) const noexcept;
     };
@@ -182,6 +195,7 @@ namespace components::logical_plan {
         node_catalog_resolve_ptr tables;
         node_catalog_resolve_ptr types;
         node_catalog_resolve_ptr constraints;
+        node_catalog_resolve_ptr type_names;
         // Every REFERENCES target with its owner: one in another database is refused.
         std::vector<referenced_table_t> referenced_tables;
         // The session's place the statement completes short names with; set by the executor before resolve.
@@ -199,6 +213,8 @@ namespace components::logical_plan {
         [[nodiscard]] const resolve_entry_t* namespace_entry(const qualified_name_t& written) const noexcept;
         [[nodiscard]] const resolve_entry_t* table_entry(const qualified_name_t& written) const noexcept;
         [[nodiscard]] const resolve_entry_t* type_entry(const qualified_name_t& written) const noexcept;
+        // The one type_names entry, or nullptr when the statement asked for none.
+        [[nodiscard]] const resolve_entry_t* type_names_entry() const noexcept;
 
         [[nodiscard]] components::catalog::oid_t database_oid(std::string_view connection,
                                                               std::string_view database) const noexcept;

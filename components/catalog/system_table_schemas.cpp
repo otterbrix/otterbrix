@@ -54,6 +54,7 @@ namespace components::catalog {
                            true); // see catalog_codes.hpp::relkind
             c.emplace_back("relstoragemode", str_col(), true);
             c.emplace_back("reltype", oid_col(), true); // pg_type.oid of the row type; 0 for an index or a sequence
+            c.emplace_back("relispartition", bool_col(), true); // always false: there are no partitions
             return c;
         }
 

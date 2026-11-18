@@ -13,6 +13,7 @@ set(${PROJECT_NAME}_SOURCES
         kernels/expand_functions.cpp
         kernels/math_functions.cpp
         kernels/datetime_functions.cpp
+        kernels/catalog_functions.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

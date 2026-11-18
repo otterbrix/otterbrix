@@ -325,6 +325,7 @@ namespace services::disk {
                             chunk.set_value(3, 0, std::string_view{&relkind_ch, 1});
                             chunk.set_value(4, 0, std::string_view{"d"}); // disk-backed
                             chunk.set_value(catalog::pg_class_col::reltype, 0, def.row_type_oid);
+                            chunk.set_value(catalog::pg_class_col::relispartition, 0, false);
                         });
                         seed_row(pg_class_oid, cls_def->name, row);
                         ++written;

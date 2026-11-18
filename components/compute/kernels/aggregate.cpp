@@ -874,5 +874,6 @@ namespace components::compute {
         register_setting_functions(r);
         register_boolean_test_function(r);
         register_datetime_functions(r);
+        register_catalog_functions(r);
     }
 } // namespace components::compute

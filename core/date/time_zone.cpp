@@ -71,9 +71,9 @@ namespace core::date {
                         error.clear();
                         continue;
                     }
-                    const auto relative = std::filesystem::relative(it->path(), root, error).generic_string();
-                    if (error || relative.empty() || relative == "localtime") {
-                        error.clear();
+                    // Lexically, so a link ("UTC" -> "Etc/UTC") is indexed under its own name.
+                    const auto relative = it->path().lexically_relative(root).generic_string();
+                    if (relative.empty() || relative == "localtime") {
                         continue;
                     }
                     found.emplace(lowered(relative), relative);

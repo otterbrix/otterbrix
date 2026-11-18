@@ -227,17 +227,18 @@ namespace components::casts::kernels {
         }
 
         template<typename To>
-        [[nodiscard]] std::optional<To> parse_datetime(std::string_view text) noexcept {
+        [[nodiscard]] std::optional<To> parse_datetime(std::string_view text,
+                                                       const graph_execution_context& context) noexcept {
             if constexpr (std::is_same_v<To, core::date::date_t>) {
                 return core::date::parse_date(text);
             } else if constexpr (std::is_same_v<To, core::date::time_t>) {
                 return core::date::parse_time(text);
             } else if constexpr (std::is_same_v<To, core::date::timetz_t>) {
-                return core::date::parse_timetz(text);
+                return core::date::parse_timetz(text, context.timezone_offset);
             } else if constexpr (std::is_same_v<To, core::date::timestamp_t>) {
                 return core::date::parse_timestamp(text);
             } else if constexpr (std::is_same_v<To, core::date::timestamptz_t>) {
-                return core::date::parse_timestamptz(text);
+                return core::date::parse_timestamptz(text, context.timezone_offset);
             } else {
                 static_assert(std::is_same_v<To, core::date::interval_t>, "unsupported string -> date/time target");
                 return core::date::parse_interval(text);
@@ -516,14 +517,15 @@ namespace components::casts::kernels {
     template<typename To>
     core::error_t string_to_datetime_cast(const vector::vector_t& source,
                                           vector::vector_t* result,
-                                          const graph_execution_context&,
+                                          const graph_execution_context& context,
                                           uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
                 continue;
             }
-            const std::optional<To> parsed = detail::parse_datetime<To>(source.get_value<std::string_view>(row));
+            const std::optional<To> parsed =
+                detail::parse_datetime<To>(source.get_value<std::string_view>(row), context);
             if (!parsed.has_value()) {
                 return core::error_t{core::error_code_t::invalid_datetime_format,
                                      std::pmr::string{"parse error", result->resource()}};
@@ -536,14 +538,15 @@ namespace components::casts::kernels {
     template<typename To>
     void string_to_datetime_try_cast(const vector::vector_t& source,
                                      vector::vector_t* result,
-                                     const graph_execution_context&,
+                                     const graph_execution_context& context,
                                      uint64_t count) noexcept {
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
                 continue;
             }
-            const std::optional<To> parsed = detail::parse_datetime<To>(source.get_value<std::string_view>(row));
+            const std::optional<To> parsed =
+                detail::parse_datetime<To>(source.get_value<std::string_view>(row), context);
             if (!parsed.has_value()) {
                 result->set_null(row, true);
                 continue;

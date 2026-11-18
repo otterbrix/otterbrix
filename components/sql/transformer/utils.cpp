@@ -1240,8 +1240,13 @@ namespace components::sql::transform {
                         }
                         return core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
+                    // Text that names its offset reads the same in every zone; text that names none reads in the
+                    // session's zone, which only the cast over the literal knows, so it stays text.
                     case types::logical_type::TIME_TZ:
                         if (auto parsed = core::date::parse_timetz(str)) {
+                            if (!core::date::timetz_names_offset(str)) {
+                                return vector::make_string_literal(resource, str);
+                            }
                             return vector::make_scalar(resource,
                                                        types::complex_logical_type{types::logical_type::TIME_TZ},
                                                        *parsed);
@@ -1259,6 +1264,9 @@ namespace components::sql::transform {
                             std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
                     case types::logical_type::TIMESTAMP_TZ:
                         if (auto parsed = core::date::parse_timestamptz(str)) {
+                            if (!core::date::timestamptz_names_offset(str)) {
+                                return vector::make_string_literal(resource, str);
+                            }
                             return vector::make_scalar(resource,
                                                        types::complex_logical_type{types::logical_type::TIMESTAMP_TZ},
                                                        *parsed);

@@ -189,6 +189,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_null_comparison.cpp
         test_null_predicate_3vl.cpp
         test_convert_tz.cpp
+        test_datetime_literals.cpp
         test_null_case_3vl.cpp
         test_null_semantics_matrix.cpp
         test_production_scenarios.cpp

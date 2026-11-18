@@ -6,6 +6,7 @@
 #include <memory_resource>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace components::sql::transform {
 

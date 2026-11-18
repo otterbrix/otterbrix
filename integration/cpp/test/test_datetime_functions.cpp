@@ -140,8 +140,9 @@ TEST_CASE("integration::cpp::datetime_functions::date_trunc") {
     }
     SECTION("an instant is truncated in the session's zone") {
         require_ok(session, "SET TIME ZONE 'Europe/Berlin';");
-        CHECK(holds(session,
-                    "date_trunc('day', '2026-07-15 23:30:00+00'::timestamptz) = '2026-07-15 22:00:00+00'::timestamptz"));
+        CHECK(
+            holds(session,
+                  "date_trunc('day', '2026-07-15 23:30:00+00'::timestamptz) = '2026-07-15 22:00:00+00'::timestamptz"));
         // 30 October is CET, 1 October CEST: a day or more reads the zone's offset again.
         CHECK(holds(session,
                     "date_trunc('month', '2026-10-30 12:00:00+00'::timestamptz) = "
@@ -155,8 +156,7 @@ TEST_CASE("integration::cpp::datetime_functions::date_trunc") {
         CHECK(holds(session, "date_trunc('month', '2026-07-15'::date) = '2026-06-30 22:00:00+00'::timestamptz"));
     }
     SECTION("an interval") {
-        CHECK(holds(session,
-                    "date_trunc('hour', INTERVAL '1 day 03:25:00') = INTERVAL '1 day 03:00:00'"));
+        CHECK(holds(session, "date_trunc('hour', INTERVAL '1 day 03:25:00') = INTERVAL '1 day 03:00:00'"));
         CHECK(holds(session, "date_trunc('year', INTERVAL '14 months 3 days') = INTERVAL '1 year'"));
     }
     SECTION("a unit that is none, or not one for the type") {

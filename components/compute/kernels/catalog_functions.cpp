@@ -3,8 +3,10 @@
 
 #include <components/vector/vector_buffer.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>

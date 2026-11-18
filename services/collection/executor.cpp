@@ -2244,8 +2244,8 @@ namespace services::collection::executor {
             });
         }
 
-        // A function is registered in and dropped from the session's place; the types of a cast the host named are
-        // read from the catalog.
+        // A function is registered in and dropped from the schema the host named, the session's place's when it named
+        // none; the types of a cast the host named are read from the catalog.
         void register_registry_change_names(std::pmr::memory_resource* resource,
                                             const components::logical_plan::node_t* root,
                                             components::logical_plan::catalog_resolves_t& resolves) {
@@ -2263,11 +2263,18 @@ namespace services::collection::executor {
                 }
                 components::sql::transform::register_catalog_resolve_types(resource, &resolves, written);
             };
+            const auto register_schema = [&](const qualified_name_t& schema) {
+                components::logical_plan::resolve_entry_t entry;
+                entry.written = schema;
+                resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_).add(std::move(entry));
+            };
             switch (root->type()) {
                 case node_type::register_udf_t:
+                    register_schema(static_cast<const components::logical_plan::node_register_udf_t*>(root)->schema());
+                    return;
                 case node_type::unregister_udf_t:
-                    resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_)
-                        .add(components::logical_plan::resolve_entry_t{});
+                    register_schema(
+                        static_cast<const components::logical_plan::node_unregister_udf_t*>(root)->schema());
                     return;
                 case node_type::register_cast_t: {
                     const auto* cast = static_cast<const components::logical_plan::node_register_cast_t*>(root);
@@ -2773,15 +2780,16 @@ namespace services::collection::executor {
             return change;
         }
         const auto& resolves = plan.catalog_resolves;
-        const auto place_schema = [&]() -> core::result_wrapper_t<components::catalog::oid_t> {
-            if (auto missing = services::dispatcher::check_namespace_exists(resource(), &resolves, qualified_name_t{});
+        const auto function_schema =
+            [&](const qualified_name_t& schema) -> core::result_wrapper_t<components::catalog::oid_t> {
+            if (auto missing = services::dispatcher::check_namespace_exists(resource(), &resolves, schema);
                 missing.contains_error()) {
                 return missing;
             }
-            if (!resolves.place.connection.t.empty()) {
-                return only_tables_in_connection(resource(), resolves.place.connection.t);
+            if (const auto connection = connection_of(resolves, schema); !connection.t.empty()) {
+                return only_tables_in_connection(resource(), connection.t);
             }
-            return resolves.namespace_oid(qualified_name_t{});
+            return resolves.namespace_oid(schema);
         };
         const auto cast_types = [&](const components::types::complex_logical_type& source,
                                     const components::types::complex_logical_type& target)
@@ -2804,7 +2812,7 @@ namespace services::collection::executor {
                     return core::error_t{core::error_code_t::invalid_parameter,
                                          std::pmr::string{"register_udf: no function to register", resource()}};
                 }
-                auto schema = place_schema();
+                auto schema = function_schema(node->schema());
                 if (schema.has_error()) {
                     return schema.error();
                 }
@@ -2856,7 +2864,7 @@ namespace services::collection::executor {
                                                               "' is a builtin function and cannot be unregistered",
                                                           resource()}};
                 }
-                auto schema = place_schema();
+                auto schema = function_schema(node->schema());
                 if (schema.has_error()) {
                     return schema.error();
                 }

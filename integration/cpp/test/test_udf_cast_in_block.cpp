@@ -530,3 +530,50 @@ TEST_CASE("integration::cpp::udf_cast_in_block::a_function_in_a_schema_of_a_conn
     CHECK(std::string{refused.what} == "only tables can be created in a schema of connection \"m2\"");
     CHECK(twice_rows(host) == 0);
 }
+
+TEST_CASE("integration::cpp::udf_cast_in_block::a_function_goes_into_the_schema_the_host_names") {
+    host_t host("test_udf_cast_in_block/udf_named_schema");
+    const qualified_name_t main_public{core::dbname_t{"main"}, core::schema_t{"public"}, core::relname_t{}};
+    host.db.ok(any(), "CREATE TABLE t (id BIGINT);");
+    host.db.ok(any(), "INSERT INTO t (id) VALUES (5);");
+    host.db.ok(any(), "CREATE SCHEMA s;");
+    const auto session = any();
+    host.db.ok(session, "SET search_path = 's';");
+    const auto registered = host.db.dispatcher()->register_udf(session, twice_function(host.resource()), main_public);
+    INFO(registered.what);
+    REQUIRE_FALSE(registered.contains_error());
+    CHECK(host.db.strings(any(),
+                          "SELECT n.nspname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n "
+                          "ON p.pronamespace = n.oid WHERE p.proname = 'twice';") == host_fixture::strings{"public"});
+    CHECK(host.db.ints(any(), "SELECT twice(id) FROM t;") == std::vector<std::int64_t>{10});
+    const auto unregistered = host.db.dispatcher()->unregister_udf(session,
+                                                                   "twice",
+                                                                   bigint_input(host.resource()),
+                                                                   components::catalog::drop_behavior_t::restrict_,
+                                                                   main_public);
+    INFO(unregistered.what);
+    REQUIRE_FALSE(unregistered.contains_error());
+    CHECK(twice_rows(host) == 0);
+}
+
+// The schema the host names is the target, not the session's place: a session of a connection's schema registers into
+// a local one.
+TEST_CASE("integration::cpp::udf_cast_in_block::a_session_of_a_connection_names_a_local_schema") {
+    host_t host("test_udf_cast_in_block/udf_connection_named_schema");
+    host.register_shop();
+    const qualified_name_t main_public{core::dbname_t{"main"}, core::schema_t{"public"}, core::relname_t{}};
+    const auto session = any();
+    host.db.ok(session, "SET search_path = 'm2.shop.public';");
+    const auto registered = host.db.dispatcher()->register_udf(session, twice_function(host.resource()), main_public);
+    INFO(registered.what);
+    REQUIRE_FALSE(registered.contains_error());
+    CHECK(twice_rows(host) == 1);
+    const auto unregistered = host.db.dispatcher()->unregister_udf(session,
+                                                                   "twice",
+                                                                   bigint_input(host.resource()),
+                                                                   components::catalog::drop_behavior_t::restrict_,
+                                                                   main_public);
+    INFO(unregistered.what);
+    REQUIRE_FALSE(unregistered.contains_error());
+    CHECK(twice_rows(host) == 0);
+}

@@ -16,10 +16,14 @@ namespace components::logical_plan {
         node_unregister_udf_t(std::pmr::memory_resource* resource,
                               core::function_name_t function_name,
                               std::pmr::vector<types::complex_logical_type> inputs,
-                              components::catalog::drop_behavior_t behavior);
+                              components::catalog::drop_behavior_t behavior,
+                              qualified_name_t schema = {});
 
         const std::string& function_name() const noexcept { return function_name_; }
-        // The schema of the session's place, the one the overload is dropped from: the executor stamps it.
+        // [[connection.]database.]schema the overload is dropped from, completed with the session's place; an empty
+        // name is the place's schema.
+        const qualified_name_t& schema() const noexcept { return schema_; }
+        // The oid of that schema: the executor stamps it.
         void set_schema_oid(types::oid_t schema_oid) noexcept { schema_oid_ = schema_oid; }
         types::oid_t schema_oid() const noexcept { return schema_oid_; }
         const std::pmr::vector<types::complex_logical_type>& inputs() const noexcept { return inputs_; }
@@ -32,6 +36,7 @@ namespace components::logical_plan {
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
         components::catalog::drop_behavior_t behavior_;
+        qualified_name_t schema_;
         types::oid_t schema_oid_{};
     };
 

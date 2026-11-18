@@ -40,15 +40,17 @@ namespace otterbrix {
         return {false, res};
     }
 
-    auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
-        -> core::error_t {
+    auto wrapper_dispatcher_t::register_udf(const session_id_t& session,
+                                            components::compute::function_ptr function,
+                                            const qualified_name_t& schema) -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
               function->name());
         return execute_node_(
             session,
-            boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function))));
+            boost::intrusive_ptr(
+                new components::logical_plan::node_register_udf_t(resource(), std::move(function), schema)));
     }
 
     auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn)
@@ -66,7 +68,8 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
                                               const std::pmr::vector<components::types::complex_logical_type>& inputs,
-                                              components::catalog::drop_behavior_t behavior) -> core::error_t {
+                                              components::catalog::drop_behavior_t behavior,
+                                              const qualified_name_t& schema) -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -76,7 +79,8 @@ namespace otterbrix {
                                  resource(),
                                  core::function_name_t{function_name},
                                  std::pmr::vector<components::types::complex_logical_type>(inputs, resource()),
-                                 behavior)));
+                                 behavior,
+                                 schema)));
     }
 
     auto wrapper_dispatcher_t::register_cast(const session_id_t& session,

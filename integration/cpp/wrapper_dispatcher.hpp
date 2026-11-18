@@ -47,14 +47,18 @@ namespace otterbrix {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
-        // RESTRICT (the default) refuses while a view calls the function; CASCADE drops those views too.
+        // `schema`: [[connection.]database.]schema, completed with the session's place; empty is the place's schema.
+        auto register_udf(const session_id_t& session,
+                          components::compute::function_ptr function,
+                          const qualified_name_t& schema = {}) -> core::error_t;
+        // RESTRICT (the default) refuses while a view calls the function; CASCADE drops those views too. `schema` as
+        // register_udf's.
         auto
         unregister_udf(const session_id_t& session,
                        const std::string& function_name,
                        const std::pmr::vector<components::types::complex_logical_type>& inputs,
-                       components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::restrict_)
-            -> core::error_t;
+                       components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::restrict_,
+                       const qualified_name_t& schema = {}) -> core::error_t;
         auto register_cast(const session_id_t& session,
                            const components::types::complex_logical_type& source,
                            const components::types::complex_logical_type& target,

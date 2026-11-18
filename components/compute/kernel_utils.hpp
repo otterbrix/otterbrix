@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <memory_resource>
@@ -27,8 +28,14 @@ namespace components::compute {
 
         std::pmr::memory_resource* resource() const;
 
+        // The statement's settings (its time zone) the chunk runs under, which the caller sets before it executes;
+        // null until then.
+        const graph_execution_context* settings() const noexcept { return settings_; }
+        void set_settings(const graph_execution_context* settings) noexcept { settings_ = settings; }
+
     private:
         std::pmr::memory_resource* resource_;
+        const graph_execution_context* settings_{nullptr};
     };
 
     // No default_exec_context(): a defaulted `ctx` backed by get_default_resource() (banned)

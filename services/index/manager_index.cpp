@@ -838,7 +838,7 @@ namespace services::index {
         components::index::keys_base_storage_t keys,
         components::logical_plan::index_type type,
         // Unused; kept because it's part of index_contract::create_index, which every caller sends.
-        core::date::timezone_offset_t /*session_tz*/,
+        components::graph_execution_context /*context*/,
         uint64_t built_compact_epoch) {
         trace(log_,
               "manager_index_t::create_index: index_oid={} on oid={}",
@@ -1304,7 +1304,7 @@ namespace services::index {
                                       components::catalog::oid_t table_oid,
                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                       uint64_t row_count,
-                                      core::date::timezone_offset_t /*session_tz*/,
+                                      components::graph_execution_context /*context*/,
                                       uint64_t built_compact_epoch) {
 #ifdef DEV_MODE
         g_index_repopulations.fetch_add(1, std::memory_order_relaxed);
@@ -1396,7 +1396,7 @@ namespace services::index {
                                                 components::logical_plan::index_type preferred_type,
                                                 uint64_t txn_id,
                                                 bool hides_own_deletes,
-                                                core::date::timezone_offset_t /*session_tz*/) {
+                                                components::graph_execution_context /*context*/) {
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
             // A planner invariant, not a data answer: an empty match would be the silent wrong
@@ -1455,7 +1455,7 @@ namespace services::index {
                             components::expressions::compare_type compare,
                             uint64_t txn_id,
                             bool hides_own_deletes,
-                            core::date::timezone_offset_t session_tz) {
+                            components::graph_execution_context context) {
         co_return co_await search_with_preferred_type(session,
                                                       table_oid,
                                                       std::move(keys),
@@ -1464,7 +1464,7 @@ namespace services::index {
                                                       components::logical_plan::index_type::no_valid,
                                                       txn_id,
                                                       hides_own_deletes,
-                                                      session_tz);
+                                                      std::move(context));
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
@@ -1846,7 +1846,7 @@ namespace services::index {
                                                 std::pmr::vector<components::vector::data_chunk_t> physical_data,
                                                 uint64_t physical_row_start,
                                                 uint64_t txn_id,
-                                                core::date::timezone_offset_t /*session_tz*/) {
+                                                components::graph_execution_context /*context*/) {
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
             error(log_,

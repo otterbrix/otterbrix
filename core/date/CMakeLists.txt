@@ -5,10 +5,12 @@ set(header_${PROJECT_NAME}
         date_cast.hpp
         date_parse.hpp
         date_to_string.hpp
+        time_zone.hpp
         timezones.hpp
         )
 
 set(source_${PROJECT_NAME}
+        time_zone.cpp
         timezones.cpp
         )
 
@@ -31,4 +33,5 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME}
         PUBLIC
         absl::int128
+        absl::time
 )

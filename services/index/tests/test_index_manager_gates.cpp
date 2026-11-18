@@ -204,7 +204,7 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
                                      components::catalog::oid_t{static_cast<unsigned>(kIndexOid) + 1},
                                      keys_of(&resource, {"id", "name"}),
                                      components::logical_plan::index_type::single,
-                                     core::date::timezone_offset_t{},
+                                     components::graph_execution_context{},
                                      /*built_compact_epoch=*/0);
     REQUIRE(fut.is_ready());
     REQUIRE(std::move(fut).take_ready().contains_error());
@@ -245,7 +245,7 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
                                                 chunk_of(&resource, {10}),
                                                 /*physical_row_start=*/0,
                                                 build_txn,
-                                                core::date::timezone_offset_t{});
+                                                components::graph_execution_context{});
         REQUIRE(fut.is_ready());
     }
 
@@ -315,7 +315,7 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
                                                 chunk_of(&resource, {10}),
                                                 /*physical_row_start=*/0,
                                                 build_txn,
-                                                core::date::timezone_offset_t{});
+                                                components::graph_execution_context{});
         REQUIRE(fut.is_ready());
     }
 
@@ -395,7 +395,7 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
                                                 chunk_of(&resource, {10}),
                                                 /*physical_row_start=*/0,
                                                 build_txn,
-                                                core::date::timezone_offset_t{});
+                                                components::graph_execution_context{});
         settle(fut, agent);
     }
 

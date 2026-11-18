@@ -115,7 +115,7 @@ namespace components::operators {
                                                           compare_type_,
                                                           ctx->txn.transaction_id,
                                                           hides_own_deletes,
-                                                          ctx->execution_context.timezone_offset)
+                                                          ctx->execution_context)
                             : actor_zeta::otterbrix::send(ctx->index_address,
                                                           &services::index::manager_index_t::search_with_preferred_type,
                                                           ctx->session,
@@ -126,7 +126,7 @@ namespace components::operators {
                                                           preferred_index_type_,
                                                           ctx->txn.transaction_id,
                                                           hides_own_deletes,
-                                                          ctx->execution_context.timezone_offset);
+                                                          ctx->execution_context);
         auto matched = co_await std::move(sf);
         if (matched.has_error()) {
             // Refuse instead of publishing an empty window, indistinguishable from "matched nothing".

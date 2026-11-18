@@ -3,7 +3,7 @@
 #include "place.hpp"
 
 #include <components/types/types.hpp>
-#include <core/date/timezones.hpp>
+#include <core/date/time_zone.hpp>
 
 #include <algorithm>
 #include <array>
@@ -148,9 +148,9 @@ namespace components::catalog {
     canonical_setting_value(setting_id id, std::string_view raw, std::pmr::memory_resource* resource) {
         switch (id) {
             case setting_id::timezone: {
-                // Lowercase: timezone_to_offset only matches lowercase names.
                 const auto lowered = to_lower(raw);
-                if (!core::date::timezone_to_offset(lowered)) {
+                core::date::time_zone_t zone;
+                if (!core::date::setting_time_zone(lowered, &zone)) {
                     return core::error_t(
                         core::error_code_t::invalid_parameter,
                         std::pmr::string{"unrecognized timezone: '" + std::string(raw) + "'", resource});
@@ -202,10 +202,11 @@ namespace components::catalog {
         const std::string_view value{canonical.value().data(), canonical.value().size()};
         switch (id) {
             case setting_id::timezone: {
-                auto offset = core::date::timezone_to_offset(value);
-                assert(offset && "canonical_setting_value passed a timezone the recognizer then refused");
+                core::date::time_zone_t zone;
+                [[maybe_unused]] const bool recognized = core::date::setting_time_zone(value, &zone);
+                assert(recognized && "canonical_setting_value passed a timezone the recognizer then refused");
                 cache.timezone_name = std::string(value);
-                cache.timezone_offset = *offset;
+                cache.timezone_offset = zone;
                 return core::error_t::no_error();
             }
             case setting_id::autocommit:

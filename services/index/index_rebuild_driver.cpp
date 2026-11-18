@@ -31,7 +31,7 @@ namespace services::index {
                                         actor_zeta::actor::address_t index_address,
                                         components::session::session_id_t session,
                                         committed_rows_snapshot_t snapshot,
-                                        core::date::timezone_offset_t session_tz) {
+                                        components::graph_execution_context context) {
         // Both addresses or nothing: a topology missing either has no rebuild to do, and a loop
         // that sent scans to an empty disk address would believe it rebuilt the index while
         // reaching nowhere.
@@ -137,7 +137,7 @@ namespace services::index {
                                                           table_oid,
                                                           std::move(scan_data),
                                                           total,
-                                                          session_tz,
+                                                          context,
                                                           built_epoch);
             auto repopulate_error = co_await std::move(rpf);
             if (repopulate_error.contains_error()) {

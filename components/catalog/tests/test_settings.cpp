@@ -29,7 +29,8 @@ TEST_CASE("catalog::settings::try_invalid_values") {
         CAPTURE(find_setting_by_id(id).sql_name, raw);
         REQUIRE(set_setting(cache, id, raw, resource).contains_error());
         REQUIRE(cache.timezone_name == before.timezone_name);
-        REQUIRE(cache.timezone_offset == before.timezone_offset);
+        REQUIRE(cache.timezone_offset.offset_at(core::date::timestamptz_t{}) ==
+                before.timezone_offset.offset_at(core::date::timestamptz_t{}));
         REQUIRE(cache.autocommit == before.autocommit);
     }
 }

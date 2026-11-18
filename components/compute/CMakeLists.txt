@@ -12,6 +12,7 @@ set(${PROJECT_NAME}_SOURCES
         kernels/string_functions.cpp
         kernels/expand_functions.cpp
         kernels/math_functions.cpp
+        kernels/datetime_functions.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -28,6 +29,7 @@ target_link_libraries(
         otterbrix::vector
         otterbrix::regex
         absl::int128
+        otterbrix::date
 )
 
 target_include_directories( otterbrix_${PROJECT_NAME} PUBLIC )

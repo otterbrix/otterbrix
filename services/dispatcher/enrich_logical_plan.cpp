@@ -302,7 +302,7 @@ namespace services::dispatcher { namespace {
     // cast), as PostgreSQL's transformInsertRow coerces every row. The column is rebuilt in that type for every
     // chunk, so the binding's cast, resolved against the typed rows, no longer applies.
     core::error_t spend_deferred_cells(components::logical_plan::node_insert_t* node,
-                                       core::date::timezone_offset_t session_tz) {
+                                       const components::graph_execution_context& settings) {
         auto* resource = node->resource();
         auto* source = node->children().empty() ? nullptr : node->children().front().get();
         if (source == nullptr || source->type() != components::logical_plan::node_type::data_t) {
@@ -324,7 +324,6 @@ namespace services::dispatcher { namespace {
         std::sort(columns.begin(), columns.end());
         columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
 
-        const components::graph_execution_context settings{.timezone_offset = session_tz};
         for (const auto column : columns) {
             auto& binding = node->column_bindings()[column];
             if (auto error = data->settle_column(column, binding.target_type, binding.cast, settings);
@@ -956,7 +955,8 @@ namespace services::dispatcher { namespace {
                 if (auto ec = spend_literal_digits(node); ec.contains_error()) {
                     co_return ec;
                 }
-                if (auto ec = spend_deferred_cells(node, ctx.session_tz); ec.contains_error()) {
+                if (auto ec = spend_deferred_cells(node, components::graph_execution_context{ctx.session_tz});
+                    ec.contains_error()) {
                     co_return ec;
                 }
                 const auto* md = node->table_metadata();

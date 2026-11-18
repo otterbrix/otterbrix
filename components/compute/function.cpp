@@ -497,13 +497,17 @@ namespace components::compute {
             return;
         }
         const auto& name = function->name();
+        // A name may have several builtins (overloads of different volatility): the row is the one of this name at
+        // the uid the function is about to take.
         const auto* row = std::find_if(DEFAULT_FUNCTIONS.begin(), DEFAULT_FUNCTIONS.end(), [&](const auto& entry) {
-            return entry.first == name;
+            return entry.first == name && entry.second == current_uid_;
         });
         if (row == DEFAULT_FUNCTIONS.end()) {
             std::pmr::string what{"builtin '", resource_};
             what += std::pmr::string{name, resource_};
-            what += "' has no DEFAULT_FUNCTIONS row";
+            what += "' has no DEFAULT_FUNCTIONS row at uid ";
+            what += std::pmr::string{std::to_string(current_uid_), resource_};
+            what += "; the whole uid table is shifted";
             poison_builtins_(core::error_t(core::error_code_t::internal_error, std::move(what)));
             return;
         }

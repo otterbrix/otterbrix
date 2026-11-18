@@ -406,7 +406,7 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, function_uid>, 24> DEFAULT_FUNCTIONS{
+    static const std::array<std::pair<std::string, function_uid>, 29> DEFAULT_FUNCTIONS{
         std::pair<std::string, function_uid>{"sum", 0},
         std::pair<std::string, function_uid>{"min", 1},
         std::pair<std::string, function_uid>{"max", 2},
@@ -430,7 +430,12 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"current_connection", 20},
         std::pair<std::string, function_uid>{"current_setting", 21},
         std::pair<std::string, function_uid>{"set_config", 22},
-        std::pair<std::string, function_uid>{"boolean_test", 23}};
+        std::pair<std::string, function_uid>{"boolean_test", 23},
+        std::pair<std::string, function_uid>{"convert_tz", 24},
+        std::pair<std::string, function_uid>{"timezone", 25},
+        std::pair<std::string, function_uid>{"date_trunc", 26},
+        std::pair<std::string, function_uid>{"date_part", 27},
+        std::pair<std::string, function_uid>{"timezone", 28}};
 
     inline bool is_builtin(function_uid uid) noexcept { return uid < DEFAULT_FUNCTIONS.size(); }
 
@@ -465,6 +470,7 @@ namespace components::compute {
     void register_place_functions(function_registry_t& registry);
     void register_setting_functions(function_registry_t& registry);
     void register_boolean_test_function(function_registry_t& registry);
+    void register_datetime_functions(function_registry_t& registry);
 
     // current_database() / current_schema() / current_connection(): the executor reads the session's place from
     // the catalog and binds its name (NULL when it is gone; current_connection: '' for a local place) as the one

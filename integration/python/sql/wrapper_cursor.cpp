@@ -452,6 +452,10 @@ py::tuple wrapper_cursor::get_error() const {
         case error_code_t::read_only_sql_transaction:
             type = "read_only_sql_transaction";
             break;
+
+        case error_code_t::bad_copy_file_format:
+            type = "bad_copy_file_format";
+            break;
     }
     return py::make_tuple(type, ptr_->get_error().what);
 }

@@ -11,6 +11,8 @@ namespace otterbrix {
 
         // void execute_async(const std::string& query);
         components::cursor::cursor_t_ptr execute(const std::string& query);
+        // COPY ... FROM STDIN `query` with all of its `data` (wrapper_dispatcher_t::copy_from).
+        components::cursor::cursor_t_ptr copy_from(const std::string& query, std::string_view data);
         components::cursor::cursor_t_ptr cursor();
         void close();
 

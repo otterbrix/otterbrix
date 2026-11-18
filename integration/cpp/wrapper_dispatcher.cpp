@@ -146,6 +146,31 @@ namespace otterbrix {
         }
     }
 
+    cursor_t_ptr wrapper_dispatcher_t::copy_from(const components::session::session_id_t& session,
+                                                 const std::string& query,
+                                                 std::string_view data) {
+        using namespace components::sql::transform;
+
+        trace(log_, "wrapper_dispatcher_t::copy_from session: {}, bytes: {}", session.data(), data.size());
+        core::pmr::arena_resource_t parser_arena(resource());
+        auto parsed = parse_statement_(&parser_arena, query);
+        if (parsed.has_error()) {
+            return send_failed_plan(session, parsed.error());
+        }
+        if (nodeTag(parsed.value()) != T_CopyStmt) {
+            return send_failed_plan(
+                session,
+                core::error_t{core::error_code_t::invalid_parameter,
+                              std::pmr::string{"copy_from takes a COPY ... FROM STDIN", resource()}});
+        }
+        transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
+        auto result = local_transformer.transform_copy(*parsed.value(), data).finalize();
+        if (result.has_error()) {
+            return send_failed_plan(session, result.error());
+        }
+        return execute_plan(session, std::move(result.value()));
+    }
+
     cursor_t_ptr
     wrapper_dispatcher_t::describe_sql(const components::session::session_id_t& session,
                                        const std::string& query,

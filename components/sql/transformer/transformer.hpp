@@ -60,6 +60,8 @@ namespace components::sql::transform {
             , parameter_insert_rows_(resource_) {}
 
         transform_result transform(Node& node);
+        // COPY ... FROM STDIN with its data, the whole of it: the rows are inserted as INSERT's VALUES are.
+        transform_result transform_copy(Node& node, std::string_view data);
         // Lower a single statement node to a plan node (the dispatch switch);
         // transform() wraps the result with parameter bookkeeping. Subqueries are collected
         // into plan->sub_queries extension nodes route through plan->parameters.
@@ -115,6 +117,7 @@ namespace components::sql::transform {
                                                                         logical_plan::execution_plan_t* plan);
         core::result_wrapper_t<logical_plan::node_ptr> transform_insert(InsertStmt& node,
                                                                         logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_copy_from(CopyStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_delete(DeleteStmt& node,
                                                                         logical_plan::execution_plan_t* plan);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_index(IndexStmt& node);
@@ -409,6 +412,9 @@ namespace components::sql::transform {
         std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
         std::pmr::unordered_map<std::string, SelectStmt*> recursive_cte_queries_{resource_};
         bool transforming_recursive_member_{false};
+        // The data of COPY ... FROM STDIN, when the statement came with it (transform_copy).
+        std::string_view copy_data_;
+        bool has_copy_data_{false};
 
         // Every catalog lookup the statement depends on, accumulated across all
         // sub-queries and moved onto the execution_plan_t at the end of transform()

@@ -76,6 +76,10 @@ namespace otterbrix {
                                      const std::string& query,
                                      const std::vector<std::pair<size_t, components::vector::vector_t>>& params,
                                      uint32_t render_id = 0) -> components::cursor::cursor_t_ptr;
+        // COPY ... FROM STDIN `query` with `data`, all of it (the CopyData the client sent, joined): one statement of
+        // the session that inserts the rows, text or CSV, as INSERT inserts VALUES. The cursor counts the rows.
+        auto copy_from(const session_id_t& session, const std::string& query, std::string_view data)
+            -> components::cursor::cursor_t_ptr;
         // What PostgreSQL 18's Parse and Describe answer for `query`: a cursor without rows whose type_data() are the
         // result columns and whose parameter_types()[n-1] is the type of $n. `params` are values bound as a Bind binds
         // them (Describe of a portal); the rest are typed by their context. Nothing is planned or run, and no storage

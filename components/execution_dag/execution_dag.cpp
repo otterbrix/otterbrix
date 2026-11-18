@@ -386,9 +386,6 @@ namespace components::execution_dag {
                 mask.set_value(row, arm == chosen);
             }
         }
-        for (size_t arm = 0; arm <= arms; arm++) {
-            set_output_size(arm, count);
-        }
         return core::error_t::no_error();
     }
 
@@ -443,7 +440,6 @@ namespace components::execution_dag {
             }
             vector::vector_ops::copy(value, result, row + 1, row, row);
         }
-        set_output_size(0, count);
         return core::error_t::no_error();
     }
 
@@ -1111,6 +1107,8 @@ namespace components::execution_dag {
         if (node->reduces() && count == unconstrained_rows) {
             count = ambient;
         }
+        // The outputs' sizes are set here alone: a constant node processes one row, yet its outputs stay
+        // unconstrained, a constant every reader broadcasts.
         for (auto slot : node->output_indices()) {
             slot_sizes_[slot] = count;
         }

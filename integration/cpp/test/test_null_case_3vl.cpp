@@ -76,6 +76,30 @@ TEST_CASE("integration::cpp::case3vl::projection_null_row0") {
     CHECK(coli(d, "SELECT CASE WHEN x = 777 THEN x END FROM m.t ORDER BY id;") == L{opt{}, opt{}, opt{}});
 }
 
+// A CASE whose WHEN is the same for every row is a constant: every row reads it, not row 0 alone.
+TEST_CASE("integration::cpp::case3vl::constant_condition_over_rows") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/constant_condition"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(okq(d, "CREATE SCHEMA m;"));
+    REQUIRE(okq(d, "CREATE TABLE m.t (id INT);"));
+    REQUIRE(okq(d, "INSERT INTO m.t (id) VALUES (1), (2), (3), (4), (5);"));
+
+    CHECK(coli(d, "SELECT CASE WHEN abs(-1) = 1 THEN 1 ELSE 2 END FROM m.t;") == L{1, 1, 1, 1, 1});
+    CHECK(coli(d, "SELECT CASE WHEN abs(-1) = 2 THEN 1 ELSE 2 END FROM m.t;") == L{2, 2, 2, 2, 2});
+    CHECK(coli(d, "SELECT CASE WHEN current_connection() = '' THEN 1 ELSE 2 END FROM m.t;") == L{1, 1, 1, 1, 1});
+    CHECK(coli(d, "SELECT length(CASE WHEN abs(-1) = 1 THEN 'ab' ELSE 'b' END) FROM m.t;") == L{2, 2, 2, 2, 2});
+
+    auto texts = exec(d, "SELECT CASE WHEN current_connection() = '' THEN 'ab' ELSE 'b' END FROM m.t;");
+    REQUIRE(texts->is_success());
+    REQUIRE(texts->size() == 5);
+    for (uint64_t row = 0; row < texts->size(); ++row) {
+        auto value = texts->get<std::string_view>(0, row);
+        REQUIRE_FALSE(value.has_error());
+        CHECK(value.value() == "ab");
+    }
+}
+
 TEST_CASE("integration::cpp::case3vl::aggregate_case_not") {
     auto config = test_helpers::make_test_config(integration_fixture_path("case3vl/agg"));
     test_spaces space(config);

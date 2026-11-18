@@ -192,6 +192,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_datetime_literals.cpp
         test_copy_from.cpp
         test_catalog_compat.cpp
+        test_datetime_functions.cpp
         test_null_case_3vl.cpp
         test_null_semantics_matrix.cpp
         test_production_scenarios.cpp

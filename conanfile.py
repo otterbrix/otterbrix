@@ -49,7 +49,7 @@ class OtterbrixConan(ConanFile):
         self.requires("abseil/20260107.1", force=True, transitive_headers=True)
         self.requires("re2/20240702")
         self.requires("benchmark/1.6.1")
-        self.requires("actor-zeta/2.0.0", transitive_headers=True)
+        self.requires("actor-zeta/2.0.1", transitive_headers=True)
 
     def build_requirements(self):
         self.tool_requires("bison/3.8.2")

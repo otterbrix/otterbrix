@@ -122,7 +122,7 @@ namespace {
 TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
     require_layout(well_known_oid::pg_namespace_table, {"oid", "nspname", "nspdatabase"});
     require_layout(well_known_oid::pg_class_table,
-                   {"oid", "relname", "relnamespace", "relkind", "relstoragemode", "reltype"});
+                   {"oid", "relname", "relnamespace", "relkind", "relstoragemode", "reltype", "relispartition"});
     require_layout(well_known_oid::pg_attribute_table,
                    {"attoid",
                     "attrelid",
@@ -195,6 +195,7 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     require_col(well_known_oid::pg_class_table, pg_class_col::relkind, "relkind");
     require_col(well_known_oid::pg_class_table, pg_class_col::relstoragemode, "relstoragemode");
     require_col(well_known_oid::pg_class_table, pg_class_col::reltype, "reltype");
+    require_col(well_known_oid::pg_class_table, pg_class_col::relispartition, "relispartition");
     // pg_namespace
     require_col(well_known_oid::pg_namespace_table, pg_namespace_col::oid, "oid");
     require_col(well_known_oid::pg_namespace_table, pg_namespace_col::nspname, "nspname");

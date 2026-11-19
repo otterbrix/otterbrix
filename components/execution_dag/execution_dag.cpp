@@ -386,9 +386,6 @@ namespace components::execution_dag {
                 mask.set_value(row, arm == chosen);
             }
         }
-        for (size_t arm = 0; arm <= arms; arm++) {
-            set_output_size(arm, count);
-        }
         return core::error_t::no_error();
     }
 
@@ -443,7 +440,6 @@ namespace components::execution_dag {
             }
             vector::vector_ops::copy(value, result, row + 1, row, row);
         }
-        set_output_size(0, count);
         return core::error_t::no_error();
     }
 
@@ -494,7 +490,8 @@ namespace components::execution_dag {
         , distinct_hashes_(resource, types::logical_type::UBIGINT, distinct ? vector::DEFAULT_VECTOR_CAPACITY : 1)
         , distinct_values_(resource) {}
 
-    core::error_t function_node_t::process(const graph_execution_context&, uint64_t count) {
+    core::error_t function_node_t::process(const graph_execution_context& context, uint64_t count) {
+        context_.set_settings(&context);
         auto arguments = argument_chunk(count);
         // The executor is built once and kept, so the accumulators survive across chunks
         if (auto error = ensure_executor(); error.contains_error()) {
@@ -1110,6 +1107,8 @@ namespace components::execution_dag {
         if (node->reduces() && count == unconstrained_rows) {
             count = ambient;
         }
+        // The outputs' sizes are set here alone: a constant node processes one row, yet its outputs stay
+        // unconstrained, a constant every reader broadcasts.
         for (auto slot : node->output_indices()) {
             slot_sizes_[slot] = count;
         }

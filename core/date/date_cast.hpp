@@ -1,6 +1,7 @@
 #pragma once
 
 #include "date_types.hpp"
+#include "time_zone.hpp"
 
 #include <type_traits>
 
@@ -20,29 +21,29 @@ namespace core::date {
         // ── Identity ─────────────────────────────────────────────────────────
         template<typename T>
         struct date_time_cast_impl<T, T> {
-            static T cast(T from, [[maybe_unused]] seconds_i32 session_tz) { return from; }
+            static T cast(T from, [[maybe_unused]] const time_zone_t& zone) { return from; }
         };
 
         // ── date_t → timestamp_t : midnight on that date ──────────────────
         template<>
         struct date_time_cast_impl<timestamp_t, date_t> {
-            static timestamp_t cast(date_t from, [[maybe_unused]] seconds_i32 session_tz) {
+            static timestamp_t cast(date_t from, [[maybe_unused]] const time_zone_t& zone) {
                 return timestamp_t{std::chrono::duration_cast<microseconds>(from.value)};
             }
         };
 
-        // ── date_t → timestamptz_t : midnight UTC on that date ────────────
+        // ── date_t → timestamptz_t : midnight of the session zone on that date ──
         template<>
         struct date_time_cast_impl<timestamptz_t, date_t> {
-            static timestamptz_t cast(date_t from, [[maybe_unused]] seconds_i32 session_tz) {
-                return timestamptz_t{std::chrono::duration_cast<microseconds>(from.value)};
+            static timestamptz_t cast(date_t from, const time_zone_t& zone) {
+                return zone.to_utc(timestamp_t{std::chrono::duration_cast<microseconds>(from.value)});
             }
         };
 
         // ── timestamp_t → date_t : extract local date ─────────────────────
         template<>
         struct date_time_cast_impl<date_t, timestamp_t> {
-            static date_t cast(timestamp_t from, [[maybe_unused]] seconds_i32 session_tz) {
+            static date_t cast(timestamp_t from, [[maybe_unused]] const time_zone_t& zone) {
                 auto [day_part, time_part] = split_timestamp(from.value);
                 return date_t{day_part};
             }
@@ -51,39 +52,29 @@ namespace core::date {
         // ── timestamp_t → time_t : extract local time-of-day ─────────────
         template<>
         struct date_time_cast_impl<time_t, timestamp_t> {
-            static time_t cast(timestamp_t from, [[maybe_unused]] seconds_i32 session_tz) {
+            static time_t cast(timestamp_t from, [[maybe_unused]] const time_zone_t& zone) {
                 auto [day_part, time_part] = split_timestamp(from.value);
                 return time_t{time_part};
             }
         };
 
-        // ── timestamp_t → timestamptz_t : local → UTC ────────────────────
-        // UTC = local − session_tz
+        // ── timestamp_t → timestamptz_t : the session zone's wall time → UTC ──
         template<>
         struct date_time_cast_impl<timestamptz_t, timestamp_t> {
-            static timestamptz_t cast(timestamp_t from, seconds_i32 session_tz) {
-                auto offset = std::chrono::duration_cast<microseconds>(session_tz);
-                return timestamptz_t{from.value - offset};
-            }
+            static timestamptz_t cast(timestamp_t from, const time_zone_t& zone) { return zone.to_utc(from); }
         };
 
-        // ── timestamptz_t → timestamp_t : UTC → local ────────────────────
-        // local = UTC + session_tz
+        // ── timestamptz_t → timestamp_t : UTC → the session zone's wall time ──
         template<>
         struct date_time_cast_impl<timestamp_t, timestamptz_t> {
-            static timestamp_t cast(timestamptz_t from, seconds_i32 session_tz) {
-                auto offset = std::chrono::duration_cast<microseconds>(session_tz);
-                return timestamp_t{from.value + offset};
-            }
+            static timestamp_t cast(timestamptz_t from, const time_zone_t& zone) { return zone.to_local(from); }
         };
 
         // ── timestamptz_t → date_t : session-local date ───────────────────
         template<>
         struct date_time_cast_impl<date_t, timestamptz_t> {
-            static date_t cast(timestamptz_t from, seconds_i32 session_tz) {
-                auto offset = std::chrono::duration_cast<microseconds>(session_tz);
-                auto local_us = from.value + offset;
-                auto [day_part, time_part] = split_timestamp(local_us);
+            static date_t cast(timestamptz_t from, const time_zone_t& zone) {
+                auto [day_part, time_part] = split_timestamp(zone.to_local(from).value);
                 return date_t{day_part};
             }
         };
@@ -91,44 +82,43 @@ namespace core::date {
         // ── timestamptz_t → time_t : session-local time-of-day ───────────
         template<>
         struct date_time_cast_impl<time_t, timestamptz_t> {
-            static time_t cast(timestamptz_t from, seconds_i32 session_tz) {
-                auto offset = std::chrono::duration_cast<microseconds>(session_tz);
-                auto local_us = from.value + offset;
-                auto [day_part, time_part] = split_timestamp(local_us);
+            static time_t cast(timestamptz_t from, const time_zone_t& zone) {
+                auto [day_part, time_part] = split_timestamp(zone.to_local(from).value);
                 return time_t{time_part};
             }
         };
 
-        // ── timestamptz_t → timetz_t : session-local time with zone ───────
+        // ── timestamptz_t → timetz_t : session-local time with the offset of that instant ──
         template<>
         struct date_time_cast_impl<timetz_t, timestamptz_t> {
-            static timetz_t cast(timestamptz_t from, seconds_i32 session_tz) {
-                auto offset = std::chrono::duration_cast<microseconds>(session_tz);
-                auto local_us = from.value + offset;
-                auto [day_part, time_part] = split_timestamp(local_us);
-                return timetz_t{time_part, session_tz};
+            static timetz_t cast(timestamptz_t from, const time_zone_t& zone) {
+                auto offset = zone.offset_at(from);
+                auto [day_part, time_part] =
+                    split_timestamp(from.value + std::chrono::duration_cast<microseconds>(offset));
+                return timetz_t{time_part, offset};
             }
         };
 
-        // ── time_t → timetz_t : attach session zone ───────────────────────
+        // ── time_t → timetz_t : attach the session zone's offset as of now (PostgreSQL 18 time_timetz) ──
         template<>
         struct date_time_cast_impl<timetz_t, time_t> {
-            static timetz_t cast(time_t from, seconds_i32 session_tz) { return timetz_t{from.value, session_tz}; }
+            static timetz_t cast(time_t from, const time_zone_t& zone) {
+                return timetz_t{from.value, zone.current_offset()};
+            }
         };
 
         // ── timetz_t → time_t : drop zone, keep local time ───────────────
         template<>
         struct date_time_cast_impl<time_t, timetz_t> {
-            static time_t cast(timetz_t from, [[maybe_unused]] seconds_i32 session_tz) { return time_t{from.time}; }
+            static time_t cast(timetz_t from, [[maybe_unused]] const time_zone_t& zone) { return time_t{from.time}; }
         };
 
     } // namespace detail
 
-    // Public interface.
-    // session_tz: UTC offset in seconds east of UTC (catalog/session timezone).
+    // Public interface. `zone`: the session's time zone.
     template<typename To, typename From>
-    To convert_date_time(From from, seconds_i32 session_tz) {
-        return detail::date_time_cast_impl<To, From>::cast(from, session_tz);
+    To convert_date_time(From from, const time_zone_t& zone) {
+        return detail::date_time_cast_impl<To, From>::cast(from, zone);
     }
 
 } // namespace core::date

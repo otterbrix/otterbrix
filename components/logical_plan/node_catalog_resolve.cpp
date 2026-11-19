@@ -78,6 +78,9 @@ namespace components::logical_plan {
                            << (entry.direction == resolve_direction::outgoing ? "outgoing" : "referencing")
                            << " target=" << entry.target;
                     break;
+                case resolve_kind::type_names:
+                    stream << "$catalog_resolve_type_names: " << entry.type_names.size();
+                    break;
             }
         }
         return stream.str();
@@ -105,6 +108,9 @@ namespace components::logical_plan {
             case resolve_kind::constraint:
                 slot = &constraints;
                 break;
+            case resolve_kind::type_names:
+                slot = &type_names;
+                break;
         }
         if (!*slot) {
             *slot = make_node_catalog_resolve(resource, kind);
@@ -113,7 +119,7 @@ namespace components::logical_plan {
     }
 
     bool catalog_resolves_t::empty() const noexcept {
-        for (const auto* slot : {&database, &namespaces, &tables, &types, &constraints}) {
+        for (const auto* slot : {&database, &namespaces, &tables, &types, &constraints, &type_names}) {
             if (*slot && !(*slot)->empty()) {
                 return false;
             }
@@ -132,6 +138,13 @@ namespace components::logical_plan {
             }
         }
         return nullptr;
+    }
+
+    const resolve_entry_t* catalog_resolves_t::type_names_entry() const noexcept {
+        if (!type_names || type_names->entries().empty()) {
+            return nullptr;
+        }
+        return &type_names->entries().front();
     }
 
     const resolve_entry_t* catalog_resolves_t::namespace_entry(const qualified_name_t& written) const noexcept {

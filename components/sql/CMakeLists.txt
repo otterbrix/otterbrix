@@ -38,6 +38,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/utils.cpp
     transformer/transformer.cpp
     transformer/transform_result.cpp
+    transformer/copy_format.cpp
 
     transformer/impl/transform_database.cpp
     transformer/impl/transform_table.cpp
@@ -48,6 +49,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transfrom_common.cpp
     transformer/impl/transform_update.cpp
     transformer/impl/transform_insert.cpp
+    transformer/impl/transform_copy.cpp
     transformer/impl/transform_delete.cpp
     transformer/impl/transform_returning.cpp
     transformer/impl/transform_index.cpp

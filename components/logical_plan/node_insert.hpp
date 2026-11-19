@@ -145,6 +145,11 @@ namespace components::logical_plan {
         void set_written_defaults(insert_written_defaults_t v) { written_defaults_ = std::move(v); }
         const insert_written_defaults_t& written_defaults() const { return written_defaults_; }
 
+        // The rows of COPY ... FROM: each gives a field to every target column (PostgreSQL 18 CopyFrom), so one
+        // narrower than the targets is refused rather than filled with defaults.
+        void set_from_copy(bool from_copy) noexcept { from_copy_ = from_copy; }
+        bool from_copy() const noexcept { return from_copy_; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -164,6 +169,7 @@ namespace components::logical_plan {
         insert_literal_digits_list_t literal_digits_;
         insert_default_cells_t default_cells_;
         insert_written_defaults_t written_defaults_;
+        bool from_copy_{false};
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

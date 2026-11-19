@@ -64,6 +64,36 @@ TEST_CASE("components::compute::registry::basic") {
                 // generate_series(start, stop[, step]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);
                 REQUIRE(fn->fn_arity().varargs == true);
+            } else if (name == "convert_tz") {
+                // convert_tz(dt, from_tz, to_tz)
+                REQUIRE(fn->fn_arity().num_args == 3);
+                REQUIRE(fn->fn_arity().varargs == false);
+                REQUIRE(fn->num_kernels() == 1);
+            } else if (name == "timezone") {
+                // timezone(zone text | interval, timestamp | timestamptz | timetz): (text, timetz) is volatile, a
+                // builtin of its own
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == false);
+                if (fn->volatility() == volatility_t::volatile_) {
+                    REQUIRE(fn->num_kernels() == 1);
+                } else {
+                    REQUIRE(fn->num_kernels() == 5);
+                }
+            } else if (name == "format_type") {
+                // format_type(type_oid, typmod) and the three lists of the types the place sees the executor binds
+                REQUIRE(fn->fn_arity().num_args == 5);
+                REQUIRE(fn->fn_arity().varargs == false);
+                REQUIRE(fn->num_kernels() == 1);
+            } else if (name == "date_trunc") {
+                // date_trunc(unit, timestamp | timestamptz [, zone] | date | interval) — 2 or 3 args
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == true);
+                REQUIRE(fn->num_kernels() == 5);
+            } else if (name == "date_part") {
+                // date_part(unit, timestamp | timestamptz | date | time | interval)
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == false);
+                REQUIRE(fn->num_kernels() == 5);
             } else if (name == "pow") {
                 // pow(base, exponent)
                 REQUIRE(fn->fn_arity().num_args == 2);

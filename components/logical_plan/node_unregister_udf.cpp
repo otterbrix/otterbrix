@@ -5,16 +5,22 @@ namespace components::logical_plan {
     node_unregister_udf_t::node_unregister_udf_t(std::pmr::memory_resource* resource,
                                                  core::function_name_t function_name,
                                                  std::pmr::vector<types::complex_logical_type> inputs,
-                                                 components::catalog::drop_behavior_t behavior)
+                                                 components::catalog::drop_behavior_t behavior,
+                                                 qualified_name_t schema)
         : node_t(resource, node_type::unregister_udf_t)
         , function_name_(std::move(static_cast<std::string&>(function_name)))
         , inputs_(std::move(inputs))
-        , behavior_(behavior) {}
+        , behavior_(behavior)
+        , schema_(std::move(schema)) {}
 
     hash_t node_unregister_udf_t::hash_impl() const { return 0; }
 
     std::string node_unregister_udf_t::to_string_impl() const {
         std::string out = "$unregister_udf[";
+        if (!schema_.empty()) {
+            out.append(schema_.to_string());
+            out.push_back('.');
+        }
         out.append(function_name_);
         out.push_back('/');
         out.append(std::to_string(inputs_.size()));

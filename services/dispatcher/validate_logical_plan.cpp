@@ -3303,6 +3303,20 @@ namespace services::dispatcher {
                     // table; more values than targets is refused, fewer only with a list.
                     const auto& listed = insert_node->key_translation();
                     const std::size_t targets = listed.empty() ? table_schema.size() : listed.size();
+                    // COPY's rows give a field to every target column; no rows give none.
+                    const std::size_t incoming_width = incoming_schema.value().size();
+                    if (insert_node->from_copy() && source_values != nullptr && source_values->size() > 0) {
+                        if (incoming_width > targets) {
+                            return core::error_t(core::error_code_t::bad_copy_file_format,
+                                                 std::pmr::string{"extra data after last expected column", resource});
+                        }
+                        if (incoming_width < targets) {
+                            return core::error_t(core::error_code_t::bad_copy_file_format,
+                                                 std::pmr::string{"missing data for column \"" +
+                                                                      tbl_ins->columns[incoming_width].attname + "\"",
+                                                                  resource});
+                        }
+                    }
                     if (incoming_schema.value().size() > targets) {
                         return core::error_t(
                             core::error_code_t::sql_parse_error,

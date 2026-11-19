@@ -211,8 +211,8 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_OK("INSERT INTO d.t DEFAULT VALUES;");
 
     SECTION("unsupported statements name their tag") {
-        // TRUNCATE has its own refusal (test_name_bugs.cpp).
-        for (const char* q : {"GRANT SELECT ON d.t TO alice;", "COPY d.t FROM '/tmp/x';"}) {
+        // TRUNCATE has its own refusal (test_name_bugs.cpp), COPY its own (test_copy_from.cpp).
+        for (const char* q : {"GRANT SELECT ON d.t TO alice;"}) {
             auto stmt = linitial(parse_ok(&arena_resource, q));
             auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
             const std::string what{result.get_error().what.c_str()};

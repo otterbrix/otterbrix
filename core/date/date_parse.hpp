@@ -1,6 +1,7 @@
 #pragma once
 
 #include "date_types.hpp"
+#include "time_zone.hpp"
 #include <charconv>
 #include <optional>
 #include <string_view>
@@ -66,6 +67,10 @@ namespace core::date {
             for (int i = 0; i < pad; ++i) frac *= 10;
             for (int i = pad; i < 0; ++i) frac /= 10;
             return microseconds{frac};
+        }
+
+        inline bool has_tz_offset(std::string_view s, size_t pos) {
+            return pos < s.size() && (s[pos] == '+' || s[pos] == '-');
         }
 
         // Parse timezone offset '+HH:MM' or '-HH:MM' into seconds east of UTC.
@@ -152,74 +157,89 @@ namespace core::date {
         return time_t{*us};
     }
 
-    // TIMETZ: 'HH:MM:SS[.ffffff][+HH:MM|-HH:MM]'
-    inline std::optional<timetz_t> parse_timetz(std::string_view s) {
+    // TIMETZ: 'HH:MM:SS[.ffffff][+HH:MM|-HH:MM]'; text that names no offset takes the offset `zone` (the session's)
+    // has now (PostgreSQL 18 timetz_in).
+    inline std::optional<timetz_t> parse_timetz(std::string_view s, const time_zone_t& zone) {
         size_t pos = 0;
         auto us = detail::parse_time_us(s, pos);
         if (!us)
             return std::nullopt;
-        auto zone = detail::parse_tz_offset(s, pos);
-        return timetz_t{*us, zone};
+        if (!detail::has_tz_offset(s, pos))
+            return timetz_t{*us, zone.current_offset()};
+        return timetz_t{*us, detail::parse_tz_offset(s, pos)};
     }
 
-    // TIMESTAMP: 'YYYY-MM-DD[T ]HH:MM:SS[.ffffff]'
+    // As above, text that names no offset read as UTC.
+    inline std::optional<timetz_t> parse_timetz(std::string_view s) { return parse_timetz(s, time_zone_t{}); }
+
+    namespace detail {
+
+        // 'YYYY-MM-DD[[T ]HH:MM:SS[.ffffff]]' as its wall time; a date alone is its midnight, as PostgreSQL reads it.
+        inline std::optional<timestamp_t> parse_wall_time(std::string_view s, size_t& pos) {
+            int y = 0, mo = 0, d = 0;
+            if (!parse_digits(s, pos, 4, y))
+                return std::nullopt;
+            if (!expect(s, pos, '-'))
+                return std::nullopt;
+            if (!parse_1or2(s, pos, mo))
+                return std::nullopt;
+            if (!expect(s, pos, '-'))
+                return std::nullopt;
+            if (!parse_1or2(s, pos, d))
+                return std::nullopt;
+            microseconds time_us{0};
+            if (pos < s.size()) {
+                if (s[pos] != ' ' && s[pos] != 'T')
+                    return std::nullopt;
+                ++pos;
+                auto parsed = parse_time_us(s, pos);
+                if (!parsed)
+                    return std::nullopt;
+                time_us = *parsed;
+            }
+            auto ymd = std::chrono::year{y} / std::chrono::month{static_cast<unsigned>(mo)} /
+                       std::chrono::day{static_cast<unsigned>(d)};
+            if (!ymd.ok())
+                return std::nullopt;
+            auto date_us = std::chrono::duration_cast<microseconds>(std::chrono::sys_days{ymd} - pg_epoch);
+            return timestamp_t{date_us + time_us};
+        }
+
+    } // namespace detail
+
+    // TIMESTAMP: 'YYYY-MM-DD[[T ]HH:MM:SS[.ffffff]]'
     inline std::optional<timestamp_t> parse_timestamp(std::string_view s) {
         size_t pos = 0;
-        int y = 0, mo = 0, d = 0;
-        if (!detail::parse_digits(s, pos, 4, y))
-            return std::nullopt;
-        if (!detail::expect(s, pos, '-'))
-            return std::nullopt;
-        if (!detail::parse_1or2(s, pos, mo))
-            return std::nullopt;
-        if (!detail::expect(s, pos, '-'))
-            return std::nullopt;
-        if (!detail::parse_1or2(s, pos, d))
-            return std::nullopt;
-        if (pos >= s.size() || (s[pos] != ' ' && s[pos] != 'T'))
-            return std::nullopt;
-        ++pos;
-        auto time_us = detail::parse_time_us(s, pos);
-        if (!time_us)
-            return std::nullopt;
-        auto ymd = std::chrono::year{y} / std::chrono::month{static_cast<unsigned>(mo)} /
-                   std::chrono::day{static_cast<unsigned>(d)};
-        if (!ymd.ok())
-            return std::nullopt;
-        auto date_us = std::chrono::duration_cast<microseconds>(std::chrono::sys_days{ymd} - pg_epoch);
-        return timestamp_t{date_us + *time_us};
+        return detail::parse_wall_time(s, pos);
     }
 
-    // TIMESTAMP WITH TIME ZONE: 'YYYY-MM-DD[T ]HH:MM:SS[.ffffff][+HH:MM|-HH:MM]'
-    // Stored as UTC: utc = local - zone_east
-    inline std::optional<timestamptz_t> parse_timestamptz(std::string_view s) {
+    // TIMESTAMP WITH TIME ZONE: 'YYYY-MM-DD[[T ]HH:MM:SS[.ffffff]][+HH:MM|-HH:MM]'; text that names no offset is the
+    // wall time of `zone` (the session's), read as the casts read it (time_zone_t::to_utc).
+    inline std::optional<timestamptz_t> parse_timestamptz(std::string_view s, const time_zone_t& zone) {
         size_t pos = 0;
-        int y = 0, mo = 0, d = 0;
-        if (!detail::parse_digits(s, pos, 4, y))
+        auto local = detail::parse_wall_time(s, pos);
+        if (!local)
             return std::nullopt;
-        if (!detail::expect(s, pos, '-'))
-            return std::nullopt;
-        if (!detail::parse_1or2(s, pos, mo))
-            return std::nullopt;
-        if (!detail::expect(s, pos, '-'))
-            return std::nullopt;
-        if (!detail::parse_1or2(s, pos, d))
-            return std::nullopt;
-        if (pos >= s.size() || (s[pos] != ' ' && s[pos] != 'T'))
-            return std::nullopt;
-        ++pos;
-        auto time_us = detail::parse_time_us(s, pos);
-        if (!time_us)
-            return std::nullopt;
-        auto zone = detail::parse_tz_offset(s, pos);
-        auto ymd = std::chrono::year{y} / std::chrono::month{static_cast<unsigned>(mo)} /
-                   std::chrono::day{static_cast<unsigned>(d)};
-        if (!ymd.ok())
-            return std::nullopt;
-        auto date_us = std::chrono::duration_cast<microseconds>(std::chrono::sys_days{ymd} - pg_epoch);
-        auto local_us = date_us + *time_us;
-        auto zone_us = std::chrono::duration_cast<microseconds>(zone);
-        return timestamptz_t{local_us - zone_us};
+        if (!detail::has_tz_offset(s, pos))
+            return zone.to_utc(*local);
+        auto offset = std::chrono::duration_cast<microseconds>(detail::parse_tz_offset(s, pos));
+        return timestamptz_t{local->value - offset};
+    }
+
+    // As above, text that names no offset read as UTC.
+    inline std::optional<timestamptz_t> parse_timestamptz(std::string_view s) {
+        return parse_timestamptz(s, time_zone_t{});
+    }
+
+    // Whether timestamptz / timetz text names its own offset, so it reads the same in every zone.
+    inline bool timestamptz_names_offset(std::string_view s) {
+        size_t pos = 0;
+        return detail::parse_wall_time(s, pos) && detail::has_tz_offset(s, pos);
+    }
+
+    inline bool timetz_names_offset(std::string_view s) {
+        size_t pos = 0;
+        return detail::parse_time_us(s, pos) && detail::has_tz_offset(s, pos);
     }
 
     // INTERVAL: 'N unit [N unit ...] [HH:MM:SS[.ffffff]]'

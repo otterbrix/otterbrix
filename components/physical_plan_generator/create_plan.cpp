@@ -39,6 +39,7 @@
 #include "impl/create_plan_resolve_namespace.hpp"
 #include "impl/create_plan_resolve_table.hpp"
 #include "impl/create_plan_resolve_type.hpp"
+#include "impl/create_plan_resolve_type_names.hpp"
 #include "impl/create_plan_savepoint.hpp"
 #include "impl/create_plan_select.hpp"
 #include "impl/create_plan_sequence.hpp"
@@ -310,6 +311,8 @@ namespace services::planner {
                         return impl::create_plan_resolve_type(context, node);
                     case components::logical_plan::resolve_kind::constraint:
                         return impl::create_plan_resolve_constraint(context, node);
+                    case components::logical_plan::resolve_kind::type_names:
+                        return impl::create_plan_resolve_type_names(context, node);
                 }
                 assert(false && "unknown catalog resolve kind");
                 std::abort();

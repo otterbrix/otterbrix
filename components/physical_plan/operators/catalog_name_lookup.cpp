@@ -217,6 +217,14 @@ namespace components::operators {
             co_return schema.error();
         }
         found.namespace_oid = schema.value();
+        // information_schema is a schema of every database (PostgreSQL 18): one without its own (a connection's) has
+        // main's, whose views show the session's current database.
+        if (found.namespace_oid == catalog::INVALID_OID && name.schema.t == "information_schema") {
+            found.database_oid = catalog::well_known_oid::main_database;
+            found.namespace_oid = catalog::well_known_oid::information_schema_namespace;
+            found.connection = core::connection_name_t{};
+            found.database = core::dbname_t{std::string{catalog::well_known_oid::main_database_name}};
+        }
         co_return found;
     }
 

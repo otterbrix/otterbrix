@@ -9,6 +9,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/index/forward.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -73,7 +74,7 @@ namespace services::index {
                                                       components::catalog::oid_t table_oid,
                                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                       uint64_t row_count,
-                                                      core::date::timezone_offset_t session_tz,
+                                                      components::graph_execution_context context,
                                                       uint64_t built_compact_epoch);
 
         // index_oid = pg_index.indexrelid, the index's only identity below the planner boundary.
@@ -82,7 +83,7 @@ namespace services::index {
                                                   components::catalog::oid_t index_oid,
                                                   components::index::keys_base_storage_t keys,
                                                   components::logical_plan::index_type type,
-                                                  core::date::timezone_offset_t session_tz,
+                                                  components::graph_execution_context context,
                                                   uint64_t built_compact_epoch);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
@@ -96,7 +97,7 @@ namespace services::index {
                components::expressions::compare_type compare,
                uint64_t txn_id,
                bool hides_own_deletes,
-               core::date::timezone_offset_t session_tz);
+               components::graph_execution_context context);
         unique_future<core::result_wrapper_t<index_search_result_t>>
         search_with_preferred_type(session_id_t session,
                                    components::catalog::oid_t table_oid,
@@ -106,7 +107,7 @@ namespace services::index {
                                    components::logical_plan::index_type preferred_index_type,
                                    uint64_t txn_id,
                                    bool hides_own_deletes,
-                                   core::date::timezone_offset_t session_tz);
+                                   components::graph_execution_context context);
 
         // Reports the first refusal, or an unflushed index could read as flushed to a truncating checkpoint.
         unique_future<core::error_t> flush_all_indexes(session_id_t session);
@@ -144,7 +145,7 @@ namespace services::index {
                                                        std::pmr::vector<components::vector::data_chunk_t> physical_data,
                                                        uint64_t physical_row_start,
                                                        uint64_t txn_id,
-                                                       core::date::timezone_offset_t session_tz);
+                                                       components::graph_execution_context context);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&index_contract::register_collection,
                                                             &index_contract::unregister_collection,

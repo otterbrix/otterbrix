@@ -40,15 +40,17 @@ namespace otterbrix {
         return {false, res};
     }
 
-    auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
-        -> core::error_t {
+    auto wrapper_dispatcher_t::register_udf(const session_id_t& session,
+                                            components::compute::function_ptr function,
+                                            const qualified_name_t& schema) -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
               function->name());
         return execute_node_(
             session,
-            boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function))));
+            boost::intrusive_ptr(
+                new components::logical_plan::node_register_udf_t(resource(), std::move(function), schema)));
     }
 
     auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn)
@@ -66,7 +68,8 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
                                               const std::pmr::vector<components::types::complex_logical_type>& inputs,
-                                              components::catalog::drop_behavior_t behavior) -> core::error_t {
+                                              components::catalog::drop_behavior_t behavior,
+                                              const qualified_name_t& schema) -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -76,7 +79,8 @@ namespace otterbrix {
                                  resource(),
                                  core::function_name_t{function_name},
                                  std::pmr::vector<components::types::complex_logical_type>(inputs, resource()),
-                                 behavior)));
+                                 behavior,
+                                 schema)));
     }
 
     auto wrapper_dispatcher_t::register_cast(const session_id_t& session,
@@ -140,6 +144,31 @@ namespace otterbrix {
             plan.explain_render_id = render_id;
             return execute_plan(session, std::move(plan));
         }
+    }
+
+    cursor_t_ptr wrapper_dispatcher_t::copy_from(const components::session::session_id_t& session,
+                                                 const std::string& query,
+                                                 std::string_view data) {
+        using namespace components::sql::transform;
+
+        trace(log_, "wrapper_dispatcher_t::copy_from session: {}, bytes: {}", session.data(), data.size());
+        core::pmr::arena_resource_t parser_arena(resource());
+        auto parsed = parse_statement_(&parser_arena, query);
+        if (parsed.has_error()) {
+            return send_failed_plan(session, parsed.error());
+        }
+        if (nodeTag(parsed.value()) != T_CopyStmt) {
+            return send_failed_plan(
+                session,
+                core::error_t{core::error_code_t::invalid_parameter,
+                              std::pmr::string{"copy_from takes a COPY ... FROM STDIN", resource()}});
+        }
+        transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
+        auto result = local_transformer.transform_copy(*parsed.value(), data).finalize();
+        if (result.has_error()) {
+            return send_failed_plan(session, result.error());
+        }
+        return execute_plan(session, std::move(result.value()));
     }
 
     cursor_t_ptr

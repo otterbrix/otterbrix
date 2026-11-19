@@ -93,6 +93,7 @@ namespace components::operators {
                 case operator_type::resolve_database:
                 case operator_type::resolve_type:
                 case operator_type::resolve_constraint:
+                case operator_type::resolve_type_names:
                 case operator_type::allocate_oids:
                 case operator_type::batch:
                 case operator_type::portal_fetch:

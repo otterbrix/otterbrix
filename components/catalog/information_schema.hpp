@@ -14,7 +14,8 @@ namespace components::catalog {
     // The oids build_information_schema_writes takes from its batch.
     [[nodiscard]] std::size_t information_schema_oid_demand();
 
-    // The views of `database` (of oid `database_oid`) in its information_schema `namespace_oid`.
+    // The views of `database` (of oid `database_oid`) in its information_schema `namespace_oid`. main's also stand in
+    // for a connection's database, which has none of its own: on a connection's place they show that database.
     [[nodiscard]] std::vector<catalog_write_t> build_information_schema_writes(std::pmr::memory_resource* resource,
                                                                                const std::string& database,
                                                                                oid_t database_oid,

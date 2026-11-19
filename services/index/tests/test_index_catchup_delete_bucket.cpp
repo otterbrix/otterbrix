@@ -195,7 +195,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
                                                 chunk_of(&resource, {20}),
                                                 /*physical_row_start=*/0,
                                                 build_txn,
-                                                core::date::timezone_offset_t{});
+                                                components::graph_execution_context{});
         settle(fut, agent);
     }
 
@@ -293,7 +293,7 @@ TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catch
                                                 chunk_of(&resource, {20}),
                                                 /*physical_row_start=*/0,
                                                 build_txn,
-                                                core::date::timezone_offset_t{});
+                                                components::graph_execution_context{});
         settle(fut, agent);
     }
     {

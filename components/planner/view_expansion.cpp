@@ -305,7 +305,8 @@ namespace components::planner {
                                          std::pair{resolve_kind::namespace_, &body_resolves.namespaces},
                                          std::pair{resolve_kind::table, &body_resolves.tables},
                                          std::pair{resolve_kind::type, &body_resolves.types},
-                                         std::pair{resolve_kind::constraint, &body_resolves.constraints}}) {
+                                         std::pair{resolve_kind::constraint, &body_resolves.constraints},
+                                         std::pair{resolve_kind::type_names, &body_resolves.type_names}}) {
             if (!*slot || (*slot)->empty()) {
                 continue;
             }

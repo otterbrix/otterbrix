@@ -3,9 +3,9 @@
 #include <actor-zeta/actor/address.hpp>
 #include <actor-zeta/detail/future.hpp>
 
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
-#include <core/date/timezones.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
@@ -40,6 +40,6 @@ namespace services::index {
                                         actor_zeta::actor::address_t index_address,
                                         components::session::session_id_t session,
                                         committed_rows_snapshot_t snapshot,
-                                        core::date::timezone_offset_t session_tz);
+                                        components::graph_execution_context context);
 
 } // namespace services::index

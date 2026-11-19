@@ -10,12 +10,17 @@ namespace components::logical_plan {
     // the other sessions take it when that transaction commits. The node owns the function: a copy is get_copy's.
     class node_register_udf_t final : public node_t {
     public:
-        node_register_udf_t(std::pmr::memory_resource* resource, components::compute::function_ptr function);
+        // `schema`: [[connection.]database.]schema the function goes into, completed with the session's place; an
+        // empty name is the place's schema.
+        node_register_udf_t(std::pmr::memory_resource* resource,
+                            components::compute::function_ptr function,
+                            qualified_name_t schema = {});
 
         const components::compute::function* function() const noexcept { return function_.get(); }
+        const qualified_name_t& schema() const noexcept { return schema_; }
 
-        // The uid the dispatcher reserved for the function and the schema of the session's place, which the
-        // executor stamps before the plan is lowered.
+        // The uid the dispatcher reserved for the function and the oid of its schema, which the executor stamps
+        // before the plan is lowered.
         void set_identity(components::compute::function_uid uid, types::oid_t schema_oid) noexcept {
             uid_ = uid;
             schema_oid_ = schema_oid;
@@ -28,6 +33,7 @@ namespace components::logical_plan {
         std::string to_string_impl() const override;
 
         components::compute::function_ptr function_;
+        qualified_name_t schema_;
         components::compute::function_uid uid_{components::compute::invalid_function_uid};
         types::oid_t schema_oid_{};
     };

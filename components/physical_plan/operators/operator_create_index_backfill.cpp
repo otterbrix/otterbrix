@@ -79,7 +79,7 @@ namespace components::operators {
                                                       index_oid_,
                                                       keys_,
                                                       index_type_,
-                                                      ctx->execution_context.timezone_offset,
+                                                      ctx->execution_context,
                                                       built_compact_epoch);
         auto create_error = co_await std::move(ixf);
 
@@ -225,7 +225,7 @@ namespace components::operators {
                             std::move(idx_chunks),
                             static_cast<uint64_t>(row_ids[run_start]),
                             ctx->txn.transaction_id,
-                            ctx->execution_context.timezone_offset);
+                            ctx->execution_context);
                         co_await std::move(irf);
                         run_start += run_len;
                     }

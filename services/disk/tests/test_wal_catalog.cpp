@@ -14,7 +14,7 @@
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
-#include <core/date/timezones.hpp>
+#include <core/date/time_zone.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <core/pmr.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -199,12 +199,13 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") 
         const auto seeded = stored.value();
         REQUIRE_FALSE(seeded.empty());
         CAPTURE(seeded);
-        REQUIRE(core::date::timezone_to_offset(seeded).has_value());
+        core::date::time_zone_t recognized;
+        REQUIRE(core::date::setting_time_zone(seeded, &recognized));
         components::catalog::session_catalog_t accepts;
         REQUIRE_FALSE(
             components::catalog::set_setting(accepts, components::catalog::setting_id::timezone, seeded, &fx.resource)
                 .contains_error());
-        REQUIRE(accepts.timezone_offset == core::date::timezone_offset_t{0});
+        REQUIRE(accepts.timezone_offset.offset_at(core::date::timestamptz_t{}) == core::date::timezone_offset_t{0});
     }
     cleanup_dir(dir);
 }

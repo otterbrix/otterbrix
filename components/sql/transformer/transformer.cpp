@@ -96,6 +96,12 @@ namespace components::sql::transform {
                 std::move(deferred_limits_)};
     }
 
+    transform_result transformer::transform_copy(Node& node, std::string_view data) {
+        copy_data_ = data;
+        has_copy_data_ = true;
+        return transform(node);
+    }
+
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform(Node& node,
                                                                           logical_plan::execution_plan_t* plan) {
         core::result_wrapper_t<logical_plan::node_ptr> log_node{nullptr};
@@ -149,6 +155,9 @@ namespace components::sql::transform {
                 break;
             case T_InsertStmt:
                 log_node = transform_insert(pg_cast<InsertStmt>(node), plan);
+                break;
+            case T_CopyStmt:
+                log_node = transform_copy_from(pg_cast<CopyStmt>(node));
                 break;
             case T_DeleteStmt:
                 log_node = transform_delete(pg_cast<DeleteStmt>(node), plan);

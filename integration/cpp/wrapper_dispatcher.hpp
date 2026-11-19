@@ -47,14 +47,18 @@ namespace otterbrix {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
-        // RESTRICT (the default) refuses while a view calls the function; CASCADE drops those views too.
+        // `schema`: [[connection.]database.]schema, completed with the session's place; empty is the place's schema.
+        auto register_udf(const session_id_t& session,
+                          components::compute::function_ptr function,
+                          const qualified_name_t& schema = {}) -> core::error_t;
+        // RESTRICT (the default) refuses while a view calls the function; CASCADE drops those views too. `schema` as
+        // register_udf's.
         auto
         unregister_udf(const session_id_t& session,
                        const std::string& function_name,
                        const std::pmr::vector<components::types::complex_logical_type>& inputs,
-                       components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::restrict_)
-            -> core::error_t;
+                       components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::restrict_,
+                       const qualified_name_t& schema = {}) -> core::error_t;
         auto register_cast(const session_id_t& session,
                            const components::types::complex_logical_type& source,
                            const components::types::complex_logical_type& target,
@@ -72,6 +76,10 @@ namespace otterbrix {
                                      const std::string& query,
                                      const std::vector<std::pair<size_t, components::vector::vector_t>>& params,
                                      uint32_t render_id = 0) -> components::cursor::cursor_t_ptr;
+        // COPY ... FROM STDIN `query` with `data`, all of it (the CopyData the client sent, joined): one statement of
+        // the session that inserts the rows, text or CSV, as INSERT inserts VALUES. The cursor counts the rows.
+        auto copy_from(const session_id_t& session, const std::string& query, std::string_view data)
+            -> components::cursor::cursor_t_ptr;
         // What PostgreSQL 18's Parse and Describe answer for `query`: a cursor without rows whose type_data() are the
         // result columns and whose parameter_types()[n-1] is the type of $n. `params` are values bound as a Bind binds
         // them (Describe of a portal); the rest are typed by their context. Nothing is planned or run, and no storage

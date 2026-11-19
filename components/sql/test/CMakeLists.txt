@@ -23,6 +23,7 @@ set(${PROJECT_NAME}_SOURCES
         test_set_setting.cpp
         test_parser_internals.cpp
         test_name_bugs.cpp
+        test_copy_format.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

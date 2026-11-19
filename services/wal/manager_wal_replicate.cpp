@@ -570,7 +570,7 @@ namespace services::wal {
                 manager_index_,
                 session,
                 services::index::committed_rows_snapshot(),
-                core::date::timezone_offset_t{});
+                components::graph_execution_context{});
             if (rebuild_error.contains_error()) {
                 error(log_,
                       "manager_wal_replicate_t::run_auto_checkpoint: index rebuild after the compacting round "

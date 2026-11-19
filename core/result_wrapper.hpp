@@ -92,6 +92,7 @@ namespace core {
         duplicate_cursor = 99,                          // PostgreSQL 42P03
         object_in_use = 100,                            // PostgreSQL 55006
         read_only_sql_transaction = 101,                // PostgreSQL 25006
+        bad_copy_file_format = 102,                     // PostgreSQL 22P04
     };
 
     struct [[nodiscard]] error_t {

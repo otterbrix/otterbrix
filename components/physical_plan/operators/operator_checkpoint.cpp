@@ -116,7 +116,7 @@ namespace components::operators {
                 ctx->index_address,
                 ctx->session,
                 services::index::committed_rows_snapshot(),
-                ctx->execution_context.timezone_offset);
+                ctx->execution_context);
             if (rebuild_error.contains_error()) {
                 // Fail the CHECKPOINT loudly rather than leave behind a lying index, and leave the
                 // journal alone — the truncate that would trim it is below this return.

@@ -393,6 +393,7 @@ namespace core::b_plus_tree {
             return abandoned_.load(std::memory_order_acquire) ||
                    unreadable_segments_.load(std::memory_order_acquire) != 0;
         }
+        [[nodiscard]] bool abandoned() const noexcept { return abandoned_.load(std::memory_order_acquire); }
 
         // Inputs of btree_t's memory estimate; atomics, so a neighbour can be asked before it is locked.
         [[nodiscard]] size_t stored_bytes() const noexcept { return stored_bytes_.load(std::memory_order_relaxed); }

@@ -2742,6 +2742,142 @@ TEST_CASE("core::b_plus_tree::a_metadata_buffer_the_budget_refuses_is_a_value") 
     remove_directory(fs, testing_directory);
 }
 
+TEST_CASE("core::b_plus_tree::a_tree_whose_load_was_refused") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, no_limit);
+    path_t testing_directory = scratch_dir("btree_load_refused_writes");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 64;
+    constexpr uint64_t keys = 30;
+    std::vector<char> buffer(item_size, 0);
+    auto item_of = [&buffer](uint64_t key) {
+        write_unaligned<uint64_t>(buffer.data(), key);
+        return btree_t::item_data{reinterpret_cast<data_ptr_t>(buffer.data()), item_size};
+    };
+
+    {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        for (uint64_t i = 0; i < keys; i++) {
+            REQUIRE(tree.append(item_of(i)));
+        }
+        REQUIRE(tree.flush());
+    }
+
+    {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        REQUIRE(budget.set_limit(budget.used() + METADATA_SIZE));
+        tree.load();
+        REQUIRE(budget.set_limit(no_limit));
+        REQUIRE(tree.load_failure() == load_failure_t::out_of_memory);
+        INFO("the refusal holds without the failure channel");
+        tree.reset_load_failure();
+
+        CHECK_FALSE(tree.append(item_of(keys + 1)));
+        CHECK_FALSE(tree.remove(item_of(0)));
+        CHECK_FALSE(tree.remove_index(btree_t::index_t(uint64_t{1})));
+        CHECK_FALSE(tree.flush());
+
+        tree.load();
+        REQUIRE(tree.load_failure() == load_failure_t::none);
+        CHECK(tree.append(item_of(keys + 1)));
+        CHECK(tree.flush());
+    }
+
+    btree_t reopened(&budget, fs, testing_directory, key_getter, 12);
+    reopened.load();
+    REQUIRE(reopened.load_failure() == load_failure_t::none);
+    CHECK(reopened.size() == keys + 1);
+    for (uint64_t i = 0; i < keys; i++) {
+        REQUIRE(reopened.contains_index(btree_t::index_t(i)));
+    }
+
+    remove_directory(fs, testing_directory);
+}
+
+TEST_CASE("core::b_plus_tree::an_append_into_a_leaf_whose_header_is_corrupt") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, no_limit);
+    path_t testing_directory = scratch_dir("btree_abandoned_leaf_append");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 64;
+    std::vector<char> buffer(item_size, 0);
+    auto item_of = [&buffer](uint64_t key) {
+        write_unaligned<uint64_t>(buffer.data(), key);
+        return btree_t::item_data{reinterpret_cast<data_ptr_t>(buffer.data()), item_size};
+    };
+
+    uint64_t keys = 0;
+    SECTION("the root leaf") { keys = 7; }
+    SECTION("a leaf under inner nodes") { keys = 30; }
+
+    {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        for (uint64_t i = 0; i < keys; i++) {
+            REQUIRE(tree.append(item_of(i)));
+        }
+        REQUIRE(tree.flush());
+    }
+
+    // the segments count: a header whose checksum no longer matches
+    constexpr size_t flipped_at = sizeof(size_t);
+    std::vector<path_t> leaves;
+    for (const auto& entry : std::filesystem::directory_iterator(testing_directory)) {
+        if (entry.path().filename().string().rfind("segmented_block", 0) == 0) {
+            leaves.push_back(entry.path());
+        }
+    }
+    REQUIRE_FALSE(leaves.empty());
+    auto flip = [&fs](const path_t& leaf) {
+        const auto bytes = slurp(fs, leaf);
+        auto handle = open_file(fs, leaf, core::filesystem::file_flags::READ | core::filesystem::file_flags::WRITE);
+        REQUIRE(handle != nullptr);
+        char flipped = static_cast<char>(bytes[flipped_at] ^ 0x01);
+        REQUIRE(handle->write(&flipped, 1, flipped_at));
+        REQUIRE(handle->sync());
+    };
+    for (const auto& leaf : leaves) {
+        flip(leaf);
+    }
+
+    {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        tree.load();
+        REQUIRE(tree.load_failure() == load_failure_t::data_corruption);
+        CHECK_FALSE(tree.append(item_of(keys + 1)));
+        CHECK_FALSE(tree.append(item_of(0)));
+        CHECK_FALSE(tree.flush());
+    }
+
+    for (const auto& leaf : leaves) {
+        flip(leaf);
+    }
+    btree_t restored(&budget, fs, testing_directory, key_getter, 12);
+    restored.load();
+    REQUIRE(restored.load_failure() == load_failure_t::none);
+    CHECK(restored.size() == keys);
+    for (uint64_t i = 0; i < keys; i++) {
+        REQUIRE(restored.contains_index(btree_t::index_t(i)));
+    }
+
+    remove_directory(fs, testing_directory);
+}
+
 TEST_CASE("core::b_plus_tree::a_transient_read_failure_does_not_wedge_the_leaf") {
     auto upstream = core::pmr::otterbrix_resource();
     auto resource = core::pmr::budget_resource_t(&upstream, no_limit);

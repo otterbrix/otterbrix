@@ -204,6 +204,9 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::append(const index_t& index, item_data item) {
+        if (abandoned()) {
+            return false;
+        }
         begin_operation_();
         mark_dirty_();
         if (segments_.empty()) {

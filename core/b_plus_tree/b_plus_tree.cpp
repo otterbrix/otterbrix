@@ -313,6 +313,10 @@ namespace core::b_plus_tree {
 
     bool btree_t::append(item_data item) {
         tree_mutex_.lock(); // needed for root check
+        if (load_refused_) {
+            tree_mutex_.unlock();
+            return false;
+        }
         index_t index = key_func_(item);
         if (root_ == nullptr) {
             size_t key_copies = index.is_view() ? 2 * (index.view_bytes().size() + 1) : 0;
@@ -340,8 +344,12 @@ namespace core::b_plus_tree {
             tree_mutex_.unlock();
             return stored;
         } else if (root_->is_leaf_node()) {
-            assert(root_->unique_entry_count() != 0);
             const auto* root_leaf = static_cast<const leaf_node_t*>(root_);
+            if (root_leaf->abandoned()) {
+                tree_mutex_.unlock();
+                return false;
+            }
+            assert(root_->unique_entry_count() != 0);
             size_t need = append_estimate_(root_leaf, index, item);
             if (root_->unique_entry_count() >= max_node_capacity_) {
                 need += leaf_split_estimate_(root_leaf, index, item) + inner_node_bytes_(); // + the new root
@@ -473,7 +481,7 @@ namespace core::b_plus_tree {
     bool btree_t::remove(item_data item) {
         index_t index = key_func_(item);
         tree_mutex_.lock(); // needed for root check
-        if (root_ == nullptr) {
+        if (root_ == nullptr || load_refused_) {
             tree_mutex_.unlock();
             return false;
         } else if (root_->is_leaf_node()) {
@@ -632,7 +640,7 @@ namespace core::b_plus_tree {
 
     bool btree_t::remove_index(const index_t& index) {
         tree_mutex_.lock(); // needed for root check
-        if (root_ == nullptr) {
+        if (root_ == nullptr || load_refused_) {
             tree_mutex_.unlock();
             return false;
         } else if (root_->is_leaf_node()) {
@@ -812,6 +820,9 @@ namespace core::b_plus_tree {
     }
 
     bool btree_t::flush() {
+        if (load_refused_) {
+            return false;
+        }
         // An emptied tree MUST still be written, or the next load() resurrects every deleted key from stale metadata.
         if (leaf_nodes_count_ == 0) {
             std::filesystem::path empty_name = storage_directory_;
@@ -920,6 +931,7 @@ namespace core::b_plus_tree {
         }
         item_count_ = 0;
         leaf_nodes_count_ = 0;
+        load_refused_ = true; // until the stored tree is rebuilt
         std::unique_ptr<core::filesystem::file_handle_t> file = open_file(fs_, file_name, file_flags::READ);
         if (file == nullptr) {
             failures_.report(load_failure_t::io_error);
@@ -951,6 +963,7 @@ namespace core::b_plus_tree {
             return;
         }
         if (stored_leaves == 0) {
+            load_refused_ = false;
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
             return;
@@ -1063,6 +1076,7 @@ namespace core::b_plus_tree {
         root_ = *nodes_layer;
         item_count_ = stored_items;
         leaf_nodes_count_ = stored_leaves;
+        load_refused_ = false;
 
         tree_mutex_.unlock();
         resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);

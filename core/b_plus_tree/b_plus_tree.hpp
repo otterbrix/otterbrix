@@ -120,6 +120,7 @@ namespace core::b_plus_tree {
                 segment_tree_->set_failure_channel(channel);
             }
             [[nodiscard]] bool poisoned() const noexcept { return segment_tree_->poisoned(); }
+            [[nodiscard]] bool abandoned() const noexcept { return segment_tree_->abandoned(); }
 
             [[nodiscard]] size_t stored_bytes() const noexcept { return segment_tree_->stored_bytes(); }
             [[nodiscard]] size_t largest_block() const noexcept { return segment_tree_->largest_block(); }
@@ -293,6 +294,8 @@ namespace core::b_plus_tree {
         std::atomic<size_t> leaf_nodes_count_{0};
         std::queue<uint64_t> missed_ids_;
         failure_channel_t failures_;
+        // Set while what load() dropped is not rebuilt: writing this tree out would replace what is on disk.
+        std::atomic<bool> load_refused_{false};
         memory_shortfall_t shortfall_; // written under the exclusive tree lock
         static constexpr std::string_view metadata_file_name_ = "metadata";
     };

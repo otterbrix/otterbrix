@@ -77,24 +77,28 @@ namespace services::index {
     }
 
     core::error_t btree_index_disk_t::insert_bulk_unchecked(btree_t::item_data record) {
+        RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         if (!db_->append(record)) {
             const auto shortfall = db_->take_memory_shortfall();
             if (shortfall.needed != 0) {
                 return core::error_t{core::error_code_t::out_of_memory,
                                      shortfall_message(path_, shortfall, resource())};
             }
+            RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         }
         mark_operation_dirty();
         return core::error_t::no_error();
     }
 
     core::error_t btree_index_disk_t::remove_bulk_unchecked(btree_t::item_data record) {
+        RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         if (!db_->remove(record)) {
             const auto shortfall = db_->take_memory_shortfall();
             if (shortfall.needed != 0) {
                 return core::error_t{core::error_code_t::out_of_memory,
                                      shortfall_message(path_, shortfall, resource())};
             }
+            RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         }
         mark_operation_dirty();
         return core::error_t::no_error();

@@ -301,6 +301,7 @@ namespace services::engine {
                                                                               config.disk.bitcask_flush_threshold,
                                                                               config.disk.bitcask_segment_record_limit,
                                                                               config.disk.btree_flush_threshold,
+                                                                              config.disk.btree_memory_limit,
                                                                               config.execution.pump);
             if (parts.index->construction_error().contains_error()) {
                 return core::error_on(resource, parts.index->construction_error());

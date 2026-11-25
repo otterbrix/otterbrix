@@ -124,6 +124,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
                                                                              disk_config_.bitcask_flush_threshold,
                                                                              disk_config_.bitcask_segment_record_limit,
                                                                              disk_config_.btree_flush_threshold,
+                                                                             disk_config_.btree_memory_limit,
                                                                              configuration::pump_intervals_t{}))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,

@@ -147,6 +147,8 @@ namespace core::b_plus_tree {
             bool modified;
             // Empty stand-in for a read/checksum failure; travels with the node, refused by insert_segment_().
             bool unreadable = false;
+            // The operation that last loaded or touched this block; that operation's own evictions skip it.
+            uint64_t operation = 0;
         };
         using it = std::vector<node_t>::iterator;
         static constexpr size_t block_metadata_size = sizeof(block_metadata);
@@ -392,6 +394,16 @@ namespace core::b_plus_tree {
                    unreadable_segments_.load(std::memory_order_acquire) != 0;
         }
 
+        // Inputs of btree_t's memory estimate; atomics, so a neighbour can be asked before it is locked.
+        [[nodiscard]] size_t stored_bytes() const noexcept { return stored_bytes_.load(std::memory_order_relaxed); }
+        [[nodiscard]] size_t largest_block() const noexcept { return largest_block_.load(std::memory_order_relaxed); }
+        // Keys that are views (index_t::is_view) make every min/max an owned copy in string_storage_.
+        [[nodiscard]] bool view_keyed() const noexcept { return view_keyed_.load(std::memory_order_relaxed); }
+        // What loading every block not in memory would allocate; caller holds the leaf.
+        [[nodiscard]] size_t unloaded_bytes() const;
+        // Writes and unloads every resident block; returns the bytes given back to the budget.
+        size_t evict();
+
         iterator begin() const { return cbegin(); }
         iterator end() const { return cend(); }
         iterator cbegin() const { return iterator(const_cast<segment_tree_t*>(this), metadata_begin_); }
@@ -413,7 +425,10 @@ namespace core::b_plus_tree {
         // Puts a VALID empty stand-in in place of an unreadable block, so callers stay memory-safe without null checks.
         void poison_segment_(it node, load_failure_t failure);
         void clear_segment_poison_(it node) noexcept;
-        void ensure_loaded_(block_metadata* metadata);
+        // False = no block in memory (out_of_memory is on the channel); a stand-in counts as loaded.
+        [[nodiscard]] bool try_load_(block_metadata* metadata);
+        // Every public entry point starts one, so a block it loaded stays until it returns.
+        void begin_operation_() noexcept { operation_++; }
         // A caller taking items OUT of a block must ask BEFORE doing that, or a refusal destroys items already out.
         [[nodiscard]] bool reserve_segments_(size_t count) noexcept;
         void abandon_leaf_(load_failure_t failure);
@@ -434,11 +449,22 @@ namespace core::b_plus_tree {
 
         metadata_range find_range_(const index_t& index) const;
         void remove_range_(metadata_range range);
+        using key_copies_t = std::pair<std::unique_ptr<std::pmr::string>, std::unique_ptr<std::pmr::string>>;
+
         [[nodiscard]] node_t construct_new_node_(const index_t& index, item_data item);
         [[nodiscard]] node_t construct_new_node_(item_data item);
         void load_segment_(block_metadata* metadata);
         void unload_old_segments_();
-        [[nodiscard]] bool insert_segment_(it pos, node_t&& block);
+        void clean_load_();
+        void lazy_load_();
+        void recount_layout_() noexcept;
+        // Exact size of the min/max copies update_metadata_ would make for this block.
+        [[nodiscard]] static size_t key_copy_bytes_(const block_t& block);
+        // `key` itself unless it is a view; else the same view over `copy`, which is replaced only when it differs.
+        [[nodiscard]] index_t owned_key_(const index_t& key, std::unique_ptr<std::pmr::string>& copy);
+        // A block moved whole brings its key copies, or every move would allocate them again.
+        // Taken from `keys` only on success: a refusal leaves the donor's metadata pointing at them.
+        [[nodiscard]] bool insert_segment_(it pos, node_t&& block, key_copies_t&& keys = key_copies_t{});
         void remove_segment_(it pos);
         void update_metadata_(it pos, block_metadata* metadata);
         void close_gaps_();
@@ -451,6 +477,10 @@ namespace core::b_plus_tree {
         // The leaf gave up as a WHOLE; only a load replacing it from the file clears this.
         std::atomic<bool> abandoned_{false};
         std::atomic<load_failure_t> last_failure_{load_failure_t::none};
+        std::atomic<size_t> stored_bytes_{0};
+        std::atomic<size_t> largest_block_{0}; // only grows between loads: an upper bound, never exact
+        std::atomic<bool> view_keyed_{false};
+        uint64_t operation_ = 1; // a node starts at 0, so nothing is held before the first operation
         failure_channel_t own_failures_;
         failure_channel_t* channel_ = &own_failures_;
 
@@ -467,7 +497,7 @@ namespace core::b_plus_tree {
         std::unique_ptr<filesystem::file_handle_t> file_;
         filesystem::local_file_system_t* fs_ = nullptr;
         filesystem::path_t file_path_;
-        std::vector<std::pair<std::unique_ptr<std::pmr::string>, std::unique_ptr<std::pmr::string>>> string_storage_;
+        std::vector<key_copies_t> string_storage_;
     };
 
 } // namespace core::b_plus_tree

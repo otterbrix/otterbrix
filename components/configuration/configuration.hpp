@@ -4,6 +4,7 @@
 #include <components/log/log.hpp>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 
 namespace configuration {
 
@@ -35,6 +36,8 @@ namespace configuration {
         uint64_t bitcask_flush_threshold{1000};
         uint64_t bitcask_segment_record_limit{100};
         uint64_t btree_flush_threshold{1000};
+        // Bytes each btree index may hold in memory (including internal allocations)
+        uint64_t btree_memory_limit{std::numeric_limits<uint64_t>::max()};
 
         // `<base>/wal`, not `<base>/disk`: the table tree shares the WAL directory on purpose --
         // the shipped layout since 96d5ffaa. Renaming would not move existing databases, only

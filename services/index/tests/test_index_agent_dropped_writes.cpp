@@ -65,8 +65,13 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_dropped_writes_btree");
 
-    auto agent_result =
-        btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
+    auto agent_result = btree_index_agent_t::create(&resource,
+                                                    path,
+                                                    kTableOid,
+                                                    kIndexOid,
+                                                    /*flush_threshold=*/1000,
+                                                    std::numeric_limits<uint64_t>::max(),
+                                                    log);
     REQUIRE_FALSE(agent_result.has_error());
     auto agent = std::move(agent_result.value());
 

@@ -149,6 +149,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
+                                                      /*btree_memory_limit=*/std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
@@ -253,6 +254,7 @@ TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catch
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
+                                                      /*btree_memory_limit=*/std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 

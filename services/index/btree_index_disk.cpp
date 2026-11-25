@@ -11,38 +11,61 @@ namespace services::index {
 
     btree_index_disk_t::btree_index_disk_t(const path_t& path,
                                            std::pmr::memory_resource* resource,
-                                           uint64_t flush_threshold)
+                                           uint64_t flush_threshold,
+                                           uint64_t memory_limit)
         : resource_(resource)
+        , tree_budget_(resource, memory_limit)
         , flush_threshold_(flush_threshold)
         , path_(path)
         , fs_(core::filesystem::local_file_system_t())
         , db_(std::make_unique<btree_t>(&tree_budget_, fs_, path, item_key_getter)) {
         db_->load();
+        load_shortfall_ = db_->take_memory_shortfall();
     }
 
     btree_index_disk_t::~btree_index_disk_t() = default;
 
     namespace {
+
+        std::pmr::string shortfall_message(const std::filesystem::path& path,
+                                           const memory_shortfall_t& shortfall,
+                                           std::pmr::memory_resource* resource) {
+            std::pmr::string message{"btree index ", resource};
+            message += path.string();
+            message += ": needs " + std::to_string(shortfall.needed) + " more bytes, with " +
+                       std::to_string(shortfall.used) + " in use after offloading every block it could and " +
+                       std::to_string(shortfall.reserved) + " reserved by other operations; the limit is " +
+                       std::to_string(shortfall.limit) + ". Raise configuration.disk.btree_memory_limit and restart.";
+            return message;
+        }
+
         // Unread, a walk over an unreadable block comes back SHORT with no_error() (an accepted duplicate for
         // UNIQUE, a lost parent for an FK); sticky by design, so a damaged tree refuses every later question.
         core::error_t tree_load_refusal(core::b_plus_tree::load_failure_t failure,
+                                        const std::filesystem::path& path,
+                                        const memory_shortfall_t& load_shortfall,
                                         std::pmr::memory_resource* resource) {
             using core::b_plus_tree::load_failure_t;
             const auto code = failure == load_failure_t::data_corruption ? core::error_code_t::data_corruption
                               : failure == load_failure_t::out_of_memory ? core::error_code_t::out_of_memory
                                                                          : core::error_code_t::io_error;
+            if (failure == load_failure_t::out_of_memory && load_shortfall.needed != 0) {
+                return core::error_t{code, shortfall_message(path, load_shortfall, resource)};
+            }
             std::pmr::string message{"btree index: the tree reports an unresolved load failure: ", resource};
             message += core::b_plus_tree::to_string(failure);
             return core::error_t{code, std::move(message)};
         }
 
         [[nodiscard]] core::error_t consult_failure_channel(const core::b_plus_tree::btree_t& db,
+                                                            const std::filesystem::path& path,
+                                                            const memory_shortfall_t& load_shortfall,
                                                             std::pmr::memory_resource* resource) {
             const auto failure = db.load_failure();
             if (failure == core::b_plus_tree::load_failure_t::none) {
                 return core::error_t::no_error();
             }
-            return tree_load_refusal(failure, resource);
+            return tree_load_refusal(failure, path, load_shortfall, resource);
         }
     } // namespace
 
@@ -53,19 +76,33 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::insert_bulk_unchecked(btree_t::item_data record) {
-        db_->append(record);
+    core::error_t btree_index_disk_t::insert_bulk_unchecked(btree_t::item_data record) {
+        if (!db_->append(record)) {
+            const auto shortfall = db_->take_memory_shortfall();
+            if (shortfall.needed != 0) {
+                return core::error_t{core::error_code_t::out_of_memory,
+                                     shortfall_message(path_, shortfall, resource())};
+            }
+        }
         mark_operation_dirty();
+        return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::remove_bulk_unchecked(btree_t::item_data record) {
-        db_->remove(record);
+    core::error_t btree_index_disk_t::remove_bulk_unchecked(btree_t::item_data record) {
+        if (!db_->remove(record)) {
+            const auto shortfall = db_->take_memory_shortfall();
+            if (shortfall.needed != 0) {
+                return core::error_t{core::error_code_t::out_of_memory,
+                                     shortfall_message(path_, shortfall, resource())};
+            }
+        }
         mark_operation_dirty();
+        return core::error_t::no_error();
     }
 
     core::error_t btree_index_disk_t::force_flush() {
         if (db_) {
-            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+            RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         }
         if (is_dirty() && db_) {
             if (!db_->flush()) {
@@ -99,7 +136,7 @@ namespace services::index {
     } // namespace
 
     core::error_t btree_index_disk_t::find(const key_t& value, result& res) const {
-        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         const auto& index = value;
         size_t count = db_->item_count(index);
         res.reserve(res.size() + count);
@@ -111,7 +148,7 @@ namespace services::index {
             }
             res.emplace_back(id);
         }
-        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         return core::error_t::no_error();
     }
 
@@ -120,7 +157,7 @@ namespace services::index {
                                                  result& res) const {
         using components::expressions::compare_type;
 
-        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
 
         // Both scan_ascending bounds are inclusive: lt/gt exclude the probe's own key via their predicate.
         const auto& probe = value;
@@ -177,7 +214,7 @@ namespace services::index {
         if (!reader.all_ok) {
             return unreadable_record(resource());
         }
-        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        RETURN_IF_ERROR(consult_failure_channel(*db_, path_, load_shortfall_, resource()));
         return core::error_t::no_error();
     }
 
@@ -192,6 +229,7 @@ namespace services::index {
         const bool directory_removed = core::filesystem::remove_directory(fs_, path_);
         db_ = std::make_unique<btree_t>(&tree_budget_, fs_, path_, item_key_getter);
         db_->load();
+        load_shortfall_ = db_->take_memory_shortfall();
         reset_flush_state();
         if (!directory_removed) {
             return core::error_t{

@@ -277,6 +277,31 @@ namespace components::types {
 
     physical_type physical_value::type() const noexcept { return type_; }
 
+    bool physical_value::is_view() const noexcept {
+        switch (type_) {
+            case physical_type::TEXT:
+            case physical_type::LIST:
+            case physical_type::STRUCT:
+            case physical_type::UNION:
+            case physical_type::ARRAY:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    std::string_view physical_value::view_bytes() const noexcept {
+        assert(is_view());
+        return {reinterpret_cast<const char*>(data_), size_};
+    }
+
+    physical_value physical_value::rebased(const char* data) const noexcept {
+        assert(is_view());
+        physical_value result = *this;
+        result.data_ = reinterpret_cast<uint64_t>(data);
+        return result;
+    }
+
     std::nullptr_t physical_value::value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept {
         assert(type_ == physical_type::NA);
         return nullptr;

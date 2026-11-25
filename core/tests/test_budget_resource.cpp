@@ -4,11 +4,15 @@
 #include <core/pmr.hpp>
 #include <core/pmr/budget_resource.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 using core::pmr::budget_resource_t;
@@ -49,22 +53,43 @@ TEST_CASE("core::pmr::budget_resource::over the limit the answer is nullptr and 
     budget.deallocate(held, 1000);
 }
 
-TEST_CASE("core::pmr::budget_resource::a limit below what is held refuses until enough is given back") {
+TEST_CASE("core::pmr::budget_resource::a limit below what is held") {
     core::pmr::otterbrix_resource upstream;
-    budget_resource_t budget(&upstream, std::numeric_limits<std::uint64_t>::max());
+    budget_resource_t budget(&upstream, 8192);
 
     void* held = budget.try_allocate(4096);
     REQUIRE(held != nullptr);
-    budget.set_limit(0);
+    CHECK_FALSE(budget.set_limit(4095));
+    CHECK(budget.available() == 4096);
+
+    REQUIRE(budget.set_limit(4096));
+    CHECK(budget.available() == 0);
     CHECK(budget.try_allocate(1) == nullptr);
-    CHECK(budget.used() == 4096);
 
     budget.deallocate(held, 4096);
-    budget.set_limit(64);
+    REQUIRE(budget.set_limit(64));
     void* again = budget.try_allocate(64);
     REQUIRE(again != nullptr);
     budget.deallocate(again, 64);
     CHECK(budget.used() == 0);
+}
+
+TEST_CASE("core::pmr::budget_resource::available across allocate and deallocate") {
+    core::pmr::otterbrix_resource upstream;
+    budget_resource_t budget(&upstream, 1000);
+    CHECK(budget.available() == 1000);
+
+    void* first = budget.try_allocate(300);
+    REQUIRE(first != nullptr);
+    CHECK(budget.available() == 700);
+    void* second = budget.try_allocate(700);
+    REQUIRE(second != nullptr);
+    CHECK(budget.available() == 0);
+
+    budget.deallocate(first, 300);
+    CHECK(budget.available() == 300);
+    budget.deallocate(second, 700);
+    CHECK(budget.available() == 1000);
 }
 
 TEST_CASE("core::pmr::budget_resource::allocate over the limit aborts instead of throwing") {
@@ -82,4 +107,61 @@ TEST_CASE("core::pmr::budget_resource::allocate over the limit aborts instead of
     REQUIRE(::waitpid(child, &status, 0) == child);
     REQUIRE(WIFSIGNALED(status));
     CHECK(WTERMSIG(status) == SIGABRT);
+}
+
+TEST_CASE("core::pmr::budget_resource::reservations against the limit") {
+    core::pmr::otterbrix_resource upstream;
+    budget_resource_t budget(&upstream, 1000);
+
+    void* held = budget.try_allocate(200);
+    REQUIRE(held != nullptr);
+    {
+        auto first = budget.try_reserve(500);
+        REQUIRE(first);
+        CHECK(budget.reserved() == 500);
+        CHECK(budget.available() == 300);
+        CHECK_FALSE(budget.try_reserve(301));
+        CHECK_FALSE(budget.set_limit(699));
+
+        INFO("an allocation is not taken out of a reservation: it counts as used while the room stays reserved");
+        void* inside = budget.try_allocate(100);
+        REQUIRE(inside != nullptr);
+        CHECK(budget.available() == 200);
+        budget.deallocate(inside, 100);
+
+        auto second = budget.try_reserve(300);
+        REQUIRE(second);
+        CHECK(budget.available() == 0);
+    }
+    CHECK(budget.reserved() == 0);
+    CHECK(budget.available() == 800);
+    REQUIRE(budget.set_limit(200));
+    CHECK(budget.try_reserve(0));
+    CHECK_FALSE(budget.try_reserve(1));
+    budget.deallocate(held, 200);
+}
+
+TEST_CASE("core::pmr::budget_resource::a reservation waiting for another one") {
+    core::pmr::otterbrix_resource upstream;
+    budget_resource_t budget(&upstream, 1000);
+
+    auto holder = std::make_unique<budget_resource_t::reservation_t>(budget.try_reserve(800));
+    REQUIRE(*holder);
+    std::atomic<bool> reserved{false};
+    std::thread waiter([&budget, &reserved] {
+        for (;;) {
+            const auto seen = budget.releases();
+            if (auto reservation = budget.try_reserve(500)) {
+                reserved.store(true);
+                return;
+            }
+            budget.wait_for_release(seen);
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK_FALSE(reserved.load());
+    holder.reset();
+    waiter.join();
+    CHECK(reserved.load());
+    CHECK(budget.reserved() == 0);
 }

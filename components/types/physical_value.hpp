@@ -60,6 +60,12 @@ namespace components::types {
 
         physical_type type() const noexcept;
 
+        // A view refers to bytes it does not own
+        [[nodiscard]] bool is_view() const noexcept;
+        [[nodiscard]] std::string_view view_bytes() const noexcept;
+        // The same view over a copy of its bytes at `data`.
+        [[nodiscard]] physical_value rebased(const char* data) const noexcept;
+
     private:
         // Recomputes both operand kinds from type_; the caller's lhs128/rhs128 only gate the call.
         bool less_128_(const physical_value& other) const noexcept;

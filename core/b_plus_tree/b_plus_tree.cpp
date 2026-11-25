@@ -11,6 +11,13 @@ namespace core::b_plus_tree {
 #ifdef DEV_MODE
     namespace {
         size_t g_max_leaf_nodes_override = 0;
+
+        size_t block_for_item(uint32_t item_size) {
+            return align_to_block_size(item_size + block_t::header_size + block_t::metadata_size);
+        }
+
+        // A view key points into an item inside a block, so no copy of it outgrows a block's payload.
+        size_t key_copy_bound(size_t block_size, bool view) { return view ? block_size - block_t::header_size : 0; }
     } // namespace
 
     void dev_set_max_leaf_nodes(size_t limit) noexcept { g_max_leaf_nodes_override = limit; }
@@ -35,6 +42,8 @@ namespace core::b_plus_tree {
     void btree_t::base_node_t::unlock_shared() { node_mutex_.unlock_shared(); }
 
     void btree_t::base_node_t::lock_exclusive() { node_mutex_.lock(); }
+
+    bool btree_t::base_node_t::try_lock_exclusive() { return node_mutex_.try_lock(); }
 
     void btree_t::base_node_t::unlock_exclusive() { node_mutex_.unlock(); }
 
@@ -306,6 +315,12 @@ namespace core::b_plus_tree {
         tree_mutex_.lock(); // needed for root check
         index_t index = key_func_(item);
         if (root_ == nullptr) {
+            size_t key_copies = index.is_view() ? 2 * (index.view_bytes().size() + 1) : 0;
+            auto reservation = reserve_(segment_tree_t::header_size + block_for_item(item.size) + key_copies, nullptr);
+            if (!reservation) {
+                tree_mutex_.unlock();
+                return false;
+            }
             uint64_t segment_tree_id = get_unique_id_();
             std::filesystem::path file_name = storage_directory_;
             file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
@@ -326,6 +341,16 @@ namespace core::b_plus_tree {
             return stored;
         } else if (root_->is_leaf_node()) {
             assert(root_->unique_entry_count() != 0);
+            const auto* root_leaf = static_cast<const leaf_node_t*>(root_);
+            size_t need = append_estimate_(root_leaf, index, item);
+            if (root_->unique_entry_count() >= max_node_capacity_) {
+                need += leaf_split_estimate_(root_leaf, index, item) + inner_node_bytes_(); // + the new root
+            }
+            auto reservation = reserve_(need, root_);
+            if (!reservation) {
+                tree_mutex_.unlock();
+                return false;
+            }
             bool result;
             if (root_->unique_entry_count() < max_node_capacity_) {
                 result = static_cast<leaf_node_t*>(root_)->append(index, item);
@@ -371,6 +396,19 @@ namespace core::b_plus_tree {
             if (!record_nodes) {
                 release_locks_(modified_nodes);
             }
+        }
+
+        const auto* leaf = static_cast<const leaf_node_t*>(current_node);
+        size_t need = append_estimate_(leaf, index, item);
+        if (current_node->unique_entry_count() >= max_node_capacity_) {
+            need += leaf_split_estimate_(leaf, index, item) + inner_splits_(modified_nodes) * inner_node_bytes_();
+        }
+        auto reservation = reserve_(need, current_node);
+        if (!reservation) {
+            release_locks_(modified_nodes);
+            current_node->unlock_exclusive();
+            tree_mutex_.unlock();
+            return false;
         }
 
         bool result;
@@ -439,6 +477,11 @@ namespace core::b_plus_tree {
             tree_mutex_.unlock();
             return false;
         } else if (root_->is_leaf_node()) {
+            auto reservation = reserve_(remove_estimate_(static_cast<const leaf_node_t*>(root_), index, false), root_);
+            if (!reservation) {
+                tree_mutex_.unlock();
+                return false;
+            }
             bool result = static_cast<leaf_node_t*>(root_)->remove(index, item);
             if (result) {
                 item_count_--;
@@ -475,7 +518,12 @@ namespace core::b_plus_tree {
             }
         }
 
-        if (!static_cast<leaf_node_t*>(current_node)->contains_index(index)) {
+        // before the contains_index() probe: that probe loads a block, and the estimate counts it
+        auto reservation = reserve_(remove_estimate_(static_cast<const leaf_node_t*>(current_node),
+                                                     index,
+                                                     current_node->unique_entry_count() <= min_node_capacity_),
+                                    current_node);
+        if (!reservation || !static_cast<leaf_node_t*>(current_node)->contains_index(index)) {
             tree_mutex_.unlock();
             release_locks_(modified_nodes);
             current_node->unlock_exclusive();
@@ -588,6 +636,11 @@ namespace core::b_plus_tree {
             tree_mutex_.unlock();
             return false;
         } else if (root_->is_leaf_node()) {
+            auto reservation = reserve_(remove_estimate_(static_cast<const leaf_node_t*>(root_), index, false), root_);
+            if (!reservation) {
+                tree_mutex_.unlock();
+                return false;
+            }
             size_t count_delta = static_cast<leaf_node_t*>(root_)->item_count(index);
             bool result = static_cast<leaf_node_t*>(root_)->remove_index(index);
             if (result) {
@@ -625,7 +678,12 @@ namespace core::b_plus_tree {
             }
         }
 
-        if (!static_cast<leaf_node_t*>(current_node)->contains_index(index)) {
+        // before the contains_index() probe: that probe loads a block, and the estimate counts it
+        auto reservation = reserve_(remove_estimate_(static_cast<const leaf_node_t*>(current_node),
+                                                     index,
+                                                     current_node->unique_entry_count() <= min_node_capacity_),
+                                    current_node);
+        if (!reservation || !static_cast<leaf_node_t*>(current_node)->contains_index(index)) {
             tree_mutex_.unlock();
             release_locks_(modified_nodes);
             current_node->unlock_exclusive();
@@ -870,6 +928,7 @@ namespace core::b_plus_tree {
         }
         size_t* buffer = static_cast<size_t*>(resource_->try_allocate(METADATA_SIZE));
         if (buffer == nullptr) {
+            record_shortfall_(METADATA_SIZE);
             failures_.report(load_failure_t::out_of_memory);
             tree_mutex_.unlock();
             return;
@@ -897,10 +956,38 @@ namespace core::b_plus_tree {
             return;
         }
         uint64_t* buffer_reader = reinterpret_cast<uint64_t*>(buffer + 2);
+        size_t inner_node_pack_size = (max_node_capacity_ + min_node_capacity_) / 2;
+
+        // held while the tree is built
+        core::pmr::budget_resource_t::reservation_t reservation;
+        {
+            size_t inner_nodes = 0;
+            for (size_t layer_count = stored_leaves; layer_count > 1;) {
+                size_t upper_layer_count = 0;
+                for (size_t layer_index = 0; layer_index < layer_count; upper_layer_count++) {
+                    layer_index = layer_count - layer_index >= inner_node_pack_size + min_node_capacity_
+                                      ? layer_index + inner_node_pack_size
+                                      : layer_count;
+                }
+                inner_nodes += upper_layer_count;
+                layer_count = upper_layer_count;
+            }
+            size_t need = stored_leaves * sizeof(base_node_t*) + stored_leaves * segment_tree_t::header_size +
+                          inner_nodes * inner_node_bytes_();
+            reservation = resource_->try_reserve(need);
+            if (!reservation) {
+                record_shortfall_(need);
+                failures_.report(load_failure_t::out_of_memory);
+                resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+                tree_mutex_.unlock();
+                return;
+            }
+        }
 
         base_node_t** nodes_layer =
             static_cast<base_node_t**>(resource_->try_allocate(stored_leaves * sizeof(base_node_t*)));
         if (nodes_layer == nullptr) {
+            record_shortfall_(stored_leaves * sizeof(base_node_t*));
             failures_.report(load_failure_t::out_of_memory);
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
@@ -943,7 +1030,6 @@ namespace core::b_plus_tree {
             }
             left_node = node;
         }
-        size_t inner_node_pack_size = (max_node_capacity_ + min_node_capacity_) / 2;
 
         size_t upper_layer_index = 0;
         size_t layer_index = 0;
@@ -1085,6 +1171,105 @@ namespace core::b_plus_tree {
             parent->unlock_shared();
         }
         return static_cast<leaf_node_t*>(current_node);
+    }
+
+    size_t btree_t::append_estimate_(const leaf_node_t* leaf, const index_t& index, item_data item) const {
+        const size_t block = std::max({size_t{DEFAULT_BLOCK_SIZE}, leaf->largest_block(), block_for_item(item.size)});
+        const size_t key = key_copy_bound(block, leaf->view_keyed() || index.is_view());
+        // split_append: two new blocks
+        // the target and both new blocks update their min/max
+        return leaf->unloaded_bytes() + 2 * block + 6 * key;
+    }
+
+    size_t btree_t::leaf_split_estimate_(const leaf_node_t* leaf, const index_t& index, item_data item) const {
+        const size_t block = std::max({size_t{DEFAULT_BLOCK_SIZE}, leaf->largest_block(), block_for_item(item.size)});
+        const size_t key = key_copy_bound(block, leaf->view_keyed() || index.is_view());
+        // the new leaf's header
+        // split_uniques of the boundary block, both halves updating min/max.
+        // Blocks moved whole bring their keys, and their loads are in the leaf's unloaded_bytes().
+        return segment_tree_t::header_size + block + 4 * key;
+    }
+
+    size_t btree_t::remove_estimate_(const leaf_node_t* leaf, const index_t& index, bool restructures) const {
+        size_t block = std::max(size_t{DEFAULT_BLOCK_SIZE}, leaf->largest_block());
+        bool view = leaf->view_keyed() || index.is_view();
+        size_t need = leaf->unloaded_bytes();
+        size_t key_copies = 2;
+        if (restructures) {
+            // merge loads this leaf (counted above); balance may load the neighbour
+            size_t neighbour_bytes = 0;
+            for (const base_node_t* node : {leaf->left_node_, leaf->right_node_}) {
+                if (node) {
+                    const auto* neighbour = static_cast<const leaf_node_t*>(node);
+                    neighbour_bytes = std::max(neighbour_bytes, neighbour->stored_bytes());
+                    block = std::max(block, neighbour->largest_block());
+                    view = view || neighbour->view_keyed();
+                }
+            }
+            // + the split_uniques block of a balance
+            need += neighbour_bytes + block;
+            key_copies += 4;
+        }
+        return need + key_copies * key_copy_bound(block, view);
+    }
+
+    size_t btree_t::inner_splits_(const std::deque<base_node_t*>& locked_chain) const {
+        size_t splits = 0;
+        for (const base_node_t* node : locked_chain) {
+            if (node->unique_entry_count() >= max_node_capacity_) {
+                splits++;
+            }
+        }
+        // only the chain's top can be both full and the root
+        // anything above the chain was released not full
+        if (!locked_chain.empty() && locked_chain.front() == root_ &&
+            root_->unique_entry_count() >= max_node_capacity_) {
+            splits++;
+        }
+        return splits;
+    }
+
+    size_t btree_t::inner_node_bytes_() const noexcept { return sizeof(base_node_t*) * max_node_capacity_; }
+
+    core::pmr::budget_resource_t::reservation_t btree_t::reserve_(size_t bytes, const base_node_t* target) {
+        // a busy leaf is in its operation's hands: skipped now, offloaded on a pass after that operation finishes
+        auto evict = [](base_node_t* node) {
+            if (node->try_lock_exclusive()) {
+                static_cast<leaf_node_t*>(node)->evict();
+                node->unlock_exclusive();
+            }
+        };
+        for (;;) {
+            uint64_t seen = resource_->releases();
+            auto reservation = resource_->try_reserve(bytes);
+            if (reservation) {
+                return reservation;
+            }
+            if (target) {
+                for (base_node_t* node = target->left_node_; node; node = node->left_node_) {
+                    evict(node);
+                    if ((reservation = resource_->try_reserve(bytes))) {
+                        return reservation;
+                    }
+                }
+                for (base_node_t* node = target->right_node_; node; node = node->right_node_) {
+                    evict(node);
+                    if ((reservation = resource_->try_reserve(bytes))) {
+                        return reservation;
+                    }
+                }
+            }
+            if (resource_->reserved() == 0) {
+                break; // no operation in flight: nothing will finish and free anything
+            }
+            resource_->wait_for_release(seen); // an operation finished; its blocks can be offloaded on the next pass
+        }
+        record_shortfall_(bytes);
+        return core::pmr::budget_resource_t::reservation_t{};
+    }
+
+    void btree_t::record_shortfall_(size_t needed) noexcept {
+        shortfall_ = memory_shortfall_t{needed, resource_->used(), resource_->reserved(), resource_->limit()};
     }
 
     void btree_t::release_locks_(std::deque<base_node_t*>& modified_nodes) const {

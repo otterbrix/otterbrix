@@ -7,12 +7,14 @@
 #include <core/file/file_system.hpp>
 #include <core/pmr.hpp>
 #include <core/pmr/budget_resource.hpp>
+#include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <limits>
 #include <random>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 
@@ -2600,10 +2602,10 @@ TEST_CASE("core::b_plus_tree::a_split_whose_block_the_budget_refuses_keeps_every
     const auto count_before = tree->count();
 
     INFO("room for the new leaf's header, none for the half of the block it would take");
-    fx.budget.set_limit(fx.budget.used() + segment_tree_t::header_size);
+    REQUIRE(fx.budget.set_limit(fx.budget.used() + segment_tree_t::header_size));
     auto other = tree->split(fx.open("split_receiver"));
     REQUIRE(other != nullptr);
-    fx.budget.set_limit(no_limit);
+    REQUIRE(fx.budget.set_limit(no_limit));
 
     CHECK(tree->count() + other->count() == count_before);
     std::vector<uint64_t> expected;
@@ -2624,9 +2626,9 @@ TEST_CASE("core::b_plus_tree::a_balance_whose_block_the_budget_refuses_keeps_eve
         refused_split_fixture_t::fill(*big, 100, 160);
         const auto before = refused_split_fixture_t::collect(*small, *big);
 
-        fx.budget.set_limit(fx.budget.used());
+        REQUIRE(fx.budget.set_limit(fx.budget.used()));
         small->balance_with(big);
-        fx.budget.set_limit(no_limit);
+        REQUIRE(fx.budget.set_limit(no_limit));
 
         CHECK(small->count() + big->count() == before.size());
         CHECK(refused_split_fixture_t::collect(*small, *big) == before);
@@ -2640,9 +2642,9 @@ TEST_CASE("core::b_plus_tree::a_balance_whose_block_the_budget_refuses_keeps_eve
         refused_split_fixture_t::fill(*big, 100, 160);
         const auto before = refused_split_fixture_t::collect(*small, *big);
 
-        fx.budget.set_limit(fx.budget.used());
+        REQUIRE(fx.budget.set_limit(fx.budget.used()));
         small->balance_with(big);
-        fx.budget.set_limit(no_limit);
+        REQUIRE(fx.budget.set_limit(no_limit));
 
         CHECK(small->count() + big->count() == before.size());
         CHECK(refused_split_fixture_t::collect(*small, *big) == before);
@@ -2678,9 +2680,9 @@ TEST_CASE("core::b_plus_tree::a_metadata_buffer_the_budget_refuses_is_a_value") 
 
     SECTION("flush of a tree without leaves") {
         btree_t tree(&budget, fs, testing_directory, key_getter, 12);
-        budget.set_limit(budget.used());
+        REQUIRE(budget.set_limit(budget.used()));
         CHECK_FALSE(tree.flush());
-        budget.set_limit(no_limit);
+        REQUIRE(budget.set_limit(no_limit));
         CHECK(tree.flush());
     }
 
@@ -2688,17 +2690,17 @@ TEST_CASE("core::b_plus_tree::a_metadata_buffer_the_budget_refuses_is_a_value") 
         btree_t tree(&budget, fs, testing_directory, key_getter, 12);
         tree.load();
         REQUIRE(tree.size() == keys);
-        budget.set_limit(budget.used());
+        REQUIRE(budget.set_limit(budget.used()));
         CHECK_FALSE(tree.flush());
-        budget.set_limit(no_limit);
+        REQUIRE(budget.set_limit(no_limit));
         CHECK(tree.flush());
     }
 
     SECTION("load refused at the metadata buffer") {
         btree_t tree(&budget, fs, testing_directory, key_getter, 12);
-        budget.set_limit(budget.used());
+        REQUIRE(budget.set_limit(budget.used()));
         tree.load();
-        budget.set_limit(no_limit);
+        REQUIRE(budget.set_limit(no_limit));
         CHECK(tree.load_failure() == load_failure_t::out_of_memory);
         CHECK(tree.size() == 0);
 
@@ -2709,25 +2711,24 @@ TEST_CASE("core::b_plus_tree::a_metadata_buffer_the_budget_refuses_is_a_value") 
         CHECK(tree.contains_index(btree_t::index_t(keys - 1)));
     }
 
-    SECTION("a reload refused at the metadata buffer forgets the tree it dropped") {
+    SECTION("a reload refused by its estimate forgets the tree it dropped") {
         btree_t tree(&budget, fs, testing_directory, key_getter, 12);
         tree.load();
         REQUIRE(tree.size() == keys);
 
-        INFO("limit 0, not used(): dropping the old tree frees enough for the metadata buffer to fit again");
-        budget.set_limit(0);
+        INFO("the dropped tree's headers make room for the metadata buffer, not for the buffer and the headers again");
+        REQUIRE(budget.set_limit(budget.used()));
         tree.load();
         CHECK(tree.load_failure() == load_failure_t::out_of_memory);
         CHECK(tree.size() == 0);
-        CHECK_FALSE(tree.flush());
-        budget.set_limit(no_limit);
+        REQUIRE(budget.set_limit(no_limit));
     }
 
     SECTION("load refused at the leaf array") {
         btree_t tree(&budget, fs, testing_directory, key_getter, 12);
-        budget.set_limit(budget.used() + METADATA_SIZE);
+        REQUIRE(budget.set_limit(budget.used() + METADATA_SIZE));
         tree.load();
-        budget.set_limit(no_limit);
+        REQUIRE(budget.set_limit(no_limit));
         CHECK(tree.load_failure() == load_failure_t::out_of_memory);
         CHECK(tree.size() == 0);
 
@@ -2812,9 +2813,8 @@ TEST_CASE("core::b_plus_tree::a_transient_read_failure_does_not_wedge_the_leaf")
     }
 }
 
-TEST_CASE("core::b_plus_tree::the_first_item_of_a_fresh_tree_is_not_counted_unless_it_was_stored") {
+TEST_CASE("core::b_plus_tree::the_first_item_of_a_fresh_tree_over_budget") {
     auto upstream = core::pmr::otterbrix_resource();
-    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_first_append_refused");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2826,18 +2826,22 @@ TEST_CASE("core::b_plus_tree::the_first_item_of_a_fresh_tree_is_not_counted_unle
         return block_t::index_t(read_unaligned<uint64_t>(data.data));
     };
 
+    INFO("room for the new leaf's header, not for its block; an empty tree has nothing to evict");
     core::pmr::budget_resource_t budget(&upstream, segment_tree_t::header_size + 4096);
     btree_t tree(&budget, fs, testing_directory, key_getter, 8);
 
     constexpr uint32_t item_size = 64;
-    auto* buffer = static_cast<data_ptr_t>(resource.allocate(item_size));
-    std::memset(buffer, 0, item_size);
-    INFO("the tree must answer with what the leaf said, not with true");
-    CHECK_FALSE(tree.append(buffer, item_size));
+    std::vector<char> buffer(item_size, 0);
+    CHECK_FALSE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    const auto shortfall = tree.take_memory_shortfall();
+    CHECK(shortfall.needed > budget.limit());
+    CHECK(shortfall.used == 0);
+    CHECK(shortfall.reserved == 0);
+    CHECK(shortfall.limit == budget.limit());
+    CHECK(tree.take_memory_shortfall().needed == 0);
     CHECK(tree.size() == 0);
-    CHECK(tree.load_failure() == load_failure_t::out_of_memory);
+    CHECK(budget.used() == 0);
     CHECK_FALSE(tree.contains_index(btree_t::index_t(uint64_t{0})));
-    resource.deallocate(buffer, item_size);
 
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
@@ -3452,10 +3456,10 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
     auto deserialize = [](void* buf, uint64_t) { return read_unaligned<uint64_t>(static_cast<data_ptr_t>(buf)); };
 
     {
-        resource.set_limit(0);
+        REQUIRE(resource.set_limit(resource.used()));
         std::pmr::vector<uint64_t> starved;
         REQUIRE(tree.full_scan(&starved, deserialize));
-        resource.set_limit(no_limit);
+        REQUIRE(resource.set_limit(no_limit));
         CHECK(starved.empty());
         INFO("the refusal must be on the channel, not swallowed");
         CHECK(tree.take_load_failure() == load_failure_t::out_of_memory);
@@ -3473,7 +3477,7 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
         reloaded.load();
         REQUIRE(reloaded.size() == items);
 
-        resource.set_limit(0);
+        REQUIRE(resource.set_limit(resource.used()));
         std::pmr::vector<uint64_t> starved;
         REQUIRE(reloaded.scan_decending<uint64_t>(btree_t::index_t(uint64_t(0)),
                                                   btree_t::index_t(uint64_t(items)),
@@ -3481,7 +3485,7 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
                                                   &starved,
                                                   deserialize,
                                                   [](const auto&, const auto&) { return true; }));
-        resource.set_limit(no_limit);
+        REQUIRE(resource.set_limit(no_limit));
         CHECK(starved.empty());
         CHECK(reloaded.take_load_failure() == load_failure_t::out_of_memory);
     }
@@ -3672,4 +3676,297 @@ TEST_CASE("core::b_plus_tree::segment_tree_iterator_assignment_rebinds_the_tree"
     tree_a.reset();
     tree_b.reset();
     remove_directory(fs, testing_directory);
+}
+
+TEST_CASE("core::b_plus_tree::an_append_over_a_budget_held_by_other_leaves") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, no_limit);
+    path_t testing_directory = scratch_dir("btree_append_evicts");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 4096;
+    constexpr uint64_t keys = 301;
+
+    btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+    std::vector<char> buffer(item_size, 0);
+    for (uint64_t i = 0; i < keys; i++) {
+        write_unaligned<uint64_t>(buffer.data(), i);
+        REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    }
+
+    INFO("not flushed: every leaf's block is resident AND modified, so eviction has to write it out");
+    const uint64_t held = budget.used();
+    REQUIRE(budget.set_limit(held + DEFAULT_BLOCK_SIZE / 2));
+    write_unaligned<uint64_t>(buffer.data(), keys);
+    REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    CHECK(budget.used() < held);
+    CHECK(tree.load_failure() == load_failure_t::none);
+    REQUIRE(budget.set_limit(no_limit));
+
+    for (uint64_t i = 0; i <= keys; i++) {
+        REQUIRE(tree.contains_index(btree_t::index_t(i)));
+    }
+    CHECK(tree.size() == keys + 1);
+    CHECK(tree.load_failure() == load_failure_t::none);
+    remove_directory(fs, testing_directory);
+}
+
+TEST_CASE("core::b_plus_tree::text_keys_appended_under_a_tight_budget") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, no_limit);
+    path_t testing_directory = scratch_dir("btree_text_tight_budget");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(std::string_view(data.data, data.size));
+    };
+    constexpr size_t test_count = 500;
+    std::vector<std::string> test_data;
+    test_data.reserve(test_count);
+    for (size_t i = 0; i < test_count; i++) {
+        test_data.emplace_back(gen_random(255, i + 1));
+    }
+
+    btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+    INFO("room for every leaf header, not for every leaf's block as well");
+    REQUIRE(budget.set_limit(40ull * 1024 * 1024));
+    for (auto& key : test_data) {
+        REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(key.data()), static_cast<uint32_t>(key.size())}));
+    }
+    CHECK(tree.load_failure() == load_failure_t::none);
+    REQUIRE(budget.set_limit(no_limit));
+
+    for (auto& key : test_data) {
+        REQUIRE(tree.contains_index(btree_t::index_t(std::string_view(key))));
+    }
+    CHECK(tree.size() == test_count);
+    CHECK(tree.load_failure() == load_failure_t::none);
+    remove_directory(fs, testing_directory);
+}
+
+TEST_CASE("core::b_plus_tree::an_append_with_nothing_resident_to_evict") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, no_limit);
+    path_t testing_directory = scratch_dir("btree_append_nothing_to_evict");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 64;
+    constexpr uint64_t keys = 100;
+    std::vector<char> buffer(item_size, 0);
+    {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        for (uint64_t i = 0; i < keys; i++) {
+            write_unaligned<uint64_t>(buffer.data(), i);
+            REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+        }
+        REQUIRE(tree.flush());
+    }
+
+    btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+    tree.load(); // lazy: headers only, no block in memory
+    REQUIRE(tree.size() == keys);
+
+    const uint64_t held = budget.used();
+    REQUIRE(budget.set_limit(held));
+    write_unaligned<uint64_t>(buffer.data(), keys);
+    CHECK_FALSE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    const auto shortfall = tree.take_memory_shortfall();
+    CHECK(shortfall.needed > 0);
+    CHECK(shortfall.used == held);
+    CHECK(shortfall.limit == held);
+    write_unaligned<uint64_t>(buffer.data(), 0);
+    CHECK_FALSE(tree.remove({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    CHECK(tree.take_memory_shortfall().needed > 0);
+    CHECK(tree.size() == keys);
+    CHECK(budget.used() == held);
+
+    INFO("the refusals changed nothing: with room, the same tree takes both");
+    REQUIRE(budget.set_limit(no_limit));
+    write_unaligned<uint64_t>(buffer.data(), keys);
+    CHECK(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    write_unaligned<uint64_t>(buffer.data(), 0);
+    CHECK(tree.remove({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    CHECK(tree.size() == keys);
+    CHECK(tree.take_memory_shortfall().needed == 0);
+    remove_directory(fs, testing_directory);
+}
+
+TEST_CASE("core::b_plus_tree::an_append_while_another_operation_holds_the_room") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, no_limit);
+    path_t testing_directory = scratch_dir("btree_append_waits");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 64;
+    constexpr uint64_t keys = 100;
+    std::vector<char> buffer(item_size, 0);
+    {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        for (uint64_t i = 0; i < keys; i++) {
+            write_unaligned<uint64_t>(buffer.data(), i);
+            REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+        }
+        REQUIRE(tree.flush());
+    }
+    btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+    tree.load(); // lazy: nothing resident, so eviction cannot make room
+
+    INFO("the other operation holds all of the room the append needs");
+    constexpr uint64_t room = 8ull * 1024 * 1024;
+    REQUIRE(budget.set_limit(budget.used() + room));
+    auto other = std::make_unique<core::pmr::budget_resource_t::reservation_t>(budget.try_reserve(room));
+    REQUIRE(*other);
+
+    std::atomic<bool> appended{false};
+    std::thread writer([&] {
+        write_unaligned<uint64_t>(buffer.data(), keys);
+        appended.store(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK_FALSE(appended.load());
+    other.reset();
+    writer.join();
+    CHECK(appended.load());
+    CHECK(budget.reserved() == 0);
+    REQUIRE(budget.set_limit(no_limit));
+    CHECK(tree.contains_index(btree_t::index_t(keys)));
+    remove_directory(fs, testing_directory);
+}
+
+TEST_CASE("core::b_plus_tree::a_key_spread_over_several_blocks_of_a_lazily_loaded_leaf") {
+    refused_split_fixture_t fx("segment_tree_key_over_blocks");
+    auto tree = fx.make_tree("spread");
+    constexpr uint64_t spread_key = 7;
+    constexpr uint64_t copies = 60;
+    std::vector<char> buffer(DEFAULT_BLOCK_SIZE / 16, 0);
+    auto item = [&buffer]() {
+        return block_t::item_data{reinterpret_cast<data_ptr_t>(buffer.data()), static_cast<uint32_t>(buffer.size())};
+    };
+    for (uint64_t key : {uint64_t{6}, uint64_t{8}}) {
+        write_unaligned<uint64_t>(buffer.data(), key);
+        REQUIRE(tree->append(item()));
+    }
+    write_unaligned<uint64_t>(buffer.data(), spread_key);
+    for (uint64_t copy = 0; copy < copies; copy++) {
+        write_unaligned<uint64_t>(buffer.data() + sizeof(uint64_t), copy);
+        REQUIRE(tree->append(item()));
+    }
+    REQUIRE(tree->blocks_count() > 3);
+    REQUIRE(tree->flush());
+    tree->lazy_load();
+    REQUIRE(tree->load_failure() == load_failure_t::none);
+
+    const segment_tree_t::index_t index(spread_key);
+    CHECK(tree->item_count(index) == copies);
+    std::vector<block_t::item_data> items;
+    tree->get_items(items, index);
+    CHECK(items.size() == copies);
+    write_unaligned<uint64_t>(buffer.data() + sizeof(uint64_t), copies - 1);
+    CHECK(tree->contains(index, item()));
+    CHECK(tree->get_item(index, copies - 1).data != nullptr);
+    CHECK(tree->load_failure() == load_failure_t::none);
+}
+
+TEST_CASE("core::b_plus_tree::a_lazily_loaded_leaf_with_no_room_for_a_block") {
+    refused_split_fixture_t fx("segment_tree_no_room_to_load");
+    auto tree = fx.make_tree("leaf");
+    constexpr uint64_t keys = 200;
+    refused_split_fixture_t::fill(*tree, 0, keys);
+    REQUIRE(tree->blocks_count() > 1);
+    REQUIRE(tree->flush());
+    tree->lazy_load();
+    REQUIRE(tree->load_failure() == load_failure_t::none);
+    const auto count_before = tree->count();
+    const auto unique_before = tree->unique_indices_count();
+
+    std::vector<char> buffer(DEFAULT_BLOCK_SIZE / 128, 0);
+    auto item_of = [&buffer](uint64_t key) {
+        write_unaligned<uint64_t>(buffer.data(), key);
+        return block_t::item_data{reinterpret_cast<data_ptr_t>(buffer.data()), static_cast<uint32_t>(buffer.size())};
+    };
+
+    REQUIRE(fx.budget.set_limit(fx.budget.used()));
+    SECTION("append") {
+        CHECK_FALSE(tree->append(item_of(1000)));
+        CHECK_FALSE(tree->append(item_of(5)));
+    }
+    SECTION("remove") { CHECK_FALSE(tree->remove(item_of(5))); }
+    SECTION("remove_index") { CHECK_FALSE(tree->remove_index(segment_tree_t::index_t(uint64_t{5}))); }
+    SECTION("reads") {
+        CHECK_FALSE(tree->contains_index(segment_tree_t::index_t(uint64_t{5})));
+        CHECK(tree->item_count(segment_tree_t::index_t(uint64_t{5})) == 0);
+        std::vector<block_t::item_data> items;
+        tree->get_items(items, segment_tree_t::index_t(uint64_t{5}));
+        CHECK(items.empty());
+    }
+    REQUIRE(fx.budget.set_limit(no_limit));
+
+    CHECK(tree->load_failure() == load_failure_t::out_of_memory);
+    CHECK(tree->count() == count_before);
+    CHECK(tree->unique_indices_count() == unique_before);
+    tree->reset_load_failure();
+    for (uint64_t key = 0; key < keys; key++) {
+        REQUIRE(tree->contains_index(segment_tree_t::index_t(key)));
+    }
+    CHECK(tree->load_failure() == load_failure_t::none);
+}
+
+TEST_CASE("core::b_plus_tree::a_merge_of_lazily_loaded_leaves_with_no_room_for_a_block") {
+    refused_split_fixture_t fx("segment_tree_merge_no_room");
+    auto receiver = fx.make_tree("receiver");
+    std::unique_ptr<segment_tree_t> donor = fx.make_tree("donor");
+    refused_split_fixture_t::fill(*receiver, 0, 20);
+    refused_split_fixture_t::fill(*donor, 100, 120);
+    REQUIRE(receiver->flush());
+    REQUIRE(donor->flush());
+    const auto before = refused_split_fixture_t::collect(*receiver, *donor);
+    INFO("reloaded after collect(), whose walk brings every block in");
+    receiver->lazy_load();
+    donor->lazy_load();
+    const auto receiver_count = receiver->count();
+    const auto donor_count = donor->count();
+
+    REQUIRE(fx.budget.set_limit(fx.budget.used()));
+    CHECK_FALSE(receiver->merge(donor));
+    REQUIRE(fx.budget.set_limit(no_limit));
+    CHECK(receiver->count() == receiver_count);
+    CHECK(donor->count() == donor_count);
+    CHECK(donor->load_failure() == load_failure_t::out_of_memory);
+
+    donor->reset_load_failure();
+    REQUIRE(receiver->merge(donor));
+    CHECK(receiver->count() == receiver_count + donor_count);
+    CHECK(donor->count() == 0);
+    std::vector<uint64_t> merged;
+    for (auto block = receiver->begin(); block != receiver->end(); block++) {
+        for (auto item = block->begin(); item != block->end(); item++) {
+            merged.push_back((*item).index.value<components::types::physical_type::UINT64>());
+        }
+    }
+    CHECK(merged == before);
 }

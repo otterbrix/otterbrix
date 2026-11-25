@@ -106,6 +106,7 @@ namespace services::index {
                         uint64_t bitcask_flush_threshold,
                         uint64_t bitcask_segment_record_limit,
                         uint64_t btree_flush_threshold,
+                        uint64_t btree_memory_limit,
                         configuration::pump_intervals_t pump);
         ~manager_index_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
@@ -305,6 +306,7 @@ namespace services::index {
         uint64_t bitcask_flush_threshold_{1000};
         uint64_t bitcask_segment_record_limit_{100};
         uint64_t btree_flush_threshold_{1000};
+        uint64_t btree_memory_limit_{std::numeric_limits<uint64_t>::max()};
 
         std::pmr::unordered_map<components::catalog::oid_t, index_records_t> indexes_per_oid_;
 

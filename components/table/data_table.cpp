@@ -7,6 +7,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 #include <cstdlib>
 #include <unordered_set>
 
@@ -259,6 +260,7 @@ namespace components::table {
     }
 
     uint64_t data_table_t::publish_column_stamps(uint64_t txn_id, uint64_t commit_id) {
+        OTB_ZONE_N("data_table::publish_column_stamps");
         if (txn_id == 0) {
             return 0;
         }
@@ -288,6 +290,7 @@ namespace components::table {
     }
 
     uint64_t data_table_t::revert_column_stamps(uint64_t txn_id, uint64_t from_sub_id) {
+        OTB_ZONE_N("data_table::revert_column_stamps");
         if (txn_id < TRANSACTION_ID_START) {
             return 0;
         }
@@ -415,6 +418,7 @@ namespace components::table {
     }
 
     core::error_t data_table_t::prepare(const transaction_data& txn) {
+        OTB_ZONE_N("data_table::prepare");
         assert(txn.transaction_id >= TRANSACTION_ID_START && "data_table_t::prepare: not a transaction");
         // Empty unless a rule applies, which most commits never meet
         std::pmr::vector<storage_index_t> added_columns(resource_);
@@ -516,6 +520,7 @@ namespace components::table {
     core::error_t data_table_t::widen_update(const transaction_data& txn,
                                              const vector::vector_t& row_ids,
                                              vector::data_chunk_t& chunk) {
+        OTB_ZONE_N("data_table::widen_update");
         const auto visible = visible_columns(txn);
         assert(chunk.column_count() == visible.size() && "widen_update: payload width is validated");
 
@@ -680,6 +685,7 @@ namespace components::table {
                                        const std::vector<storage_index_t>& column_ids,
                                        transaction_data txn,
                                        const table_filter_t* filter) {
+        OTB_ZONE_N("data_table::initialize_scan");
         state.set_visible_to_physical(visible_columns(txn));
         state.initialize(column_ids, filter);
         state.table_state.txn = txn;
@@ -692,6 +698,7 @@ namespace components::table {
                                                    transaction_data txn,
                                                    int64_t start_row,
                                                    int64_t end_row) {
+        OTB_ZONE_N("data_table::initialize_scan_with_offset");
         state.set_visible_to_physical(visible_columns(txn));
         state.initialize(column_ids);
         state.table_state.txn = txn;
@@ -711,10 +718,12 @@ namespace components::table {
     uint64_t data_table_t::calculate_size() { return row_groups_->calculate_size(); }
 
     void data_table_t::cleanup_versions(uint64_t lowest_active_start_time) {
+        OTB_ZONE_N("data_table::cleanup_versions");
         row_groups_->cleanup_versions(lowest_active_start_time);
     }
 
     bool data_table_t::compact(uint64_t compact_watermark) {
+        OTB_ZONE_N("data_table::compact");
         // Compacting a superseded ALTER parent would free blocks its successor references (proven unreachable).
         assert(is_root_);
         auto total = row_groups_->total_rows();
@@ -801,6 +810,7 @@ namespace components::table {
     }
 
     void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) {
+        OTB_ZONE_N("data_table::scan");
         state.table_state.scan(result);
 #ifdef DEV_MODE
         g_table_scan_rows_streamed.fetch_add(result.size(), std::memory_order_relaxed);
@@ -811,6 +821,7 @@ namespace components::table {
                                     std::pmr::vector<vector::data_chunk_t>& batches,
                                     table_scan_state& state,
                                     std::pmr::memory_resource* resource) {
+        OTB_ZONE_N("data_table::scan_batched");
         state.table_state.scan_batched(chunk_types, batches, resource);
     }
 
@@ -821,6 +832,7 @@ namespace components::table {
                                                                 int64_t& next_row,
                                                                 int64_t max_row,
                                                                 bool& drained) {
+        OTB_ZONE_N("data_table::fetch_next_batch");
         if (drained || next_row >= max_row) {
             drained = true;
             return true;
@@ -912,6 +924,7 @@ namespace components::table {
                              column_fetch_state& state,
                              const transaction_data& txn,
                              fetch_visibility_t visibility) {
+        OTB_ZONE_N("data_table::fetch");
         const auto physical_ids = to_physical_columns(column_ids, visible_columns(txn));
         row_groups_->fetch(result, physical_ids, row_identifiers, fetch_count, state, txn, visibility);
     }
@@ -931,6 +944,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::initialize_append(table_append_state& state) {
+        OTB_ZONE_N("data_table::initialize_append");
         assert(state.append_locked &&
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_locked) {
@@ -943,22 +957,26 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
+        OTB_ZONE_N("data_table::append");
         assert(is_root_);
         mark_modified();
         return row_groups_->append(chunk, state); // out_of_memory
     }
 
     void data_table_t::finalize_append(table_append_state& state, transaction_data txn) {
+        OTB_ZONE_N("data_table::finalize_append");
         row_groups_->finalize_append(state, txn);
         mark_modified();
     }
 
     void data_table_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {
+        OTB_ZONE_N("data_table::commit_append");
         row_groups_->commit_append(commit_id, row_start, count);
         mark_modified();
     }
 
     core::result_wrapper_t<bool> data_table_t::revert_append(int64_t row_start, uint64_t count) {
+        OTB_ZONE_N("data_table::revert_append");
         if (row_groups_->is_tail(row_start, count)) {
             auto reverted = row_groups_->revert_append(row_start, count);
             mark_modified();
@@ -971,11 +989,13 @@ namespace components::table {
     }
 
     void data_table_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        OTB_ZONE_N("data_table::commit_all_deletes");
         row_groups_->commit_all_deletes(txn_id, commit_id);
         mark_modified();
     }
 
     void data_table_t::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
+        OTB_ZONE_N("data_table::revert_all_deletes");
         row_groups_->revert_all_deletes(txn_id, from_sub_id);
         mark_modified();
     }
@@ -987,6 +1007,7 @@ namespace components::table {
 
     core::result_wrapper_t<uint64_t> data_table_t::delete_rows(std::span<row_ids_t> row_ids,
                                                                const transaction_data& txn) {
+        OTB_ZONE_N("data_table::delete_rows");
         std::pmr::vector<int64_t> claimed(resource_);
         claimed.reserve(vector::DEFAULT_VECTOR_CAPACITY);
         // Every window is checked before any is stamped: a conflict anywhere stamps nothing.
@@ -1078,6 +1099,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::checkpoint(storage::metadata_writer_t& writer) {
+        OTB_ZONE_N("data_table::checkpoint");
         auto partial_block_manager = storage::partial_block_manager_t::for_checkpoint(row_groups_->block_manager());
 
         auto row_group_pointers_res = row_groups_->checkpoint(partial_block_manager);

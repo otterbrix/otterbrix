@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cassert>
 
+#include <core/tracy/tracy.hpp>
+
 namespace components::operators {
 
     operator_limit_t::operator_limit_t(std::pmr::memory_resource* resource, log_t log, logical_plan::limit_t limit)
@@ -23,6 +25,7 @@ namespace components::operators {
 
     core::error_t
     operator_limit_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        OTB_ZONE_N("op::limit::push");
         assert(opened_ && "the executor opens an operator_limit_t before pushing into it");
         if (shape_.empty()) {
             const auto& types = input.types();
@@ -60,6 +63,7 @@ namespace components::operators {
     }
 
     core::error_t operator_limit_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {
+        OTB_ZONE_N("op::limit::finalize");
         if (emitted() || shape_.empty()) {
             return core::error_t::no_error();
         }

@@ -3,6 +3,7 @@
 
 #include <components/sql/transformer/transformer.hpp>
 #include <core/pmr.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner {
 
@@ -10,6 +11,7 @@ namespace components::planner {
                                                                            const std::string& text,
                                                                            std::span<const vector::vector_t> values,
                                                                            prepared_use_t use) {
+        OTB_ZONE_N("planner::expand_prepared");
         core::pmr::arena_resource_t parser_arena(resource);
         auto statement = parse_stored_body(resource, &parser_arena, text, "prepared statement");
         if (statement.has_error()) {

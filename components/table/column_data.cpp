@@ -7,6 +7,7 @@
 
 #include <components/types/types.hpp>
 #include <components/vector/validation.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include "array_column_data.hpp"
 #include "column_checkpoint_state.hpp"
@@ -121,6 +122,7 @@ namespace components::table {
     }
 
     void column_data_t::initialize_scan(column_scan_state& state) {
+        OTB_ZONE_N("column_data::initialize_scan");
         state.current = data_.root_segment();
         state.row_index = state.current ? state.current->start : 0;
         state.internal_index = state.row_index;
@@ -129,6 +131,7 @@ namespace components::table {
     }
 
     void column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
+        OTB_ZONE_N("column_data::initialize_scan_with_offset");
         state.current = data_.get_segment(row_idx);
         state.row_index = row_idx;
         if (!state.current) {
@@ -155,11 +158,13 @@ namespace components::table {
     }
 
     uint64_t column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t scan_count) {
+        OTB_ZONE_N("column_data::scan");
         auto scan_type = get_vector_scan_type(state, scan_count, result);
         return scan_vector(state, result, scan_count, scan_type);
     }
 
     uint64_t column_data_t::scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t scan_count) {
+        OTB_ZONE_N("column_data::scan_committed");
         // The segments hold committed data only, so a committed scan reads exactly what scan() reads.
         return column_data_t::scan(state, result, scan_count);
     }
@@ -240,6 +245,7 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count) {
+        OTB_ZONE_N("column_data::append");
         base_statistics_t batch_stats(resource_, type_.type());
         batch_stats.update(vector, offset, count);
         statistics_.merge(batch_stats);
@@ -304,6 +310,7 @@ namespace components::table {
     void column_data_t::snapshot_counts(append_cut_t& cut) const { cut.counts.push_back(count_); }
 
     core::result_wrapper_t<bool> column_data_t::revert_append(cut_cursor_t& cut) {
+        OTB_ZONE_N("column_data::revert_append");
         if (cut.exhausted()) {
             return core::error_t(
                 core::error_code_t::data_corruption,
@@ -587,6 +594,7 @@ namespace components::table {
 
     core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(uint64_t segment_index,
                                                                            storage::partial_block_manager_t& pbm) {
+        OTB_ZONE_N("column_data::transition_segment_to_disk");
         auto* segment = data_.segment_at(static_cast<int64_t>(segment_index));
         if (!segment) {
             return true;
@@ -714,6 +722,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
+        OTB_ZONE_N("column_data::transition_to_disk");
         auto own = transition_own_segments(pbm);
         if (own.has_error()) {
             return own;
@@ -805,6 +814,7 @@ namespace components::table {
 
     core::result_wrapper_t<persistent_column_data_t>
     column_data_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
+        OTB_ZONE_N("column_data::checkpoint");
         column_data_checkpointer_t checkpointer(*this, partial_block_manager);
         auto persistent = checkpointer.checkpoint();
         if (persistent.has_error()) {

@@ -8,6 +8,7 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace services::dispatcher {
 
@@ -47,6 +48,7 @@ namespace services::dispatcher {
 
     void resolve_column_definitions(std::vector<components::table::column_definition_t>& cols,
                                     const catalog_resolves_t* resolves) {
+        OTB_ZONE_N("dispatcher::resolve_column_definitions");
         for (auto& col : cols) {
             auto& ct = col.type();
             resolve_one_type(ct, resolves);

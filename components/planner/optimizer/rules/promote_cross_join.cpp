@@ -17,6 +17,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -671,6 +672,7 @@ namespace components::planner::optimizer {
     } // namespace
 
     logical_plan::node_ptr promote_cross_joins(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
+        OTB_ZONE_N("optimizer::promote_cross_joins");
         return promote_impl(resource, std::move(node));
     }
 

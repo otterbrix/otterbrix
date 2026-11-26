@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 #include <numeric>
 #include <optional>
 #include <queue>
@@ -55,6 +56,7 @@ namespace components::operators {
 
     core::error_t
     operator_sort_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        OTB_ZONE_N("op::sort::push");
         // Blocking sink: accumulate the batch, emit nothing. The sort cannot
         // produce any ordered output until finalize() has seen every input chunk.
         buffered_input_.emplace_back(std::move(input));
@@ -62,6 +64,7 @@ namespace components::operators {
     }
 
     core::error_t operator_sort_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
+        OTB_ZONE_N("op::sort::finalize");
         // Upstream is drained; run the Phase 1 / Phase 2 logic over the accumulated
         // buffer, writing into the pipeline sink `out`.
         return sort_merge(ctx, buffered_input_, out);
@@ -70,6 +73,7 @@ namespace components::operators {
     core::error_t operator_sort_t::sort_merge(pipeline::context_t* pipeline_context,
                                               chunks_vector_t& in_chunks,
                                               chunks_vector_t& out_chunks) {
+        OTB_ZONE_N("op::sort::sort_merge");
         // All input chunks share the same schema. Capture original (pre-computed) column count
         // and types from the first chunk.
         size_t first_computed_col = 0;

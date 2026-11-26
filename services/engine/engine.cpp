@@ -7,6 +7,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/engine/bootstrap_token_def.hpp>
@@ -204,6 +205,7 @@ namespace services::engine {
         // Validates the configuration, takes the directory lock and reads the WAL; spawns nothing.
         core::result_wrapper_t<std::unique_ptr<engine_parts_t>>
         prepare_parts(std::pmr::memory_resource* resource, const configuration::config& config, log_t& log) {
+            OTB_ZONE_N("engine::prepare_parts");
             trace(log, "engine::prepare");
             if (config.execution.executor_pool_size == 0) {
                 return startup_error(
@@ -278,6 +280,7 @@ namespace services::engine {
 
         core::error_t
         spawn_managers(engine_parts_t& parts, schedulers_t schedulers, const configuration::config& config) {
+            OTB_ZONE_N("engine::spawn_managers");
             auto* resource = parts.resource;
             parts.schedulers = schedulers;
             auto& own_log = parts.log;
@@ -324,6 +327,7 @@ namespace services::engine {
                                        components::planner::primitives_t primitives,
                                        services::dispatcher::dispatcher_seed_t seed,
                                        const services::bootstrap_token_t& token) {
+            OTB_ZONE_N("engine::spawn_dispatcher");
             auto* resource = parts.resource;
             trace(parts.log, "engine::spawn manager_dispatcher");
             parts.dispatcher = actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(resource,
@@ -526,6 +530,7 @@ namespace services::engine {
 
         core::result_wrapper_t<services::dispatcher::dispatcher_seed_t>
         bootstrap_parts(engine_parts_t& parts, const services::bootstrap_token_t& token) {
+            OTB_ZONE_N("engine::bootstrap_parts");
             services::disk::manager_disk_t::bootstrap_t disk{*parts.disk, token};
             services::index::manager_index_t::bootstrap_t index{*parts.index, token};
             auto& log = parts.log;
@@ -882,6 +887,7 @@ namespace services::engine {
                                                  const configuration::config& config,
                                                  log_t& log,
                                                  components::planner::primitives_t primitives) {
+        OTB_ZONE_N("engine::open_engine");
         RETURN_IF_ERROR(refuse_host_arguments(resource, schedulers, log));
         VALUE_OR_RETURN(auto parts, prepare_parts(resource, config, log));
         const services::bootstrap_token_t token{};
@@ -916,6 +922,7 @@ namespace services::engine {
     actor_zeta::actor::address_t engine_t::disk_address() const noexcept { return parts_->disk->address(); }
 
     void engine_t::shutdown() noexcept {
+        OTB_ZONE_N("engine::shutdown");
         if (parts_ == nullptr) {
             return;
         }

@@ -2,6 +2,7 @@
 
 #include <components/expressions/scalar_expression.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <algorithm>
 #include <optional>
@@ -72,6 +73,7 @@ namespace components::operators {
 
     core::error_t
     operator_select_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        OTB_ZONE_N("op::select::push");
         // Streaming projection: apply the per-chunk transform to the single
         // batch handed in via `input`. No accumulation, no read of left_->output().
         // A SELECT over a JOIN already receives ONE merged chunk holding both sides' columns,
@@ -94,6 +96,7 @@ namespace components::operators {
                         const components::graph_execution_context& context,
                         std::unique_ptr<execution_dag::execution_dag_t>* graph,
                         const vector::data_chunk_t* right_input) {
+        OTB_ZONE_N("op::select::evaluate_projection");
         const auto num_rows = input->size();
         const uint64_t cap = num_rows > 0 ? num_rows : 1;
 

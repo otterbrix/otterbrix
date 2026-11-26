@@ -10,6 +10,7 @@
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -71,6 +72,7 @@ namespace components::operators {
 
     core::error_t
     operator_insert::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        OTB_ZONE_N("op::insert::push");
         // Streaming DML sink: folds batches into a bounded accumulator; out stays empty.
         if (!output_) {
             output_ = make_operator_data(resource_, chunks_vector_t{resource_});
@@ -137,6 +139,7 @@ namespace components::operators {
     // messages carry the written columns only, in declared order, named by their attoids; the rows of a run of the same
     // DEFAULT cells go in messages of their own, in the order written.
     void operator_insert::append_written_runs_(vector::data_chunk_t&& input, uint64_t first_row) {
+        OTB_ZONE_N("op::insert::append_written_runs");
         const uint64_t rows = input.size();
         assert(input.column_count() <= column_bindings_.size() && "append_written_runs_: every column is bound");
         std::pmr::vector<uint64_t> declared(resource_);

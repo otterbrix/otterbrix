@@ -23,9 +23,11 @@
 #include "extension.hpp"
 #include "gramparse.h"
 #include "pg_functions.h"
+#include <core/tracy/tracy.hpp>
 
 // The core bison/flex parsing path, reached when no registered parser extension claims the query.
 static core::result_wrapper_t<List*> base_raw_parser(std::pmr::memory_resource* resource, const char* str) {
+    OTB_ZONE_N("parser::base_raw_parser");
     base_yy_extra_type yyextra;
     yyextra.core_yy_extra.resource = resource;
 
@@ -65,6 +67,7 @@ core::result_wrapper_t<List*> raw_parser(std::pmr::memory_resource* resource, co
 core::result_wrapper_t<List*> raw_parser(std::pmr::memory_resource* resource,
                                          const char* str,
                                          const components::sql::parser::parser_extension_registry_t& extensions) {
+    OTB_ZONE_N("parser::raw_parser");
     using namespace components::sql::parser;
 
     auto base = base_raw_parser(resource, str);

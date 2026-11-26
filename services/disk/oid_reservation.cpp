@@ -1,6 +1,7 @@
 #include "oid_reservation.hpp"
 
 #include <core/file/local_file_system.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <string>
 #include <system_error>
@@ -34,6 +35,7 @@ namespace services::disk {
 
     core::result_wrapper_t<components::catalog::oid_t> read_oid_reservation(std::pmr::memory_resource* resource,
                                                                             const std::filesystem::path& db_path) {
+        OTB_ZONE_N("disk::read_oid_reservation");
         core::filesystem::local_file_system_t fs;
         const auto path = oid_reservation_path(db_path);
         if (!core::filesystem::file_exists(fs, path)) {
@@ -56,6 +58,7 @@ namespace services::disk {
     core::error_t persist_oid_reservation(std::pmr::memory_resource* resource,
                                           const std::filesystem::path& db_path,
                                           components::catalog::oid_t bound) {
+        OTB_ZONE_N("disk::persist_oid_reservation");
         core::filesystem::local_file_system_t fs;
         const auto tmp_path = staging_path(db_path);
         auto refuse = [&](const char* reason) {

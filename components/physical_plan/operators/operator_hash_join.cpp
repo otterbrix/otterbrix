@@ -7,6 +7,7 @@
 #include <components/vector/vector.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/operations_helper.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <cassert>
 #include <cstdint>
@@ -111,6 +112,7 @@ namespace components::operators {
     }
 
     core::error_t operator_hash_join_t::build_index_(pipeline::context_t* ctx) {
+        OTB_ZONE_N("op::hash_join::build_index");
         right_index_.clear();
         build_matched_.clear();
         build_chunk_offsets_.clear();
@@ -183,6 +185,7 @@ namespace components::operators {
     core::error_t operator_hash_join_t::probe_batch_(pipeline::context_t* ctx,
                                                      const vector::data_chunk_t& probe,
                                                      chunks_vector_t& out) {
+        OTB_ZONE_N("op::hash_join::probe_batch");
         const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
         const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
         const bool keeps_probe = (join_type_ == type::semi || join_type_ == type::anti);
@@ -315,6 +318,7 @@ namespace components::operators {
 
     core::error_t
     operator_hash_join_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        OTB_ZONE_N("op::hash_join::push");
         // Degenerate build side → emit nothing. This covers a truly absent right_
         // AND a build side that materialized ZERO chunks: a single-table filter
         // pushed BELOW the join can empty the build scan, and a disk scan
@@ -373,6 +377,7 @@ namespace components::operators {
     }
 
     core::error_t operator_hash_join_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
+        OTB_ZONE_N("op::hash_join::finalize");
         // The builder holds its output chunk ACROSS probe batches, so finalize() is
         // where the last partial chunk is emitted — for EVERY join type, not only the
         // right/full drain below.

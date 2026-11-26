@@ -8,6 +8,7 @@
 
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -41,6 +42,7 @@ namespace components::operators {
     core::error_t operator_update::consume_paired_batch_(pipeline::context_t* pipeline_context,
                                                          vector::data_chunk_t&& chunk_left,
                                                          const chunks_vector_t& right_chunks) {
+        OTB_ZONE_N("op::update::consume_paired_batch");
         using vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -306,6 +308,7 @@ namespace components::operators {
                                                   vector::data_chunk_t& out_chunk,
                                                   const vector::data_chunk_t* from_chunk,
                                                   uint64_t match_count) {
+        OTB_ZONE_N("op::update::apply_updates");
         // Both sides are already aligned row-for-row, so the FROM-side merge only references them — no copy.
         std::optional<vector::data_chunk_t> merged;
         if (from_chunk != nullptr) {
@@ -356,6 +359,7 @@ namespace components::operators {
 
     core::error_t operator_update::consume_batch_(pipeline::context_t* pipeline_context,
                                                   const vector::data_chunk_t& chunk) {
+        OTB_ZONE_N("op::update::consume_batch");
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk.size() == 0) {
@@ -429,6 +433,7 @@ namespace components::operators {
     core::error_t operator_update::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
+        OTB_ZONE_N("op::update::consume_join_batch");
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -554,6 +559,7 @@ namespace components::operators {
 
     core::error_t
     operator_update::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        OTB_ZONE_N("op::update::push");
         if (paired_from_) {
             return consume_paired_batch_(ctx, std::move(input), right_->output()->chunks());
         }

@@ -2,6 +2,7 @@
 
 #include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <cstring>
 
@@ -119,6 +120,7 @@ namespace services::index {
     }
 
     void append_key_batch(key_batch_t* target, const key_batch_t& source, std::pmr::memory_resource* resource) {
+        OTB_ZONE_N("index::append_key_batch");
         using components::vector::DEFAULT_VECTOR_CAPACITY;
         target->ids.reserve(target->ids.size() + source.size());
         size_t offset = 0;

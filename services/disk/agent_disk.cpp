@@ -16,6 +16,7 @@
 #include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/tracy/tracy.hpp>
 #include <cstring>
 #include <services/dispatcher/dispatcher.hpp>
 
@@ -111,6 +112,7 @@ namespace services::disk {
                              bool sidecar_readable,
                              std::vector<components::table::column_definition_t> catalog_columns,
                              bool is_computed) noexcept {
+        OTB_ZONE_N("agent_disk::load_local");
         // Probed before construction: open-then-close on a duplicate would release the live entry's WRITE_LOCK.
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
@@ -152,6 +154,7 @@ namespace services::disk {
                                                             std::vector<components::table::column_definition_t> columns,
                                                             const std::filesystem::path& otbx_path,
                                                             bool is_computed) noexcept {
+        OTB_ZONE_N("agent_disk::create_local");
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
                   "agent_disk_t::create_local: agent[{}] oid {} already in slice — drop "
@@ -187,7 +190,10 @@ namespace services::disk {
                                             bool is_computed,
                                             std::string relname) {
         std::error_code ec;
-        std::filesystem::create_directories(otbx_path.parent_path(), ec);
+        {
+            OTB_ZONE_N("agent_disk::create_storage_disk/create_directories");
+            std::filesystem::create_directories(otbx_path.parent_path(), ec);
+        }
         if (ec) {
             warn(log_,
                  "agent_disk[{}]::create_storage_disk_inner: oid {} create_directories {} failed: {}",
@@ -508,6 +514,7 @@ namespace services::disk {
             }
         }
         if (returning) {
+            OTB_ZONE_N("agent_disk::storage_append/returning_copy");
             for (const auto& chunk : data) {
                 if (!table_columns.empty() && chunk.column_count() > 0 && !is_computed_table) {
                     receipt.returned.push_back(table.visible_copy(txn, chunk));
@@ -532,10 +539,13 @@ namespace services::disk {
             // CREATE INDEX backfill uses start_row as the row-id base, so it must match the materialized start.
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.reserve(data.size());
-            for (const auto& chunk : data) {
-                components::vector::data_chunk_t wal_chunk(resource(), chunk.types(), chunk.size());
-                chunk.copy(wal_chunk, 0);
-                wal_chunks.emplace_back(std::move(wal_chunk));
+            {
+                OTB_ZONE_N("agent_disk::storage_append/wal_copy");
+                for (const auto& chunk : data) {
+                    components::vector::data_chunk_t wal_chunk(resource(), chunk.types(), chunk.size());
+                    chunk.copy(wal_chunk, 0);
+                    wal_chunks.emplace_back(std::move(wal_chunk));
+                }
             }
 
             // One journal write and one await: a second suspending cross-actor await in a handler is a lost wakeup.
@@ -602,34 +612,37 @@ namespace services::disk {
         for (auto& chunk : data) {
             // Read before the append, which may take the chunk's rows.
             const uint64_t rows = chunk.size();
-            auto append_r =
-                s->append(chunk, txn.transaction_id != 0 ? txn : components::table::transaction_data::committed());
             core::error_t refused = core::error_t::no_error();
-            if (append_r.has_error()) {
-                refused = append_r.error();
-            } else if (append_r.value() != start_row + materialized) {
-                error(log_,
-                      "agent_disk[{}]::storage_append_inner: oid={} reserved start_row {} for the journal but a "
-                      "chunk materialized at {} — the message's rows are REVERTED and the append is refused rather "
-                      "than answered with a base the journal does not name",
-                      pool_idx_,
-                      static_cast<unsigned>(table_oid),
-                      start_row + materialized,
-                      append_r.value());
-                std::pmr::string what{"agent_disk::storage_append_inner: journalled start_row ", resource()};
-                what.append(std::to_string(start_row + materialized).c_str());
-                what.append(" but the rows materialized at ");
-                what.append(std::to_string(append_r.value()).c_str());
-                what.append(" for table oid ");
-                what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-                refused = core::error_t{core::error_code_t::data_corruption, std::move(what)};
-                if (auto reverted = s->revert_append(static_cast<int64_t>(append_r.value()), rows);
-                    reverted.contains_error()) {
+            {
+                OTB_ZONE_N("agent_disk::storage_append/materialize");
+                auto append_r =
+                    s->append(chunk, txn.transaction_id != 0 ? txn : components::table::transaction_data::committed());
+                if (append_r.has_error()) {
+                    refused = append_r.error();
+                } else if (append_r.value() != start_row + materialized) {
                     error(log_,
-                          "agent_disk[{}]::storage_append_inner: oid={} could NOT take back a misplaced chunk: {}",
+                          "agent_disk[{}]::storage_append_inner: oid={} reserved start_row {} for the journal but a "
+                          "chunk materialized at {} — the message's rows are REVERTED and the append is refused rather "
+                          "than answered with a base the journal does not name",
                           pool_idx_,
                           static_cast<unsigned>(table_oid),
-                          reverted.what);
+                          start_row + materialized,
+                          append_r.value());
+                    std::pmr::string what{"agent_disk::storage_append_inner: journalled start_row ", resource()};
+                    what.append(std::to_string(start_row + materialized).c_str());
+                    what.append(" but the rows materialized at ");
+                    what.append(std::to_string(append_r.value()).c_str());
+                    what.append(" for table oid ");
+                    what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+                    refused = core::error_t{core::error_code_t::data_corruption, std::move(what)};
+                    if (auto reverted = s->revert_append(static_cast<int64_t>(append_r.value()), rows);
+                        reverted.contains_error()) {
+                        error(log_,
+                              "agent_disk[{}]::storage_append_inner: oid={} could NOT take back a misplaced chunk: {}",
+                              pool_idx_,
+                              static_cast<unsigned>(table_oid),
+                              reverted.what);
+                    }
                 }
             }
             if (refused.contains_error()) {
@@ -674,21 +687,24 @@ namespace services::disk {
     agent_disk_t::unique_future<void>
     agent_disk_t::storage_publish_commits_inner(uint64_t commit_id,
                                                 std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
-        for (const auto& r : ranges) {
-            if (r.count == 0) {
-                continue;
+        {
+            OTB_ZONE_N("agent_disk::storage_publish_commits");
+            for (const auto& r : ranges) {
+                if (r.count == 0) {
+                    continue;
+                }
+                auto it = storages_.find(r.table_oid);
+                if (it == storages_.end()) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_publish_commits_inner", r.table_oid);
+                    continue;
+                }
+                auto& entry = it->second;
+                if (entry == nullptr || entry->storage == nullptr) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_publish_commits_inner", r.table_oid);
+                    continue;
+                }
+                entry->storage->commit_append(commit_id, r.start_row, r.count);
             }
-            auto it = storages_.find(r.table_oid);
-            if (it == storages_.end()) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_publish_commits_inner", r.table_oid);
-                continue;
-            }
-            auto& entry = it->second;
-            if (entry == nullptr || entry->storage == nullptr) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_publish_commits_inner", r.table_oid);
-                continue;
-            }
-            entry->storage->commit_append(commit_id, r.start_row, r.count);
         }
         co_return;
     }
@@ -700,18 +716,21 @@ namespace services::disk {
         if (components::table::is_direct_write_txn(txn_id)) {
             co_return;
         }
-        for (const auto& tbl_oid : tables) {
-            auto it = storages_.find(tbl_oid);
-            if (it == storages_.end()) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_publish_deletes_inner", tbl_oid);
-                continue;
+        {
+            OTB_ZONE_N("agent_disk::storage_publish_deletes");
+            for (const auto& tbl_oid : tables) {
+                auto it = storages_.find(tbl_oid);
+                if (it == storages_.end()) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_publish_deletes_inner", tbl_oid);
+                    continue;
+                }
+                auto& entry = it->second;
+                if (entry == nullptr || entry->storage == nullptr) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_publish_deletes_inner", tbl_oid);
+                    continue;
+                }
+                entry->storage->commit_all_deletes(txn_id, commit_id);
             }
-            auto& entry = it->second;
-            if (entry == nullptr || entry->storage == nullptr) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_publish_deletes_inner", tbl_oid);
-                continue;
-            }
-            entry->storage->commit_all_deletes(txn_id, commit_id);
         }
         co_return;
     }
@@ -723,18 +742,21 @@ namespace services::disk {
         if (components::table::is_direct_write_txn(txn_id)) {
             co_return;
         }
-        for (const auto& tbl_oid : tables) {
-            auto it = storages_.find(tbl_oid);
-            if (it == storages_.end()) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_revert_deletes_inner", tbl_oid);
-                continue;
+        {
+            OTB_ZONE_N("agent_disk::storage_revert_deletes");
+            for (const auto& tbl_oid : tables) {
+                auto it = storages_.find(tbl_oid);
+                if (it == storages_.end()) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_revert_deletes_inner", tbl_oid);
+                    continue;
+                }
+                auto& entry = it->second;
+                if (entry == nullptr || entry->storage == nullptr) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_revert_deletes_inner", tbl_oid);
+                    continue;
+                }
+                entry->storage->revert_all_deletes(txn_id, from_sub_id);
             }
-            auto& entry = it->second;
-            if (entry == nullptr || entry->storage == nullptr) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_revert_deletes_inner", tbl_oid);
-                continue;
-            }
-            entry->storage->revert_all_deletes(txn_id, from_sub_id);
         }
         co_return;
     }
@@ -744,25 +766,28 @@ namespace services::disk {
         // Reports the FIRST refusal but keeps unwinding: a range that cannot be rolled back must not
         // strand the ranges after it.
         auto first_error = core::error_t::no_error();
-        for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
-            if (it->count == 0) {
-                continue;
-            }
-            auto slice_it = storages_.find(it->table_oid);
-            if (slice_it == storages_.end()) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_revert_appends_inner", it->table_oid);
-                continue;
-            }
-            auto& entry = slice_it->second;
-            if (entry == nullptr || entry->storage == nullptr) {
-                report_publish_revert_miss(log_, pool_idx_, "storage_revert_appends_inner", it->table_oid);
-                continue;
-            }
-            // Reverse iteration is what makes a multi-statement transaction work here: dropping its LAST
-            // range moves the frontier back onto the one before it, so each in turn becomes the tail.
-            if (auto reverted = entry->storage->revert_append(it->start_row, it->count);
-                reverted.contains_error() && !first_error.contains_error()) {
-                first_error = reverted;
+        {
+            OTB_ZONE_N("agent_disk::storage_revert_appends");
+            for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
+                if (it->count == 0) {
+                    continue;
+                }
+                auto slice_it = storages_.find(it->table_oid);
+                if (slice_it == storages_.end()) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_revert_appends_inner", it->table_oid);
+                    continue;
+                }
+                auto& entry = slice_it->second;
+                if (entry == nullptr || entry->storage == nullptr) {
+                    report_publish_revert_miss(log_, pool_idx_, "storage_revert_appends_inner", it->table_oid);
+                    continue;
+                }
+                // Reverse iteration is what makes a multi-statement transaction work here: dropping its LAST
+                // range moves the frontier back onto the one before it, so each in turn becomes the tail.
+                if (auto reverted = entry->storage->revert_append(it->start_row, it->count);
+                    reverted.contains_error() && !first_error.contains_error()) {
+                    first_error = reverted;
+                }
             }
         }
         co_return first_error;
@@ -827,6 +852,7 @@ namespace services::disk {
                 continue;
             }
             if (returning) {
+                OTB_ZONE_N("agent_disk::storage_update/returning_copy");
                 if (entry->is_computed) {
                     components::vector::data_chunk_t copy(resource(), data[i].types(), data[i].size());
                     data[i].copy(copy, 0);
@@ -1009,6 +1035,7 @@ namespace services::disk {
                              int64_t limit,
                              const std::vector<std::size_t>* projected_cols,
                              const components::table::transaction_data& txn) {
+        OTB_ZONE_N("agent_disk::scan_local");
         std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
@@ -1044,6 +1071,7 @@ namespace services::disk {
                                                 const components::table::transaction_data& txn,
                                                 std::pmr::memory_resource* resource,
                                                 PerBatch&& fn) {
+        OTB_ZONE_N("agent_disk::for_each_storage_batch");
         auto read_types = storage.read_types(projected, txn);
         scan_position.next_row = 0;
         scan_position.max_row = static_cast<int64_t>(storage.total_rows());
@@ -1149,6 +1177,7 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<fetch_batch_t> agent_disk_t::advance_scan_(uint64_t cursor_id) {
+        OTB_ZONE_N("agent_disk::advance_scan");
         auto collect_identity = [](collection_storage_entry_t& entry, std::vector<active_scan_t::open_column_t>& out) {
             const auto& physical = entry.table_storage.table().columns();
             out.clear();
@@ -1501,6 +1530,7 @@ namespace services::disk {
                      const std::pmr::vector<std::uint64_t>& key_col_indices,
                      components::vector::data_chunk_t& keys,
                      components::table::transaction_data txn) {
+        OTB_ZONE_N("agent_disk::fk_hash_semijoin");
         const std::uint64_t nkeys = keys.size();
         std::pmr::vector<std::pmr::vector<std::int64_t>> result{resource};
         result.reserve(nkeys);
@@ -1861,6 +1891,7 @@ namespace services::disk {
                                      std::span<const components::vector::data_chunk_t> keys,
                                      const std::pmr::vector<std::uint64_t>& projected_cols,
                                      const components::table::transaction_data& txn) {
+        OTB_ZONE_N("agent_disk::read_by_keys_local");
         auto it = storages_.find(table_oid);
         const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
         if (auto valid = validate_key_col_indices(entry, key_col_indices, resource()); valid.contains_error()) {
@@ -1987,6 +2018,7 @@ namespace services::disk {
         [[nodiscard]] core::error_t stage_checkpoint_sidecar(std::pmr::memory_resource* resource,
                                                              const std::filesystem::path& otbx_path,
                                                              wal::id_t wal_id) {
+            OTB_ZONE_N("agent_disk::stage_checkpoint_sidecar");
             const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
             const auto tmp_path = checkpoint_sidecar_staging_path(otbx_path);
 
@@ -2043,6 +2075,7 @@ namespace services::disk {
 
         [[nodiscard]] core::error_t publish_checkpoint_sidecar(std::pmr::memory_resource* resource,
                                                                const std::filesystem::path& otbx_path) {
+            OTB_ZONE_N("agent_disk::publish_checkpoint_sidecar");
             const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
             const auto tmp_path = checkpoint_sidecar_staging_path(otbx_path);
 
@@ -2063,6 +2096,7 @@ namespace services::disk {
         // fsync only risks surfacing the previous id on crash — a milder failure.
         [[nodiscard]] core::error_t sync_checkpoint_sidecar_directory(std::pmr::memory_resource* resource,
                                                                       const std::filesystem::path& otbx_path) {
+            OTB_ZONE_N("agent_disk::sync_checkpoint_sidecar_directory");
             const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
             core::filesystem::local_file_system_t fs;
             auto dir = core::filesystem::open_file(fs, sidecar_path.parent_path(), core::filesystem::file_flags::READ);
@@ -2088,135 +2122,138 @@ namespace services::disk {
         uint64_t deferred = 0;
         uint64_t rewritten = 0;
         uint64_t advanced = 0;
-        for (auto& [tbl_oid, entry] : storages_) {
-            if (entry == nullptr) {
-                continue;
-            }
-            if (entry->otbx_path.empty()) {
-                continue;
-            }
-
-            if (entry->table_storage.storage_degraded()) {
-                warn(log_,
-                     "agent_disk[{}]::checkpoint_inner oid={} block storage is degraded (a write/fsync did "
-                     "not reach the device, or the free list is corrupt) — deferring this entry and NOT "
-                     "compacting it; the file must be rebuilt",
-                     pool_idx_,
-                     static_cast<unsigned>(tbl_oid));
-                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
-                ++deferred;
-                continue;
-            }
-
-            if (has_active_scan_for_oid(tbl_oid)) {
-                trace(log_,
-                      "agent_disk[{}]::checkpoint_inner oid={} has an active scan cursor — deferring the whole entry "
-                      "this round (no compact, no checkpoint); its WAL floor is unchanged",
-                      pool_idx_,
-                      static_cast<unsigned>(tbl_oid));
-                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
-                ++deferred;
-                continue;
-            }
-
-            // compact() always fully rebuilds regardless of change: measured 205.7 ms for an empty round vs
-            // 124.4 ms for one that wrote (100 tables).
-            const bool unchanged = !entry->table_storage.needs_checkpoint();
-            bool skip_compact_this_round = false;
-            if (!unchanged) {
-                skip_compact_this_round = entry->table_storage.last_checkpoint_failed();
-                if (skip_compact_this_round) {
-                    warn(log_,
-                         "agent_disk[{}]::checkpoint_inner oid={} previous checkpoint failed — retrying WITHOUT "
-                         "compaction; the rebuild resumes once a checkpoint commits",
-                         pool_idx_,
-                         static_cast<unsigned>(tbl_oid));
+        {
+            OTB_ZONE_N("agent_disk::checkpoint");
+            for (auto& [tbl_oid, entry] : storages_) {
+                if (entry == nullptr) {
+                    continue;
+                }
+                if (entry->otbx_path.empty()) {
+                    continue;
                 }
 
-                if (entry->table_storage.has_versions_above(compact_watermark)) {
-                    trace(log_,
-                          "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
-                          "skipping this round",
-                          pool_idx_,
-                          static_cast<unsigned>(tbl_oid),
-                          compact_watermark);
+                if (entry->table_storage.storage_degraded()) {
+                    warn(log_,
+                         "agent_disk[{}]::checkpoint_inner oid={} block storage is degraded (a write/fsync did "
+                         "not reach the device, or the free list is corrupt) — deferring this entry and NOT "
+                         "compacting it; the file must be rebuilt",
+                         pool_idx_,
+                         static_cast<unsigned>(tbl_oid));
                     min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
                     ++deferred;
                     continue;
                 }
-            }
 
-            if (auto staged = stage_checkpoint_sidecar(resource(), entry->otbx_path, current_wal_id);
-                staged.contains_error()) {
-                warn(log_,
-                     "agent_disk[{}]::checkpoint_inner oid={} could not stage its checkpoint sidecar — deferring "
-                     "this entry with NOTHING committed: {}",
-                     pool_idx_,
-                     static_cast<unsigned>(tbl_oid),
-                     staged.what.c_str());
-                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
-                ++deferred;
-                continue;
-            }
-
-            if (unchanged) {
-                trace(log_,
-                      "agent_disk[{}]::checkpoint_inner oid={} is unchanged since its durable root — advancing "
-                      "its wal id without rewriting it",
-                      pool_idx_,
-                      static_cast<unsigned>(tbl_oid));
-                entry->table_storage.advance_wal_id_without_rewrite(current_wal_id);
-                ++advanced;
-            } else {
-                if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
+                if (has_active_scan_for_oid(tbl_oid)) {
                     trace(log_,
-                          "agent_disk[{}]::checkpoint_inner oid={} could not be rebuilt (the scan or the "
-                          "rebuild append refused) — skipping this round",
+                          "agent_disk[{}]::checkpoint_inner oid={} has an active scan cursor — deferring the whole entry "
+                          "this round (no compact, no checkpoint); its WAL floor is unchanged",
                           pool_idx_,
                           static_cast<unsigned>(tbl_oid));
-                    discard_staged_checkpoint_sidecar(log_, pool_idx_, entry->otbx_path);
                     min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
                     ++deferred;
                     continue;
                 }
 
-                trace(log_,
-                      "agent_disk[{}]::checkpoint_inner checkpointing oid={}",
-                      pool_idx_,
-                      static_cast<unsigned>(tbl_oid));
+                // compact() always fully rebuilds regardless of change: measured 205.7 ms for an empty round vs
+                // 124.4 ms for one that wrote (100 tables).
+                const bool unchanged = !entry->table_storage.needs_checkpoint();
+                bool skip_compact_this_round = false;
+                if (!unchanged) {
+                    skip_compact_this_round = entry->table_storage.last_checkpoint_failed();
+                    if (skip_compact_this_round) {
+                        warn(log_,
+                             "agent_disk[{}]::checkpoint_inner oid={} previous checkpoint failed — retrying WITHOUT "
+                             "compaction; the rebuild resumes once a checkpoint commits",
+                             pool_idx_,
+                             static_cast<unsigned>(tbl_oid));
+                    }
 
-                auto cp_r = entry->table_storage.checkpoint(current_wal_id);
-                if (cp_r.has_error()) {
+                    if (entry->table_storage.has_versions_above(compact_watermark)) {
+                        trace(log_,
+                              "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
+                              "skipping this round",
+                              pool_idx_,
+                              static_cast<unsigned>(tbl_oid),
+                              compact_watermark);
+                        min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                        ++deferred;
+                        continue;
+                    }
+                }
+
+                if (auto staged = stage_checkpoint_sidecar(resource(), entry->otbx_path, current_wal_id);
+                    staged.contains_error()) {
                     warn(log_,
-                         "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this "
-                         "round",
+                         "agent_disk[{}]::checkpoint_inner oid={} could not stage its checkpoint sidecar — deferring "
+                         "this entry with NOTHING committed: {}",
                          pool_idx_,
-                         static_cast<unsigned>(tbl_oid));
-                    discard_staged_checkpoint_sidecar(log_, pool_idx_, entry->otbx_path);
+                         static_cast<unsigned>(tbl_oid),
+                         staged.what.c_str());
                     min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
                     ++deferred;
                     continue;
                 }
-                ++rewritten;
-            }
-            const auto& otbx_path = entry->otbx_path;
 
-            if (auto rename_err = publish_checkpoint_sidecar(resource(), otbx_path); rename_err.contains_error()) {
-                error(log_,
-                      "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
-                      pool_idx_,
-                      static_cast<unsigned>(tbl_oid),
-                      rename_err.what.c_str());
-            } else if (auto dir_err = sync_checkpoint_sidecar_directory(resource(), otbx_path);
-                       dir_err.contains_error()) {
-                warn(log_,
-                     "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
-                     pool_idx_,
-                     static_cast<unsigned>(tbl_oid),
-                     dir_err.what.c_str());
-            }
+                if (unchanged) {
+                    trace(log_,
+                          "agent_disk[{}]::checkpoint_inner oid={} is unchanged since its durable root — advancing "
+                          "its wal id without rewriting it",
+                          pool_idx_,
+                          static_cast<unsigned>(tbl_oid));
+                    entry->table_storage.advance_wal_id_without_rewrite(current_wal_id);
+                    ++advanced;
+                } else {
+                    if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
+                        trace(log_,
+                              "agent_disk[{}]::checkpoint_inner oid={} could not be rebuilt (the scan or the "
+                              "rebuild append refused) — skipping this round",
+                              pool_idx_,
+                              static_cast<unsigned>(tbl_oid));
+                        discard_staged_checkpoint_sidecar(log_, pool_idx_, entry->otbx_path);
+                        min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                        ++deferred;
+                        continue;
+                    }
 
-            min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                    trace(log_,
+                          "agent_disk[{}]::checkpoint_inner checkpointing oid={}",
+                          pool_idx_,
+                          static_cast<unsigned>(tbl_oid));
+
+                    auto cp_r = entry->table_storage.checkpoint(current_wal_id);
+                    if (cp_r.has_error()) {
+                        warn(log_,
+                             "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this "
+                             "round",
+                             pool_idx_,
+                             static_cast<unsigned>(tbl_oid));
+                        discard_staged_checkpoint_sidecar(log_, pool_idx_, entry->otbx_path);
+                        min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                        ++deferred;
+                        continue;
+                    }
+                    ++rewritten;
+                }
+                const auto& otbx_path = entry->otbx_path;
+
+                if (auto rename_err = publish_checkpoint_sidecar(resource(), otbx_path); rename_err.contains_error()) {
+                    error(log_,
+                          "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
+                          pool_idx_,
+                          static_cast<unsigned>(tbl_oid),
+                          rename_err.what.c_str());
+                } else if (auto dir_err = sync_checkpoint_sidecar_directory(resource(), otbx_path);
+                           dir_err.contains_error()) {
+                    warn(log_,
+                         "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
+                         pool_idx_,
+                         static_cast<unsigned>(tbl_oid),
+                         dir_err.what.c_str());
+                }
+
+                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+            }
         }
 #ifdef DEV_MODE
         g_checkpoint_entries_deferred.fetch_add(deferred, std::memory_order_relaxed);
@@ -2228,13 +2265,16 @@ namespace services::disk {
     agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t /*session*/,
                                                                  uint64_t lowest_active_start_time) {
         trace(log_, "agent_disk[{}]::vacuum_inner: {} entries in local slice", pool_idx_, storages_.size());
-        for (auto& slot : storages_) {
-            auto& entry = slot.second;
-            if (entry == nullptr) {
-                continue;
+        {
+            OTB_ZONE_N("agent_disk::vacuum");
+            for (auto& slot : storages_) {
+                auto& entry = slot.second;
+                if (entry == nullptr) {
+                    continue;
+                }
+                auto& table = entry->table_storage.table();
+                table.cleanup_versions(lowest_active_start_time);
             }
-            auto& table = entry->table_storage.table();
-            table.cleanup_versions(lowest_active_start_time);
         }
         co_return;
     }
@@ -2277,42 +2317,45 @@ namespace services::disk {
               dropped_storages_.size());
         std::pmr::vector<dropped_storage_entry_t> kept{resource()};
         kept.reserve(dropped_storages_.size());
-        for (auto& entry : dropped_storages_) {
-            if (entry.dropped_at_commit_id < new_horizon) {
-                std::error_code ec;
-                std::filesystem::remove(entry.path, ec);
-                if (ec) {
-                    trace(log_,
-                          "agent_disk[{}]::on_horizon_advanced_inner , remove failed for {} : {}",
-                          pool_idx_,
-                          entry.path.string(),
-                          ec.message());
-                }
-                for (const auto& sidecar : entry.sidecar_paths) {
-                    std::error_code sec;
-                    std::filesystem::remove(sidecar, sec);
-                    if (sec) {
+        {
+            OTB_ZONE_N("agent_disk::on_horizon_advanced");
+            for (auto& entry : dropped_storages_) {
+                if (entry.dropped_at_commit_id < new_horizon) {
+                    std::error_code ec;
+                    std::filesystem::remove(entry.path, ec);
+                    if (ec) {
                         trace(log_,
-                              "agent_disk[{}]::on_horizon_advanced_inner , remove sidecar failed for {} : {}",
+                              "agent_disk[{}]::on_horizon_advanced_inner , remove failed for {} : {}",
                               pool_idx_,
-                              sidecar.string(),
-                              sec.message());
+                              entry.path.string(),
+                              ec.message());
                     }
+                    for (const auto& sidecar : entry.sidecar_paths) {
+                        std::error_code sec;
+                        std::filesystem::remove(sidecar, sec);
+                        if (sec) {
+                            trace(log_,
+                                  "agent_disk[{}]::on_horizon_advanced_inner , remove sidecar failed for {} : {}",
+                                  pool_idx_,
+                                  sidecar.string(),
+                                  sec.message());
+                        }
+                    }
+                    std::error_code dec;
+                    std::filesystem::remove(entry.path.parent_path(), dec);
+                    if (dec) {
+                        trace(log_,
+                              "agent_disk[{}]::on_horizon_advanced_inner , remove oid directory failed for {} : {}",
+                              pool_idx_,
+                              entry.path.parent_path().string(),
+                              dec.message());
+                    }
+                } else {
+                    kept.push_back(std::move(entry));
                 }
-                std::error_code dec;
-                std::filesystem::remove(entry.path.parent_path(), dec);
-                if (dec) {
-                    trace(log_,
-                          "agent_disk[{}]::on_horizon_advanced_inner , remove oid directory failed for {} : {}",
-                          pool_idx_,
-                          entry.path.parent_path().string(),
-                          dec.message());
-                }
-            } else {
-                kept.push_back(std::move(entry));
             }
+            dropped_storages_ = std::move(kept);
         }
-        dropped_storages_ = std::move(kept);
 
         if (dropped_storages_.empty() && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
             constexpr uint8_t DISK_KIND = 1;
@@ -2370,6 +2413,7 @@ namespace services::disk {
     }
 
     void agent_disk_t::drop_storage_one_local(components::catalog::oid_t oid) {
+        OTB_ZONE_N("agent_disk::drop_storage_one_local");
         // otbx_path must be read before the erase, while the unique_ptr is still alive.
         std::filesystem::path otbx_path;
         if (auto it = storages_.find(oid); it != storages_.end()) {
@@ -2526,6 +2570,7 @@ namespace services::disk {
                                             const catalog_name_key_t& key,
                                             const components::vector::data_chunk_t& row,
                                             const components::table::transaction_data& txn) {
+            OTB_ZONE_N("agent_disk::catalog_name_conflict");
             const auto* def = components::catalog::find_system_table(table_oid);
             if (def == nullptr) {
                 return core::error_t::no_error();
@@ -2898,18 +2943,21 @@ namespace services::disk {
         // Regression: test_catalog_delete_refusal.cpp.
         core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
-        detail::inline_scan(entry->table_storage.table(),
-                            {oid_col_idx},
-                            &scan_resource,
-                            ctx.txn,
-                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                if (chunk.is_null(0, i))
+        {
+            OTB_ZONE_N("agent_disk::delete_pg_catalog_rows/scan");
+            detail::inline_scan(entry->table_storage.table(),
+                                {oid_col_idx},
+                                &scan_resource,
+                                ctx.txn,
+                                [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                                    if (chunk.is_null(0, i))
+                                        return true;
+                                    if (chunk.get_value<components::catalog::oid_t>(0, i) == target_oid) {
+                                        row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                                    }
                                     return true;
-                                if (chunk.get_value<components::catalog::oid_t>(0, i) == target_oid) {
-                                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
-                                }
-                                return true;
-                            });
+                                });
+        }
         if (row_ids.empty()) {
             co_return std::uint64_t{0};
         }
@@ -3010,31 +3058,34 @@ namespace services::disk {
         core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
 
-        detail::inline_scan(tbl,
-                            all_col_indices,
-                            &scan_resource,
-                            ctx.txn,
-                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                if (chunk.is_null(0, i))
-                                    return true;
-                                if (chunk.get_value<components::catalog::oid_t>(0, i) != attoid)
-                                    return true;
-                                row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
-                                for (std::size_t c = 0; c < col_count; ++c) {
-                                    if (c == patch_col_idx) {
-                                        continue;
+        {
+            OTB_ZONE_N("agent_disk::update_pg_attribute_commit_id_field/scan");
+            detail::inline_scan(tbl,
+                                all_col_indices,
+                                &scan_resource,
+                                ctx.txn,
+                                [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                                    if (chunk.is_null(0, i))
+                                        return true;
+                                    if (chunk.get_value<components::catalog::oid_t>(0, i) != attoid)
+                                        return true;
+                                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                                    for (std::size_t c = 0; c < col_count; ++c) {
+                                        if (c == patch_col_idx) {
+                                            continue;
+                                        }
+                                        components::vector::vector_ops::copy(
+                                            chunk.data[c],
+                                            patch.data[c],
+                                            components::vector::indexing_vector_t(resource()),
+                                            chunk.size(),
+                                            i,
+                                            0,
+                                            1);
                                     }
-                                    components::vector::vector_ops::copy(
-                                        chunk.data[c],
-                                        patch.data[c],
-                                        components::vector::indexing_vector_t(resource()),
-                                        chunk.size(),
-                                        i,
-                                        0,
-                                        1);
-                                }
-                                return false;
-                            });
+                                    return false;
+                                });
+        }
         if (row_ids.empty()) {
             std::pmr::string what{"update_pg_attribute_commit_id_field: no pg_attribute row visible to this "
                                   "transaction carries attoid ",
@@ -3261,7 +3312,10 @@ namespace services::disk {
         }
 
         auto& entry = *it->second;
-        entry.add_column(column, resource());
+        {
+            OTB_ZONE_N("agent_disk::add_storage_column/add_column");
+            entry.add_column(column, resource());
+        }
         auto& table = entry.table_storage.table();
         if (table.has_construction_error()) {
             co_return core::error_on(resource(), table.construction_error());
@@ -3315,19 +3369,22 @@ namespace services::disk {
     agent_disk_t::publish_column_stamps_inner(uint64_t txn_id,
                                               uint64_t commit_id,
                                               std::pmr::vector<components::catalog::oid_t> tables) {
-        for (const auto& table_oid : tables) {
-            auto it = storages_.find(table_oid);
-            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-                report_publish_revert_miss(log_, pool_idx_, "publish_column_stamps_inner", table_oid);
-                continue;
+        {
+            OTB_ZONE_N("agent_disk::publish_column_stamps");
+            for (const auto& table_oid : tables) {
+                auto it = storages_.find(table_oid);
+                if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                    report_publish_revert_miss(log_, pool_idx_, "publish_column_stamps_inner", table_oid);
+                    continue;
+                }
+                const auto published = it->second->table_storage.table().publish_column_stamps(txn_id, commit_id);
+                trace(log_,
+                      "agent_disk[{}]::publish_column_stamps_inner: oid={} published={} stamp(s) at commit_id={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid),
+                      published,
+                      commit_id);
             }
-            const auto published = it->second->table_storage.table().publish_column_stamps(txn_id, commit_id);
-            trace(log_,
-                  "agent_disk[{}]::publish_column_stamps_inner: oid={} published={} stamp(s) at commit_id={}",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid),
-                  published,
-                  commit_id);
         }
         co_return;
     }
@@ -3336,19 +3393,22 @@ namespace services::disk {
     agent_disk_t::revert_column_stamps_inner(uint64_t txn_id,
                                              uint64_t from_sub_id,
                                              std::pmr::vector<components::catalog::oid_t> tables) {
-        for (const auto& table_oid : tables) {
-            auto it = storages_.find(table_oid);
-            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-                report_publish_revert_miss(log_, pool_idx_, "revert_column_stamps_inner", table_oid);
-                continue;
+        {
+            OTB_ZONE_N("agent_disk::revert_column_stamps");
+            for (const auto& table_oid : tables) {
+                auto it = storages_.find(table_oid);
+                if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                    report_publish_revert_miss(log_, pool_idx_, "revert_column_stamps_inner", table_oid);
+                    continue;
+                }
+                auto reverted = it->second->table_storage.table().revert_column_stamps(txn_id, from_sub_id);
+                trace(log_,
+                      "agent_disk[{}]::revert_column_stamps_inner: oid={} reverted={} stamp(s) of txn={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid),
+                      reverted,
+                      txn_id);
             }
-            auto reverted = it->second->table_storage.table().revert_column_stamps(txn_id, from_sub_id);
-            trace(log_,
-                  "agent_disk[{}]::revert_column_stamps_inner: oid={} reverted={} stamp(s) of txn={}",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid),
-                  reverted,
-                  txn_id);
         }
         co_return;
     }
@@ -3370,12 +3430,15 @@ namespace services::disk {
 
     agent_disk_t::unique_future<void>
     agent_disk_t::storage_release_prepared_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
-        for (const auto& table_oid : tables) {
-            auto it = storages_.find(table_oid);
-            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-                continue;
+        {
+            OTB_ZONE_N("agent_disk::storage_release_prepared");
+            for (const auto& table_oid : tables) {
+                auto it = storages_.find(table_oid);
+                if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                    continue;
+                }
+                it->second->table_storage.table().release_prepared(txn_id);
             }
-            it->second->table_storage.table().release_prepared(txn_id);
         }
         co_return;
     }

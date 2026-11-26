@@ -189,6 +189,8 @@ To use another preset, replace `release` in all three places; the build goes to 
 
 To build the Python module, add `-o build_python=True` to `conan install`.
 
+To profile with [Tracy](https://github.com/wolfpld/tracy), add `-o with_tracy=True` to `conan install` (use a separate `-of`, e.g. `build/tracy`; plain CMake users pass `-DENABLE_TRACY=ON`). Zones then cover the SQL pipeline, the dispatcher/executor/disk/WAL/index actors, the physical operators and table storage, and are compiled out entirely otherwise. How to instrument code, capture a trace and read it: [docs/tracy.md](docs/tracy.md).
+
 Docker is optional: the images in [`docker/`](docker/) wrap the same flow, e.g. `docker build -f docker/Dockerfile-ubuntu-22 .`.
 
 ## **Troubleshooting**

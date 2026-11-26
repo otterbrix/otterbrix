@@ -1,6 +1,8 @@
 #include "manager_wal_replicate.hpp"
 #include <services/dev_pump.hpp>
 
+#include <core/tracy/tracy.hpp>
+
 #include <core/file/list_dir.hpp>
 
 #include <algorithm>
@@ -347,6 +349,7 @@ namespace services::wal {
             return it->second.get();
         }
 
+        OTB_ZONE_N("wal_manager::spawn_worker");
         trace(log_, "manager_wal_replicate: spawning worker for database_oid={}", static_cast<unsigned>(database_oid));
         auto worker = actor_zeta::spawn<wal_worker_t>(resource_, log_, config_, database_oid);
         auto* ptr = worker.get();
@@ -384,7 +387,10 @@ namespace services::wal {
             co_return core::result_wrapper_t<std::vector<record_t>>{std::move(first_refusal)};
         }
 
-        std::sort(merged.begin(), merged.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        {
+            OTB_ZONE_N("wal_manager::load/merge_sort");
+            std::sort(merged.begin(), merged.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        }
 
         co_return core::result_wrapper_t<std::vector<record_t>>{std::move(merged)};
     }
@@ -418,6 +424,7 @@ namespace services::wal {
             co_return core::result_wrapper_t<wal::id_t>{result.error()};
         }
         {
+            OTB_ZONE_N("wal_manager::commit_txn/wal_size_accounting");
             const auto total = total_wal_bytes();
             auto base = wal_bytes_at_last_checkpoint_.load(std::memory_order_relaxed);
             if (total < base) {
@@ -449,6 +456,7 @@ namespace services::wal {
     }
 
     std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
+        OTB_ZONE_N("wal_manager::total_wal_bytes");
         if (config_.path.empty())
             return 0;
         // A measure for the auto-checkpoint threshold: what cannot be listed or sized adds nothing, and the

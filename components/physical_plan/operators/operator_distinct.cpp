@@ -3,6 +3,7 @@
 #include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::operators {
 
@@ -67,6 +68,7 @@ namespace components::operators {
     void operator_distinct_t::emit_distinct_(std::pmr::memory_resource* res,
                                              const chunks_vector_t& chunks,
                                              chunks_vector_t& out) {
+        OTB_ZONE_N("op::distinct::emit_distinct");
         // Find a schema-carrying chunk for the output column types.
         const vector::data_chunk_t* schema = nullptr;
         for (const auto& c : chunks) {
@@ -143,6 +145,7 @@ namespace components::operators {
     }
 
     core::error_t operator_distinct_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        OTB_ZONE_N("op::distinct::push");
         // Dedup this batch against everything seen so far (seen_/retained_ accumulate),
         // emitting the freshly-unique rows downstream immediately.
         chunks_vector_t one(resource_);
@@ -152,6 +155,7 @@ namespace components::operators {
     }
 
     core::error_t operator_distinct_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
+        OTB_ZONE_N("op::distinct::finalize");
         // push() already emitted every distinct row as it arrived; nothing buffered. What may be
         // outstanding is the columns themselves, when no row survived (or none arrived).
         if (emitted() || shape_.empty()) {

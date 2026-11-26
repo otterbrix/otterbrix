@@ -1,55 +1,52 @@
 #pragma once
 
-#ifndef TRACY_ENABLE
+// Profiling macros. Every one is a no-op unless the build defines TRACY_ENABLE (-o with_tracy=True / ENABLE_TRACY=ON),
+// so instrumented code costs nothing in a regular build.
+//
+// A Tracy zone belongs to the thread that opened it and must close in LIFO order. In a coroutine that can resume on
+// another thread (or interleave with others on one) open the zone in a nested block that ends before the first
+// co_await; a zone spanning a suspension point corrupts the trace.
 
-#define ZoneScoped
-#define ZoneScopedN(txt)
-#define TracySecureAlloc(ptr, count)
-#define TracySecureFree(ptr)
-#define TracyFrame(data, name)
-#define TracyFrameStart(name)
-#define TracyFrameEnd(name)
-#define TracyMessage(msg, size)
-#define FrameMark
+#ifdef TRACY_ENABLE
+#include <tracy/Tracy.hpp>
 
-#else
+#include <cstring>
 
-#include "Tracy.hpp"
-
-#ifdef TRACY_MEM_PROFILE
-
-inline void* operator new(std::size_t count) {
-    auto ptr = malloc(count);
-    TracySecureAlloc(ptr, count);
-    return ptr;
-}
-
-inline void operator delete(void* ptr) noexcept {
-    TracySecureFree(ptr);
-    free(ptr);
-}
-
-inline void operator delete(void* ptr, std::size_t) noexcept {
-    TracySecureFree(ptr);
-    free(ptr);
-}
-
+// Tracy pulls in <sys/param.h>/<mach/vm_param.h>, whose PAGE_SIZE macro (a runtime value on Apple Silicon) rewrites the
+// project's own constexpr PAGE_SIZE (services/wal/wal_page.hpp) into a non-constant array bound.
+#ifdef PAGE_SIZE
+#undef PAGE_SIZE
 #endif
 
-#define TracyFrame(cv_mat, name)                                                                                       \
-    {                                                                                                                  \
-        if (cv_mat.data) {                                                                                             \
-            auto w = cv_mat.cols;                                                                                      \
-            auto h = cv_mat.rows;                                                                                      \
-            std::vector<uint8_t> data(cv_mat.total() * 4);                                                             \
-            cv::Mat continuousRGBA(cv_mat.size(), CV_8UC4, data.data());                                               \
-            cv::cvtColor(cv_mat, continuousRGBA, cv::COLOR_BGR2RGBA, 4);                                               \
-            FrameImage(data.data(), w, h, 0, 0);                                                                       \
-            FrameMark;                                                                                                 \
-        }                                                                                                              \
-    }
+// zones / frames / plots / messages
+#define OTB_ZONE() ZoneScoped
+#define OTB_ZONE_N(name) ZoneScopedN(name)
+#define OTB_FRAME() FrameMark
+#define OTB_FRAME_N(name) FrameMarkNamed(name)
+#define OTB_PLOT(name, val) TracyPlot(name, static_cast<double>(val))
+#define OTB_MESSAGE_L(msg) TracyMessageL(msg)
+#define OTB_MESSAGE(msg) TracyMessage(msg, std::strlen(msg))
 
-#define TracyFrameStart(name) FrameMarkStart(name)
-#define TracyFrameEnd(name) FrameMarkEnd(name)
+// lockables: OTB_LOCKABLE(std::mutex, mutex_) in place of `std::mutex mutex_`
+#define OTB_LOCKABLE(type, var) TracyLockable(type, var)
+#define OTB_LOCKABLE_N(type, var, desc) TracyLockableN(type, var, desc)
+#define OTB_LOCK_BASE(type) LockableBase(type)
+#define OTB_LOCK_MARK(var) LockMark(var)
 
+// std::condition_variable only takes std::unique_lock<std::mutex>; a Tracy lockable needs the _any flavour
+#define OTB_CONDITION_VARIABLE std::condition_variable_any
+#else
+#define OTB_ZONE()
+#define OTB_ZONE_N(name)
+#define OTB_FRAME()
+#define OTB_FRAME_N(name)
+#define OTB_PLOT(name, val) static_cast<void>(val)
+#define OTB_MESSAGE_L(msg)
+#define OTB_MESSAGE(msg)
+
+#define OTB_LOCKABLE(type, var) type var
+#define OTB_LOCKABLE_N(type, var, desc) type var
+#define OTB_LOCK_BASE(type) type
+#define OTB_LOCK_MARK(var)
+#define OTB_CONDITION_VARIABLE std::condition_variable
 #endif

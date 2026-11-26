@@ -1,5 +1,7 @@
 #include "connection.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <memory_resource>
 #include <utility>
 
@@ -12,6 +14,7 @@ namespace otterbrix {
     connection_t::~connection_t() { close(); }
 
     components::cursor::cursor_t_ptr connection_t::execute(const std::string& query) {
+        OTB_ZONE_N("connection::execute");
         if (!instance_) {
             auto* resource = &arena_->resource;
             cursor_store_ =
@@ -25,6 +28,7 @@ namespace otterbrix {
     }
 
     components::cursor::cursor_t_ptr connection_t::copy_from(const std::string& query, std::string_view data) {
+        OTB_ZONE_N("connection::copy_from");
         if (!instance_) {
             auto* resource = &arena_->resource;
             cursor_store_ =

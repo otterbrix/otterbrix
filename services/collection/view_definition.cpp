@@ -11,6 +11,7 @@
 #include <components/logical_plan/for_each_plan_call.hpp>
 #include <components/physical_plan/operators/catalog_util.hpp>
 #include <components/planner/view_expansion.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <algorithm>
@@ -77,6 +78,7 @@ namespace services::collection {
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
                                       const components::logical_plan::resolved_table_metadata_t& view,
                                       const node_t& body) {
+        OTB_ZONE_N("view_definition::check_expanded_view");
         if (!body.has_output_types()) {
             return core::error_t::no_error();
         }
@@ -147,6 +149,7 @@ namespace services::collection {
                                          const components::logical_plan::node_create_view_t& view,
                                          const components::logical_plan::resolved_table_metadata_t& existing,
                                          std::span<const catalog::oid_t> read_views) {
+        OTB_ZONE_N("view_definition::check_view_replacement");
         const auto refuse = [resource](core::error_code_t code, std::string msg) {
             return core::error_t{code, std::pmr::string{std::move(msg), resource}};
         };
@@ -180,6 +183,7 @@ namespace services::collection {
 
     std::pmr::vector<components::compute::function_pin_t> view_body_user_functions(std::pmr::memory_resource* resource,
                                                                                    const node_t* body) {
+        OTB_ZONE_N("view_definition::view_body_user_functions");
         std::pmr::vector<components::compute::function_pin_t> out{resource};
         // A table function is no call a view body pins.
         auto visit = [&out](const auto& call, const auto&, bool) {
@@ -203,6 +207,7 @@ namespace services::collection {
                                           const components::compute::function_registry_t& registry,
                                           std::span<const components::compute::function_pin_t> uses,
                                           std::span<const services::disk::resolve_function_result_t> rows) {
+        OTB_ZONE_N("view_definition::describe_view_functions");
         auto& bindings = view.bindings();
         auto& dependencies = view.dependencies();
         for (const auto& use : uses) {
@@ -255,6 +260,7 @@ namespace services::collection {
                        const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& proc_chunks,
                        const components::compute::function_registry_t& registry,
                        node_t* body) {
+        OTB_ZONE_N("view_definition::pin_view_functions");
         std::pmr::vector<services::disk::resolve_function_result_t> rows{resource};
         for (const auto& chunks : proc_chunks) {
             for (const auto& chunk : chunks) {
@@ -346,6 +352,7 @@ namespace services::collection {
                                      std::size_t own_tables,
                                      std::size_t own_types,
                                      const dispatcher::validation::column_uses_t& uses) {
+        OTB_ZONE_N("view_definition::describe_view_body");
         std::pmr::vector<components::table::column_definition_t> columns{resource};
         columns.reserve(output.size());
         for (std::size_t i = 0; i < output.size(); ++i) {

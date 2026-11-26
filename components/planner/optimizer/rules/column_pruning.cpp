@@ -18,6 +18,7 @@
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -508,6 +509,7 @@ namespace components::planner::optimizer {
     } // namespace
 
     void prune_columns(const logical_plan::node_ptr& root) {
+        OTB_ZONE_N("optimizer::prune_columns");
         if (!root) {
             return;
         }

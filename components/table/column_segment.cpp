@@ -1,5 +1,7 @@
 #include "column_segment.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include "row_group.hpp"
 
 #include <algorithm>
@@ -1160,6 +1162,7 @@ namespace components::table {
                                                                            uint64_t tuple_count,
                                                                            storage::partial_block_manager_t& pbm,
                                                                            std::vector<uint64_t>& out_blocks) {
+        OTB_ZONE_N("column_segment::persist_string_overflow");
         auto& buffer_manager = block->buffer_manager;
         auto* resource = buffer_manager.resource();
         const uint64_t block_size = block->block_size();
@@ -1240,6 +1243,7 @@ namespace components::table {
     core::result_wrapper_t<uint64_t> column_segment_t::compact_string_dictionary(std::byte* segment_copy,
                                                                                  uint64_t segment_size,
                                                                                  uint64_t tuple_count) const {
+        OTB_ZONE_N("column_segment::compact_string_dictionary");
         auto* resource = block->buffer_manager.resource();
         auto corrupt = [&](const char* what) {
             std::pmr::string message(resource);
@@ -1299,6 +1303,7 @@ namespace components::table {
     }
 
     void column_segment_t::initialize_scan(column_scan_state& state) {
+        OTB_ZONE_N("column_segment::initialize_scan");
         auto& buffer_manager = block->buffer_manager;
         auto pinned = buffer_manager.pin(block);
         if (pinned.has_error()) {
@@ -1313,6 +1318,7 @@ namespace components::table {
                                 vector::vector_t& result,
                                 uint64_t result_offset,
                                 scan_vector_type scan_type) {
+        OTB_ZONE_N("column_segment::scan");
         if (scan_type == scan_vector_type::SCAN_ENTIRE_VECTOR) {
             if (result_offset != 0) {
                 state.scan_error =
@@ -1484,6 +1490,7 @@ namespace components::table {
                                                               vector::unified_vector_format& data,
                                                               uint64_t offset,
                                                               uint64_t count) {
+        OTB_ZONE_N("column_segment::append");
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
@@ -1532,6 +1539,7 @@ namespace components::table {
     }
 
     void column_segment_t::revert_append(uint64_t start_row) {
+        OTB_ZONE_N("column_segment::revert_append");
         // Only the count moves. The bytes past it are never read: string_append derives the dictionary
         // size from the last kept row's offset, validity_append writes every bit it appends, and the
         // scans mask the bits past their count. Rejected: a pin to roll the bytes back -- it needs memory
@@ -1540,6 +1548,7 @@ namespace components::table {
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
+        OTB_ZONE_N("column_segment::scan_all");
         switch (compression_) {
             case compression::compression_type::CONSTANT:
                 impl::constant_scan_entire(*this, state, scan_count, result);
@@ -1616,6 +1625,7 @@ namespace components::table {
                                         uint64_t scan_count,
                                         vector::vector_t& result,
                                         uint64_t result_offset) {
+        OTB_ZONE_N("column_segment::scan_partial");
         switch (compression_) {
             case compression::compression_type::CONSTANT:
                 impl::constant_scan_partial(*this, state, scan_count, result, result_offset);

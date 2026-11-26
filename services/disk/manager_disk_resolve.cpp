@@ -2,6 +2,7 @@
 #include "oid_reservation.hpp"
 
 #include <components/catalog/helpers.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace services::disk {
 
@@ -54,11 +55,14 @@ namespace services::disk {
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<std::pmr::vector<resolve_function_result_t>>();
         }
-        for (auto& chunk : batches_r.value()) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(1, i) || chunk.get_value<std::string_view>(1, i) != name)
-                    continue;
-                out.push_back(components::catalog::decode_pg_proc_row(chunk, i));
+        {
+            OTB_ZONE_N("manager_disk::resolve_function_by_name/filter");
+            for (auto& chunk : batches_r.value()) {
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    if (chunk.is_null(1, i) || chunk.get_value<std::string_view>(1, i) != name)
+                        continue;
+                    out.push_back(components::catalog::decode_pg_proc_row(chunk, i));
+                }
             }
         }
         co_return out;

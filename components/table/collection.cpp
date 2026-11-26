@@ -4,6 +4,7 @@
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/tracy/tracy.hpp>
 #include <iterator>
 #include <queue>
 
@@ -73,6 +74,7 @@ namespace components::table {
     row_group_t* collection_t::row_group(int64_t index) { return row_groups_->segment_at(index); }
 
     void collection_t::initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>&) {
+        OTB_ZONE_N("collection::initialize_scan");
         auto row_group = row_groups_->root_segment();
         if (!row_group) {
             return;
@@ -89,6 +91,7 @@ namespace components::table {
                                                    const std::vector<storage_index_t>&,
                                                    int64_t start_row,
                                                    int64_t end_row) {
+        OTB_ZONE_N("collection::initialize_scan_with_offset");
         state.row_groups = row_groups_.get();
         state.max_row = end_row;
         state.initialize(types_);
@@ -131,6 +134,7 @@ namespace components::table {
                              column_fetch_state& state,
                              const transaction_data& txn,
                              fetch_visibility_t visibility) {
+        OTB_ZONE_N("collection::fetch");
         auto row_ids = row_identifiers.data<int64_t>();
         auto* produced_ids = result.row_ids.data<int64_t>();
         uint64_t count = 0;
@@ -185,6 +189,7 @@ namespace components::table {
     }
 
     void collection_t::cleanup_versions(uint64_t lowest_active_start_time) {
+        OTB_ZONE_N("collection::cleanup_versions");
         for (auto& rg : row_groups_->segments()) {
             auto count = rg.count.load();
             if (count > 0) {
@@ -195,6 +200,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
+        OTB_ZONE_N("collection::initialize_append");
         // Type validated first: create_column's constructors cannot refuse a type they cannot
         // represent, or an unnamed struct throws inside struct_column_data_t's ctor and hangs the
         // statement across the disk agent's coroutine instead of failing cleanly.
@@ -225,6 +231,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> collection_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
+        OTB_ZONE_N("collection::append");
         const uint64_t prev_row_group_size = row_group_size_;
         assert(chunk.column_count() == types_.size());
 
@@ -361,6 +368,7 @@ namespace components::table {
     }
 
     void collection_t::finalize_append(table_append_state& state, transaction_data txn) {
+        OTB_ZONE_N("collection::finalize_append");
         auto remaining = state.total_append_count;
         auto row_group = state.start_row_group;
         while (remaining > 0) {
@@ -383,6 +391,7 @@ namespace components::table {
     }
 
     void collection_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {
+        OTB_ZONE_N("collection::commit_append");
         session_cuts_.erase(row_start);
         for (auto& rg : row_groups_->segments()) {
             auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
@@ -403,6 +412,7 @@ namespace components::table {
     }
 
     void collection_t::abort_append(int64_t row_start, uint64_t count) {
+        OTB_ZONE_N("collection::abort_append");
         auto row_end = row_start + static_cast<int64_t>(count);
         for (auto& rg : row_groups_->segments()) {
             auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
@@ -419,12 +429,14 @@ namespace components::table {
     }
 
     void collection_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        OTB_ZONE_N("collection::commit_all_deletes");
         for (auto& rg : row_groups_->segments()) {
             rg.commit_all_deletes(txn_id, commit_id);
         }
     }
 
     void collection_t::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
+        OTB_ZONE_N("collection::revert_all_deletes");
         for (auto& rg : row_groups_->segments()) {
             rg.revert_all_deletes(txn_id, from_sub_id);
         }
@@ -470,6 +482,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
+        OTB_ZONE_N("collection::revert_append");
         if (!is_tail(row_start, count)) {
             return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string("table revert: the range is not the table's tail", resource_));
@@ -523,6 +536,7 @@ namespace components::table {
     }
 
     void collection_t::merge_storage(collection_t& data) {
+        OTB_ZONE_N("collection::merge_storage");
         assert(data.types() == types_);
         auto start_index = row_start_ + static_cast<int64_t>(total_rows_.load());
         auto index = start_index;
@@ -544,6 +558,7 @@ namespace components::table {
                                                                uint64_t transaction_id,
                                                                uint64_t sub_id,
                                                                uint64_t command_id) {
+        OTB_ZONE_N("collection::delete_rows");
         uint64_t delete_count = 0;
         uint64_t pos = 0;
         do {
@@ -593,6 +608,7 @@ namespace components::table {
 
     core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
     collection_t::add_column(column_definition_t& new_column) {
+        OTB_ZONE_N("collection::add_column");
         if (auto err = column_data_t::validate_column_type(new_column.type(), resource_); err.contains_error()) {
             return err;
         }
@@ -655,6 +671,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<boost::intrusive_ptr<collection_t>> collection_t::remove_column(uint64_t col_idx) {
+        OTB_ZONE_N("collection::remove_column");
         assert(col_idx < types_.size());
         // Same allocator-extended copy as add_column above.
         std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
@@ -702,6 +719,7 @@ namespace components::table {
 
     core::result_wrapper_t<std::vector<storage::row_group_pointer_t>>
     collection_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
+        OTB_ZONE_N("collection::checkpoint");
         std::vector<storage::row_group_pointer_t> pointers;
 
         // The root written below may name an open tail block; once named it must never be rewritten.

@@ -1,6 +1,7 @@
 #include "disk_hash_table.hpp"
 
 #include <components/index/binary_codec.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include "absl/crc/crc32c.h"
 
@@ -151,6 +152,7 @@ namespace services::index {
                                                   int64_t value,
                                                   uint32_t log_file_id,
                                                   uint64_t log_offset) {
+        OTB_ZONE_N("index::disk_hash::put");
         const uint32_t bucket_id = bucket_id_for_hash(key_hash);
         auto payload = make_entry_payload(key, value, log_file_id, log_offset);
         RETURN_IF_ERROR(insert_payload_into_bucket_unlocked(bucket_id, key_hash, payload));
@@ -162,6 +164,7 @@ namespace services::index {
     core::error_t disk_hash_table_t::insert_payload_into_bucket_unlocked(uint32_t bucket_id,
                                                                          uint32_t key_hash,
                                                                          const byte_buffer_t& payload) {
+        OTB_ZONE_N("index::disk_hash::insert_payload");
         uint64_t page_id = bucket_primary_page_id(bucket_id);
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
@@ -211,6 +214,7 @@ namespace services::index {
     }
 
     core::error_t disk_hash_table_t::rehash_unlocked(uint32_t new_bucket_count) {
+        OTB_ZONE_N("index::disk_hash::rehash");
         if (new_bucket_count == 0) {
             return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"disk_hash_table: rehash to zero buckets", memory_resource_}};
@@ -241,6 +245,7 @@ namespace services::index {
     // Addressing advances only after the copy lands, so a refused copy leaves the source bucket intact
     // -- a refused overflow allocation mid-copy once left 160 of 400 rows unreachable.
     core::error_t disk_hash_table_t::split_one_bucket_unlocked(bool durable_commit) {
+        OTB_ZONE_N("index::disk_hash::split_bucket");
         if (header_.bucket_count_value == UINT32_MAX) {
             return io_failure("disk_hash_table: bucket count is at its maximum, cannot split");
         }
@@ -374,6 +379,7 @@ namespace services::index {
     uint32_t disk_hash_table_t::bucket_count() const { return header_.bucket_count_value; }
 
     core::error_t disk_hash_table_t::sync() {
+        OTB_ZONE_N("index::disk_hash::sync");
         if (!sync_files()) {
             return io_failure("disk_hash_table: " + file_path_.string() + " could not be made durable");
         }
@@ -381,6 +387,7 @@ namespace services::index {
     }
 
     core::error_t disk_hash_table_t::reset_storage() {
+        OTB_ZONE_N("index::disk_hash::reset_storage");
         file_.reset();
         ovf_file_.reset();
         // A refused unlink must not be swallowed, or the caller replays segments over surviving contents.
@@ -417,6 +424,7 @@ namespace services::index {
 
     // Can't reuse open_or_create(): it treats a non-zero file_size() as an existing table to load.
     core::error_t disk_hash_table_t::open_after_wipe_or_refuse() {
+        OTB_ZONE_N("index::disk_hash::open_after_wipe");
         file_ = open_file(fs_,
                           file_path_,
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
@@ -470,6 +478,7 @@ namespace services::index {
     }
 
     core::error_t disk_hash_table_t::open_or_create() {
+        OTB_ZONE_N("index::disk_hash::open_or_create");
         file_ = open_file(fs_,
                           file_path_,
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
@@ -497,6 +506,7 @@ namespace services::index {
     }
 
     core::error_t disk_hash_table_t::initialize_new_file() {
+        OTB_ZONE_N("index::disk_hash::initialize_new_file");
         header_.page_size_value = page_size;
         header_.next_overflow_page = overflow_page_id_base;
         // generate_hash_seed() never returns 0, so 0 reliably means "not set yet" (kept by reset_storage).
@@ -523,6 +533,7 @@ namespace services::index {
     }
 
     core::error_t disk_hash_table_t::load_existing_file() {
+        OTB_ZONE_N("index::disk_hash::load_existing_file");
         byte_buffer_t hdr(memory_resource_);
         hdr.resize(page_size, 0);
         if (!file_->read(hdr.data(), page_size, 0)) {
@@ -612,6 +623,7 @@ namespace services::index {
     }
 
     core::result_wrapper_t<uint64_t> disk_hash_table_t::count_entries_unlocked() const {
+        OTB_ZONE_N("index::disk_hash::count_entries");
         uint64_t count = 0;
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);

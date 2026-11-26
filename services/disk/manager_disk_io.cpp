@@ -1,6 +1,7 @@
 #include "manager_disk_impl.hpp"
 
 #include <core/file/list_dir.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <cassert>
 
@@ -179,6 +180,7 @@ namespace services::disk {
                                                            std::vector<components::table::column_definition_t> columns,
                                                            const std::filesystem::path& otbx_path,
                                                            bool is_computed) {
+        OTB_ZONE_N("manager_disk::create_storage_disk_sync");
         trace(log_,
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
@@ -258,6 +260,7 @@ namespace services::disk {
                                            components::catalog::oid_t /*database_oid*/,
                                            const std::filesystem::path& otbx_path,
                                            std::vector<components::table::column_definition_t> catalog_columns) {
+        OTB_ZONE_N("manager_disk::load_storage_disk_sync");
         trace(log_,
               "manager_disk_t::load_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
@@ -426,6 +429,7 @@ namespace services::disk {
     }
 
     core::error_t verify_otbx_sidecars(const std::filesystem::path& otbx_path, std::pmr::memory_resource* resource) {
+        OTB_ZONE_N("manager_disk::verify_otbx_sidecars");
         // The engine owns every name extending the table file's own; this build writes only `.wal_id`/`.tmp`.
         const auto dir = otbx_path.parent_path();
         const auto base = otbx_path.filename().string();
@@ -461,6 +465,7 @@ namespace services::disk {
     manager_disk_t::peek_checkpoint_wal_id_from_disk(const bootstrap_t& boot,
                                                      components::catalog::oid_t table_oid,
                                                      components::catalog::oid_t database_oid) {
+        OTB_ZONE_N("manager_disk::peek_checkpoint_wal_id_from_disk");
         // A loaded entry carries the floor its own load read; an unreadable sidecar means an unknown floor, not 0.
         if (const auto* entry = boot_entry(boot, table_oid); entry != nullptr) {
             if (!entry->table_storage.checkpoint_wal_id_known()) {

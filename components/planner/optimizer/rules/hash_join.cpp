@@ -6,6 +6,7 @@
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -88,6 +89,7 @@ namespace components::planner::optimizer {
     } // namespace
 
     logical_plan::node_ptr rewrite_hash_joins(std::pmr::memory_resource* /*resource*/, logical_plan::node_ptr root) {
+        OTB_ZONE_N("optimizer::rewrite_hash_joins");
         return walk(root);
     }
 

@@ -1,5 +1,7 @@
 #include "resolve_arithmetic.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 namespace services::dispatcher {
 
     using components::casts::cast_registry_t;
@@ -16,6 +18,7 @@ namespace services::dispatcher {
                                              operator_code code,
                                              const complex_logical_type& lhs,
                                              const complex_logical_type& rhs) {
+        OTB_ZONE_N("dispatcher::resolve_arithmetic");
         if (auto exact = resolve_operator(code, lhs, rhs)) {
             return resolved_arithmetic_t{{}, {}, lhs, rhs, *exact};
         }

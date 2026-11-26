@@ -18,6 +18,7 @@
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::table {
 
@@ -116,6 +117,7 @@ namespace components::table {
     }
 
     bool row_group_t::initialize_scan_with_offset(collection_scan_state& state, uint64_t vector_offset) {
+        OTB_ZONE_N("row_group::initialize_scan_with_offset");
         auto& column_ids = state.column_ids();
         state.row_group = this;
         // row_number/vector_index stay collection-absolute: group-relative would underflow a segment
@@ -136,6 +138,7 @@ namespace components::table {
     }
 
     bool row_group_t::initialize_scan(collection_scan_state& state) {
+        OTB_ZONE_N("row_group::initialize_scan");
         auto& column_ids = state.column_ids();
         state.row_group = this;
         state.max_row_group_row +=
@@ -155,6 +158,7 @@ namespace components::table {
                             column_definition_t& new_column,
                             const std::optional<vector::vector_t>& default_value,
                             vector::vector_t& result) {
+        OTB_ZONE_N("row_group::add_column");
         auto added_column = column_data_t::create_column(collection_->resource(),
                                                          block_manager(),
                                                          get_column_count(),
@@ -196,6 +200,7 @@ namespace components::table {
     }
 
     std::unique_ptr<row_group_t> row_group_t::remove_column(collection_t* new_collection, uint64_t removed_column) {
+        OTB_ZONE_N("row_group::remove_column");
         assert(removed_column < columns_.size());
 
         auto row_group = std::make_unique<row_group_t>(new_collection, start, count);
@@ -451,10 +456,12 @@ namespace components::table {
     }
 
     void row_group_t::scan(collection_scan_state& state, vector::data_chunk_t& result) {
+        OTB_ZONE_N("row_group::scan");
         templated_scan<table_scan_type::REGULAR>(state, result);
     }
 
     void row_group_t::scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type) {
+        OTB_ZONE_N("row_group::scan_committed");
         switch (type) {
             case table_scan_type::COMMITTED_ROWS:
                 templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
@@ -529,6 +536,7 @@ namespace components::table {
     }
 
     void row_group_t::commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count) {
+        OTB_ZONE_N("row_group::commit_append");
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->commit_append(commit_id, row_group_start, count);
@@ -539,6 +547,7 @@ namespace components::table {
     }
 
     void row_group_t::abort_append(uint64_t row_group_start, uint64_t count) {
+        OTB_ZONE_N("row_group::abort_append");
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->abort_append(row_group_start, count);
@@ -554,6 +563,7 @@ namespace components::table {
     void row_group_t::snapshot_counts(uint64_t column, append_cut_t& cut) { get_column(column).snapshot_counts(cut); }
 
     core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start, cut_cursor_t& cut) {
+        OTB_ZONE_N("row_group::revert_append");
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->revert_append(row_group_start);
@@ -595,6 +605,7 @@ namespace components::table {
                                                      vector::data_chunk_t& chunk,
                                                      uint64_t chunk_offset,
                                                      uint64_t append_count) {
+        OTB_ZONE_N("row_group::append");
         assert(chunk.column_count() == get_column_count());
         // The counts before this chunk: what a refused column cuts the row group back to.
         auto& piece_cut = state.parent.piece_cut;
@@ -732,6 +743,7 @@ namespace components::table {
                                       uint64_t transaction_id,
                                       uint64_t sub_id,
                                       uint64_t command_id) {
+        OTB_ZONE_N("row_group::delete_rows");
         version_delete_state del_state(*this, transaction_id, sub_id, command_id, table, start);
 
         for (uint64_t i = 0; i < count; i++) {
@@ -751,6 +763,7 @@ namespace components::table {
     }
 
     void row_group_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        OTB_ZONE_N("row_group::commit_all_deletes");
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->commit_all_deletes(txn_id, commit_id);
@@ -761,6 +774,7 @@ namespace components::table {
     }
 
     void row_group_t::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
+        OTB_ZONE_N("row_group::revert_all_deletes");
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->revert_all_deletes(txn_id, from_sub_id);
@@ -882,6 +896,7 @@ namespace components::table {
 
     core::result_wrapper_t<storage::row_group_pointer_t>
     row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
+        OTB_ZONE_N("row_group::write_to_disk");
         storage::row_group_pointer_t pointer;
         pointer.row_start = static_cast<uint64_t>(start);
         pointer.tuple_count = count;
@@ -901,6 +916,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> row_group_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
+        OTB_ZONE_N("row_group::transition_to_disk");
         for (uint64_t i = 0; i < columns_.size(); i++) {
             if (!columns_[i]) {
                 continue;

@@ -24,6 +24,7 @@
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_union.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -1161,10 +1162,12 @@ namespace components::planner::optimizer {
     } // anonymous namespace
 
     logical_plan::node_ptr pushdown_filter(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
+        OTB_ZONE_N("optimizer::pushdown_filter");
         return pushdown_filter_impl(resource, std::move(node));
     }
 
     logical_plan::node_ptr pushdown_cte_filter(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
+        OTB_ZONE_N("optimizer::pushdown_cte_filter");
         return pushdown_cte_filter_impl(resource, std::move(node));
     }
 

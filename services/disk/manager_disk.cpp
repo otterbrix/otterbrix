@@ -5,6 +5,7 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/system_table_schemas.hpp>
+#include <core/tracy/tracy.hpp>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -234,6 +235,7 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<bool> table_storage_t::checkpoint() {
+        OTB_ZONE_N("table_storage::checkpoint");
         auto* disk_bm_check =
             static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
         if (disk_bm_check->has_durability_error()) {
@@ -303,11 +305,13 @@ namespace services::disk {
     }
 
     void table_storage_t::add_column(components::table::column_definition_t& col) {
+        OTB_ZONE_N("table_storage::add_column");
         auto new_table = std::make_unique<components::table::data_table_t>(*table_, col);
         table_ = std::move(new_table);
     }
 
     core::result_wrapper_t<bool> table_storage_t::drop_column(const std::string& attname) {
+        OTB_ZONE_N("table_storage::drop_column");
         if (!table_) {
             return false;
         }

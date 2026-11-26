@@ -1,5 +1,7 @@
 #include "wal_page_writer.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <cstring>
 #include <filesystem>
 
@@ -78,6 +80,7 @@ namespace services::wal {
     }
 
     core::error_t wal_page_writer_t::append(const char* data, size_t size, id_t wal_id) {
+        OTB_ZONE_N("wal::page_writer::append");
         if (open_error_.contains_error()) {
             return open_error_;
         }
@@ -162,6 +165,7 @@ namespace services::wal {
     }
 
     core::error_t wal_page_writer_t::flush() {
+        OTB_ZONE_N("wal::page_writer::flush");
         if (open_error_.contains_error()) {
             return open_error_;
         }
@@ -172,6 +176,7 @@ namespace services::wal {
     }
 
     core::error_t wal_page_writer_t::flush_and_sync() {
+        OTB_ZONE_N("wal::page_writer::flush_and_sync");
         if (auto flush_error = flush(); flush_error.contains_error()) {
             return flush_error;
         }
@@ -205,6 +210,7 @@ namespace services::wal {
     }
 
     core::error_t wal_page_writer_t::flush_page() {
+        OTB_ZONE_N("wal::page_writer::flush_page");
         if (!has_data_ && num_records_ == 0 && (page_flags_ & PAGE_PARTIAL_CONT) == 0) {
             return core::error_t::no_error(); // nothing to flush
         }

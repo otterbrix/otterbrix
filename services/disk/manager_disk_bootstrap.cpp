@@ -6,6 +6,7 @@
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/information_schema.hpp>
 #include <core/file/list_dir.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <algorithm>
 
@@ -134,6 +135,7 @@ namespace services::disk {
     } // namespace
 
     core::error_t manager_disk_t::bootstrap_system_tables_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::system_tables");
         const auto sys_db_oid = catalog::well_known_oid::main_database;
         const std::filesystem::path sys_dir = config_.path / std::to_string(static_cast<unsigned>(sys_db_oid));
         std::error_code dir_ec;
@@ -556,6 +558,7 @@ namespace services::disk {
     }
 
     core::error_t manager_disk_t::restore_oid_generator_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::restore_oid_generator");
         // agents_[0] (catalog agent) owns all catalog SFBM entries; scans below run pre-scheduler, single-threaded.
         if (agents_.empty()) {
             trace(log_, "manager_disk_t::restore_oid_generator_sync : no catalog agent, skipping");
@@ -628,6 +631,7 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<std::uint64_t> manager_disk_t::max_persisted_commit_id_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::max_persisted_commit_id");
         // pg_attribute is the only system table carrying commit-id columns.
         constexpr std::size_t kAddedAtCol = 10;
         constexpr std::size_t kDroppedAtCol = 11;
@@ -680,6 +684,7 @@ namespace services::disk {
     }
 
     core::error_t manager_disk_t::load_user_table_storages_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::load_user_table_storages");
         const auto listing_refused = [this](const core::error_t& why) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"load_user_table_storages_sync: the tables under " +
@@ -763,6 +768,7 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<std::size_t> manager_disk_t::rehydrate_missing_user_storages_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::rehydrate_missing_storages");
         // The early returns below use error_t, not 0 — 0 is also what a healthy, empty database answers.
         std::size_t unclosed = 0;
 
@@ -933,6 +939,7 @@ namespace services::disk {
     // its blocks are armed. Compared by attoid, never name: a RENAME's catalog half is durable at the WAL commit
     // marker, its storage half only at the table's next checkpoint.
     core::error_t manager_disk_t::reconcile_storage_with_catalog_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::reconcile_with_catalog");
         auto live_oids = scan_live_table_oids_sync(boot);
         std::unordered_set<catalog::oid_t> wanted;
         std::pmr::vector<catalog::oid_t> ordered{resource()};
@@ -1079,6 +1086,7 @@ namespace services::disk {
     std::unordered_map<components::catalog::oid_t, std::vector<components::table::column_definition_t>>
     manager_disk_t::collect_catalog_columns_sync(const bootstrap_t& boot,
                                                  const std::unordered_set<components::catalog::oid_t>& wanted) {
+        OTB_ZONE_N("disk::bootstrap::collect_catalog_columns");
         // attnotnull is the storage's NOT NULL: the file's flag is only as new as its last checkpoint.
         namespace att = catalog::pg_attribute_col;
         // Uses the widest ordinal read below, not a hand-written count — a literal `< 9` once left attdefspec out.
@@ -1222,6 +1230,7 @@ namespace services::disk {
 
     std::pmr::unordered_set<components::catalog::oid_t>
     manager_disk_t::remote_namespace_oids_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::remote_namespace_oids");
         std::pmr::unordered_set<catalog::oid_t> found{resource_};
         // Calls `visit` with the first two columns of every committed row of the catalog table `table_oid`.
         const auto scan_pairs = [this,
@@ -1280,6 +1289,7 @@ namespace services::disk {
     }
 
     std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::scan_live_table_oids");
         std::pmr::vector<components::catalog::oid_t> live{resource_};
         auto* entry = boot_entry(boot, pg_class_oid);
         if (entry == nullptr) {
@@ -1417,6 +1427,7 @@ namespace services::disk {
 
     core::result_wrapper_t<std::pmr::vector<pg_index_row_t>>
     manager_disk_t::scan_alive_pg_index_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::scan_alive_pg_index");
         std::pmr::vector<pg_index_row_t> result{resource_};
         auto* idx_entry = boot_entry(boot, pg_index_oid);
         if (idx_entry == nullptr) {
@@ -1573,6 +1584,7 @@ namespace services::disk {
     }
 
     std::unordered_set<components::catalog::oid_t> manager_disk_t::alive_user_oids_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::alive_user_oids");
         std::unordered_set<components::catalog::oid_t> alive;
         auto* entry = boot_entry(boot, pg_class_oid);
         if (entry == nullptr) {
@@ -1607,6 +1619,7 @@ namespace services::disk {
     }
 
     std::pmr::vector<dropped_class_row_t> manager_disk_t::scan_dropped_oids_sync(const bootstrap_t& boot) {
+        OTB_ZONE_N("disk::bootstrap::scan_dropped_oids");
         // Scans pg_class with COMMITTED_ROWS (includes tombstones), then set-differences against alive_user_oids_sync.
         std::pmr::vector<dropped_class_row_t> result{resource_};
         auto* entry = boot_entry(boot, pg_class_oid);

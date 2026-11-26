@@ -6,6 +6,8 @@
 
 #include <absl/crc/crc32c.h>
 
+#include <core/tracy/tracy.hpp>
+
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/data_chunk_binary.hpp>
 
@@ -215,6 +217,7 @@ namespace services::wal {
                           const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                           uint64_t row_start,
                           uint64_t row_count) {
+        OTB_ZONE_N("wal::encode_insert");
         // Payload: [attoids][chunk_batch].
         buffer_t payload_buf(buffer.get_allocator());
         serialize_attoids(payload_buf, attoids);
@@ -243,6 +246,7 @@ namespace services::wal {
                               const column_attoids_t& attoids,
                               const components::vector::data_chunk_t& schema_chunk,
                               uint64_t first_position) {
+        OTB_ZONE_N("wal::encode_add_column");
         // Payload: [attoids][chunk_batch].
         buffer_t payload_buf(buffer.get_allocator());
         serialize_attoids(payload_buf, attoids);
@@ -278,6 +282,7 @@ namespace services::wal {
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           uint64_t count) {
+        OTB_ZONE_N("wal::encode_delete");
         // Payload = raw int64_t array.
         const auto payload_size = static_cast<uint32_t>(count * sizeof(int64_t));
 
@@ -305,6 +310,7 @@ namespace services::wal {
                           const column_attoids_t& attoids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t count) {
+        OTB_ZONE_N("wal::encode_update");
         // Payload: [row_ids_size:4][row_ids][attoids][chunk_batch: serialize_chunk_batch's own framing].
 
         buffer_t payload_buf(buffer.get_allocator());
@@ -372,6 +378,7 @@ namespace services::wal {
     }
 
     crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t commit_id) {
+        OTB_ZONE_N("wal::encode_commit");
         return write_marker_record(buffer, last_crc32, wal_id, txn_id, wal_record_type::COMMIT, commit_id);
     }
 
@@ -385,6 +392,7 @@ namespace services::wal {
     }
 
     record_t decode_record(const char* data, size_t len, std::pmr::memory_resource* resource) {
+        OTB_ZONE_N("wal::decode_record");
         record_t rec{resource};
         rec.is_corrupt = false;
 

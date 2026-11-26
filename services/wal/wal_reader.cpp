@@ -5,6 +5,7 @@
 #include <system_error>
 
 #include <core/file/list_dir.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
@@ -14,6 +15,7 @@ namespace services::wal {
     find_wal_segments(std::pmr::memory_resource* resource,
                       const std::filesystem::path& database_dir,
                       std::string_view prefix) {
+        OTB_ZONE_N("wal::find_wal_segments");
         std::pmr::vector<std::filesystem::path> segments(resource);
         const auto refused = [&](const std::string& why) {
             return core::error_t(core::error_code_t::io_error,
@@ -64,6 +66,7 @@ namespace services::wal {
 
     core::result_wrapper_t<std::vector<record_t>>
     wal_reader_t::read_committed_records(std::set<std::uint64_t>* committed_out) {
+        OTB_ZONE_N("wal::reader::read_committed_records");
         std::vector<record_t> merged;
 
         std::error_code ec;
@@ -116,6 +119,7 @@ namespace services::wal {
 
     core::result_wrapper_t<std::vector<record_t>>
     wal_reader_t::read_database_segments(const std::filesystem::path& db_dir, std::set<std::uint64_t>* committed_out) {
+        OTB_ZONE_N("wal::reader::read_database_segments");
         auto found = find_wal_segments(resource_, db_dir, "wal_");
         if (found.has_error()) {
             error(log_, "wal_reader: {}", found.error().what);

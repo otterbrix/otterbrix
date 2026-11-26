@@ -6,6 +6,7 @@
 #include <components/table/column_checkpoint_state.hpp>
 #include <components/table/column_data.hpp>
 #include <components/table/column_segment.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::table {
 
@@ -15,6 +16,7 @@ namespace components::table {
         , partial_block_manager_(partial_block_manager) {}
 
     core::result_wrapper_t<persistent_column_data_t> column_data_checkpointer_t::checkpoint() {
+        OTB_ZONE_N("column_data_checkpointer::checkpoint");
         column_checkpoint_state_t state(column_data_, partial_block_manager_);
 
         // Collect per-segment stats while flushing

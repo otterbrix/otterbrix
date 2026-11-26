@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <components/vector/vector_builders.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace services::disk {
 
@@ -34,6 +35,7 @@ namespace services::disk {
                                           const std::pmr::vector<int64_t>& row_ids,
                                           uint64_t count,
                                           const components::table::transaction_data& txn) {
+        OTB_ZONE_N("manager_disk::apply_journalled_delete");
         if (row_ids.empty() && count == 0) {
             return core::error_t::no_error();
         }
@@ -75,6 +77,7 @@ namespace services::disk {
                             const std::pmr::vector<catalog::oid_t>& attoids,
                             components::vector::data_chunk_t& new_data,
                             components::table::transaction_data txn) {
+        OTB_ZONE_N("manager_disk::apply_journalled_update");
         if (row_ids.empty() && new_data.size() == 0) {
             return components::storage::appended_range_t{};
         }
@@ -119,6 +122,7 @@ namespace services::disk {
                                                const std::pmr::vector<catalog::oid_t>& attoids,
                                                const components::vector::data_chunk_t& schema_chunk,
                                                uint64_t first_position) {
+        OTB_ZONE_N("manager_disk::apply_journalled_add_columns");
         if (entry == nullptr || entry->storage == nullptr) {
             return no_journalled_storage_error(resource, "apply_journalled_add_columns", table_oid);
         }
@@ -172,6 +176,7 @@ namespace services::disk {
                                                                  const std::pmr::vector<catalog::oid_t>& attoids,
                                                                  components::vector::data_chunk_t& data,
                                                                  components::table::transaction_data txn) {
+        OTB_ZONE_N("manager_disk::append_sync");
         // The borrowed entry is safe here: bootstrap and replay are single-threaded.
         auto* entry = boot_entry(boot, table_oid);
         // Empty chunk is the legit no-op; missing storage is a refusal, not 0 -- 0 means "first row".
@@ -218,6 +223,7 @@ namespace services::disk {
                                                      uint64_t commit_id,
                                                      int64_t row_start,
                                                      uint64_t count) {
+        OTB_ZONE_N("manager_disk::commit_append_sync");
         auto* agent_entry = boot_entry(boot, table_oid);
         if (agent_entry == nullptr || agent_entry->storage == nullptr) {
             std::pmr::string what{"commit_append_sync: the owning agent holds no storage for oid ", resource()};
@@ -241,6 +247,7 @@ namespace services::disk {
                                                           catalog::oid_t table_oid,
                                                           uint64_t txn_id,
                                                           uint64_t commit_id) {
+        OTB_ZONE_N("manager_disk::commit_all_deletes_sync");
         auto* agent_entry = boot_entry(boot, table_oid);
         if (agent_entry == nullptr || agent_entry->storage == nullptr) {
             std::pmr::string what{"commit_all_deletes_sync: the owning agent holds no storage for oid ", resource()};

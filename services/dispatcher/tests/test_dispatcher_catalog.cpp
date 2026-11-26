@@ -318,7 +318,9 @@ namespace {
         components::execution_context_t ctx{components::session::session_id_t{},
                                             components::table::transaction_data::committed(),
                                             {}};
-        auto oids = test.disk_invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = test.disk_invoke(&manager_disk_t::allocate_oids_batch,
+                                     components::table::transaction_data::committed(),
+                                     std::size_t{1});
         REQUIRE_FALSE(oids.empty());
         auto writes_r = components::catalog::build_create_constraint_writes(resource,
                                                                             con_name,

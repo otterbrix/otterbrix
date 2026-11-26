@@ -25,6 +25,7 @@ set(${PROJECT_NAME}_SOURCES
         disk/manager_disk_storage.cpp
         disk/manager_disk_offer.cpp
         disk/oid_reservation.cpp
+        disk/oid_free_set.cpp
 
     # dispatcher
        dispatcher/dispatcher.cpp

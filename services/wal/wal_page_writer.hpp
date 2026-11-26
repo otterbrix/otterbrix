@@ -4,6 +4,7 @@
 #include <core/file/local_file_system.hpp>
 #include <core/result_wrapper.hpp>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <services/wal/base.hpp>
@@ -44,6 +45,9 @@ namespace services::wal {
 
         /// Last WAL id written.
         id_t last_wal_id() const { return page_end_lsn_; }
+
+        /// The first record id of the page still in memory; the id_t maximum when that page holds none.
+        id_t buffered_page_lsn() const noexcept { return has_data_ ? page_lsn_ : std::numeric_limits<id_t>::max(); }
 
         /// The destructor's last-resort flush error; the engine never depends on it (explicit flush elsewhere).
         [[nodiscard]] const core::error_t& last_error() const noexcept { return last_error_; }

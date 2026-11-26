@@ -42,6 +42,7 @@ namespace components::operators {
 
         auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                       &services::disk::manager_disk_t::allocate_oids_batch,
+                                                      ctx->txn,
                                                       std::size_t{1});
         auto allocated = co_await std::move(oaf);
         // The identity is minted BEFORE the pg_cast row is built, and the round is checked: an unconsumed

@@ -209,7 +209,9 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
     void seed_pg_proc_row(const std::string& fname) {
         auto ctx = read_ctx();
         components::catalog::oid_batch_t batch;
-        batch.oids = disk_invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        batch.oids = disk_invoke(&manager_disk_t::allocate_oids_batch,
+                                 components::table::transaction_data::committed(),
+                                 std::size_t{1});
         const auto fn_oid = batch.allocate();
         auto writes =
             components::catalog::build_create_function_writes(resource_,

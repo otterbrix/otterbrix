@@ -34,6 +34,7 @@ namespace services::disk {
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::reclaim_oids>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_many>,
@@ -492,6 +493,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::vacuum_all, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::reclaim_oids>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::reclaim_oids, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>: {

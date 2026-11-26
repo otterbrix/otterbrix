@@ -246,6 +246,8 @@ namespace services::disk {
 
         unique_future<void> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
 
+        unique_future<std::pmr::vector<components::catalog::oid_t>> oids_in_use_inner(session_id_t session);
+
         // Compacts nothing (see vacuum_inner); kept only because operator_commit_transaction still sends it.
         unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_watermark);
 
@@ -343,6 +345,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_total_rows_inner,
                                                             &agent_disk_t::checkpoint_inner,
                                                             &agent_disk_t::vacuum_inner,
+                                                            &agent_disk_t::oids_in_use_inner,
                                                             &agent_disk_t::maybe_cleanup_inner,
                                                             &agent_disk_t::on_horizon_advanced_inner,
                                                             &agent_disk_t::storage_dropped_committed_inner,

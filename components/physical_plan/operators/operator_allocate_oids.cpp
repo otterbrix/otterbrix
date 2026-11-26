@@ -23,6 +23,7 @@ namespace components::operators {
         }
         auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::allocate_oids_batch,
+                                                    ctx->txn,
                                                     count_);
         auto batch = co_await std::move(af);
         target_node_->set_oids(std::move(batch));

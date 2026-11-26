@@ -128,6 +128,10 @@ namespace services::disk {
         checkpoint_all(session_id_t session, services::wal::id_t current_wal_id, uint64_t compact_watermark);
         // No compact_watermark: nothing here compacts, so no physical row id moves.
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
+        unique_future<core::error_t> reclaim_oids(session_id_t session,
+                                                  services::wal::id_t current_wal_id,
+                                                  services::wal::id_t oldest_retained_wal_id,
+                                                  uint64_t lowest_active_start_time);
         unique_future<void> maybe_cleanup_many(execution_context_t ctx,
                                                std::pmr::vector<components::catalog::oid_t> table_oids,
                                                uint64_t compact_watermark);
@@ -139,7 +143,8 @@ namespace services::disk {
                       components::catalog::oid_t source_oid,
                       components::catalog::oid_t target_oid);
 
-        unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
+        unique_future<std::vector<components::catalog::oid_t>>
+        allocate_oids_batch(components::table::transaction_data txn, std::size_t count);
 
         unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
         append_pg_catalog_row(execution_context_t ctx,
@@ -275,6 +280,7 @@ namespace services::disk {
                                                             &disk_contract::storage_release_block,
                                                             &disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
+                                                            &disk_contract::reclaim_oids,
                                                             &disk_contract::maybe_cleanup_many,
                                                             &disk_contract::resolve_function_by_name,
                                                             &disk_contract::find_cast_oid,

@@ -16,11 +16,9 @@
 
 // Only data_table_t::compact (reached solely via agent_disk_t::checkpoint_inner) gives a
 // surviving row a new physical id, so only a round that compacts owes an index rebuild
-// (manager_index_t::repopulate_table). VACUUM's vacuum_inner reaches only
-// cleanup_versions/cleanup_append, which swaps chunk_info and moves no row, so it owes zero.
+// (manager_index_t::repopulate_table). VACUUM and CHECKPOINT both run that round.
 // The two cases below check that with the same counter, index_repopulations(), plus that the
-// index still agrees with a full scan key by key -- a counter of 0 alone would also be
-// satisfied by an index that answers nothing.
+// index still agrees with a full scan key by key.
 
 namespace {
 
@@ -119,9 +117,8 @@ namespace {
 
 } // namespace
 
-// VACUUM's vacuum_inner never compacts (split free pool: a compact with no committed header
-// can only spend space, not free it), so it renumbers nothing and owes no index rebuild.
-TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_it_never_renumbers") {
+// VACUUM runs the CHECKPOINT round, whose compaction renumbers rows, so it owes the rebuild a CHECKPOINT owes.
+TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_over_an_indexed_table") {
     auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/vacuum"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
@@ -152,20 +149,14 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_
 
     REQUIRE(exec("VACUUM;")->is_success());
 
-    INFO("NOT VACUOUS: a checkpoint round inside the VACUUM would compact, and then a rebuild "
-         "would be owed after all");
-    REQUIRE(services::disk::table_checkpoints() == 0);
+    REQUIRE(services::disk::table_checkpoints() > 0);
+    CHECK(services::index::index_repopulations() > 0);
 
-    INFO("VACUUM moves no physical row id, so it owes no index rebuild at all");
-    CHECK(services::index::index_repopulations() == 0);
-
-    INFO("and the answer must be unchanged: the index says exactly what the full scan says");
+    INFO("the index says exactly what the full scan says over the renumbered rows");
     index_must_agree_with_the_full_scan(d, "vdb");
 
-    // A second VACUUM over the same unchanged table: still nothing to renumber or rebuild.
-    services::index::reset_index_repopulations();
+    INFO("a second VACUUM over the same table");
     REQUIRE(exec("VACUUM;")->is_success());
-    CHECK(services::index::index_repopulations() == 0);
     index_must_agree_with_the_full_scan(d, "vdb");
 }
 

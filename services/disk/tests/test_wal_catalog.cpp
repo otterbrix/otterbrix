@@ -431,7 +431,9 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
         fixture fx(dir);
         REQUIRE(pg_catalog_physical_sequence(dir).empty());
 
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{2});
         const catalog::oid_t dep_objid = oids[0];
         const catalog::oid_t idx_oid = oids[1];
 
@@ -647,7 +649,9 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
     {
         fixture fx(dir, /*wire_wal=*/false);
 
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t idx_oid = oids[0];
 
         auto idx_row = catalog::build_pg_index_row(&fx.resource,

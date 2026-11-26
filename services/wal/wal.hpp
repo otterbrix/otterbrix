@@ -132,6 +132,9 @@ namespace services::wal {
 
         unique_future<core::result_wrapper_t<wal::id_t>> current_wal_id(session_id_t session);
 
+        // The lowest record id still on disk or in the writer's page; the id_t maximum when there is none.
+        unique_future<core::result_wrapper_t<wal::id_t>> oldest_retained_wal_id(session_id_t session);
+
         unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_insert(session_id_t session,
                               components::catalog::oid_t table_oid,
@@ -191,6 +194,7 @@ namespace services::wal {
                                                             &wal_worker_t::rollback_to,
                                                             &wal_worker_t::truncate_before,
                                                             &wal_worker_t::current_wal_id,
+                                                            &wal_worker_t::oldest_retained_wal_id,
                                                             &wal_worker_t::write_physical_insert,
                                                             &wal_worker_t::write_physical_delete,
                                                             &wal_worker_t::write_physical_update,

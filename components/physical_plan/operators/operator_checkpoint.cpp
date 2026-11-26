@@ -27,6 +27,16 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::checkpoint) {}
 
     actor_zeta::unique_future<void> operator_checkpoint_t::await_async_and_resume(pipeline::context_t* ctx) {
+        if (auto round_error = co_await run_checkpoint_round(resource_, ctx); round_error.contains_error()) {
+            set_error(round_error);
+            mark_failed();
+            co_return;
+        }
+        mark_executed();
+    }
+
+    actor_zeta::unique_future<core::error_t> run_checkpoint_round(std::pmr::memory_resource* resource,
+                                                                  pipeline::context_t* ctx) {
         // flush_all_indexes first arms the durable rebuild_marker_path_ guard; a refusal here stops the round
         // before compaction. Per test_index_flush_refusal, skipping this lets clear()'s recursive
         // remove_directory erase an injected fault (a `metadata` path replaced by a directory) before
@@ -39,9 +49,7 @@ namespace components::operators {
             // that cannot reach the device must stop the round here rather than be logged
             // inside the agent and forgotten.
             if (auto flush_error = co_await std::move(fif); flush_error.contains_error()) {
-                set_error(flush_error);
-                mark_failed();
-                co_return;
+                co_return flush_error;
             }
         }
 
@@ -54,9 +62,7 @@ namespace components::operators {
                                                           ctx->session);
             auto current = co_await std::move(wif);
             if (current.has_error()) {
-                set_error(current.error());
-                mark_failed();
-                co_return;
+                co_return current.error();
             }
             wal_max_id = current.value();
         }
@@ -111,7 +117,7 @@ namespace components::operators {
         // committed_rows_snapshot(), so no caller can hand it a statement snapshot and compile.
         {
             auto rebuild_error = co_await services::index::repopulate_indexes_after_compaction(
-                resource_,
+                resource,
                 ctx->disk_address,
                 ctx->index_address,
                 ctx->session,
@@ -120,9 +126,7 @@ namespace components::operators {
             if (rebuild_error.contains_error()) {
                 // Fail the CHECKPOINT loudly rather than leave behind a lying index, and leave the
                 // journal alone — the truncate that would trim it is below this return.
-                set_error(rebuild_error);
-                mark_failed();
-                co_return;
+                co_return rebuild_error;
             }
         }
 
@@ -135,13 +139,11 @@ namespace components::operators {
             // refused means a segment could not be read — the WAL is not in the state this
             // CHECKPOINT reports, so say so instead of returning success over it.
             if (auto truncate_error = co_await std::move(wtf); truncate_error.contains_error()) {
-                set_error(truncate_error);
-                mark_failed();
-                co_return;
+                co_return truncate_error;
             }
         }
 
-        mark_executed();
+        co_return core::error_t::no_error();
     }
 
 } // namespace components::operators

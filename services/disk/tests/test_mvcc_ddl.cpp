@@ -111,7 +111,9 @@ TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions"
     fixture fx;
     auto uncommitted = TRANSACTION_ID_START + 1;
     {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const components::catalog::oid_t ns_oid = oids[0];
         auto writes =
             components::catalog::build_create_namespace_writes(&fx.resource,
@@ -234,7 +236,9 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     std::vector<components::pg_catalog_append_range_t> appends_for_test;
     {
         // The table, its row type and array type, and an attoid per column.
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{3 + cols.size()});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{3 + cols.size()});
         table_oid = oids[0];
         components::catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
@@ -307,7 +311,9 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit"
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     std::vector<components::pg_catalog_append_range_t> pending_ranges;
     {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const components::catalog::oid_t attoid = oids[0];
         auto row = components::catalog::build_pg_computed_column_row(&fx.resource,
                                                                      table_oid,
@@ -347,7 +353,9 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     std::vector<components::pg_catalog_append_range_t> pending_ranges;
     {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const components::catalog::oid_t attoid = oids[0];
         auto row = components::catalog::build_pg_computed_column_row(&fx.resource,
                                                                      table_oid,
@@ -390,7 +398,9 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_visible_in_same_txn") {
     const uint64_t txn1 = TRANSACTION_ID_START + 903;
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const components::catalog::oid_t attoid = oids[0];
         auto row = components::catalog::build_pg_computed_column_row(&fx.resource,
                                                                      table_oid,
@@ -459,7 +469,9 @@ TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
     const uint64_t txn1 = TRANSACTION_ID_START + 555;
     constexpr catalog::oid_t pg_ns = catalog::well_known_oid::pg_namespace_table;
 
-    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                          components::table::transaction_data::committed(),
+                          std::size_t{1});
     const components::catalog::oid_t ns_oid = oids[0];
     auto writes =
         components::catalog::build_create_namespace_writes(&fx.resource,

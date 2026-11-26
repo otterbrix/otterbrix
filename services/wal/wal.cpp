@@ -137,6 +137,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::current_wal_id, msg);
                 break;
             }
+            case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::oldest_retained_wal_id>: {
+                co_await actor_zeta::dispatch(this, &wal_worker_t::oldest_retained_wal_id, msg);
+                break;
+            }
             case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_insert, msg);
                 break;
@@ -168,6 +172,34 @@ namespace services::wal {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
         co_return core::result_wrapper_t<wal::id_t>{id_.load(std::memory_order_relaxed)};
+    }
+
+    wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
+    wal_worker_t::oldest_retained_wal_id(session_id_t /*session*/) {
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
+        }
+        wal::id_t oldest = writer_ ? writer_->buffered_page_lsn() : std::numeric_limits<wal::id_t>::max();
+        auto discovered = discover_segments();
+        if (discovered.has_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{discovered.error()};
+        }
+        for (const auto& seg_path : discovered.value()) {
+            wal_page_reader_t reader(this->resource(), seg_path);
+            if (!reader.is_open()) {
+                co_return core::result_wrapper_t<wal::id_t>{reader.open_error()};
+            }
+            if (reader.page_count() == 0) {
+                continue;
+            }
+            wal_page_header_t first{};
+            if (!reader.read_verified_page_header(1, first)) {
+                // what the segment starts with is unknown, so it may hold any id
+                co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+            }
+            oldest = std::min(oldest, first.page_lsn);
+        }
+        co_return core::result_wrapper_t<wal::id_t>{oldest};
     }
 
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>

@@ -97,20 +97,40 @@ namespace services::disk {
     // Direct replay methods: synchronous, no MVCC, for physical WAL replay.
 
     manager_disk_t::unique_future<std::vector<components::catalog::oid_t>>
-    manager_disk_t::allocate_oids_batch(std::size_t count) {
+    manager_disk_t::allocate_oids_batch(components::table::transaction_data txn, std::size_t count) {
         std::vector<components::catalog::oid_t> batch;
         batch.reserve(count);
         for (std::size_t i = 0; i < count; ++i) {
-            const auto oid = oid_gen_.allocate();
-            if (oid >= oid_reserved_until_) {
-                const components::catalog::oid_t bound{static_cast<unsigned>(oid) + OID_RESERVATION_BLOCK};
-                if (auto persisted = persist_oid_reservation(resource(), config_.path, bound);
+            if (oid_claimed_.empty() && oid_free_.has_released()) {
+                // claimed out of the file first: a restart must not find an oid free that was handed out
+                oid_free_set_t next{resource()};
+                next.assign(std::pmr::vector<oid_span_t>(oid_free_.spans(), resource()));
+                auto taken = next.claim(OID_RESERVATION_BLOCK);
+                if (auto persisted = persist_oid_free_set(resource(), config_.path, next.spans());
                     persisted.contains_error()) {
                     error(log_, "manager_disk_t::allocate_oids_batch: no oid is handed out: {}", persisted.what);
                     co_return std::vector<components::catalog::oid_t>{};
                 }
-                oid_reserved_until_ = bound;
+                oid_free_ = std::move(next);
+                oid_claimed_.assign(taken.rbegin(), taken.rend());
             }
+            components::catalog::oid_t oid;
+            if (!oid_claimed_.empty()) {
+                oid = oid_claimed_.back();
+                oid_claimed_.pop_back();
+            } else {
+                oid = oid_gen_.allocate();
+                if (oid >= oid_reserved_until_) {
+                    const components::catalog::oid_t bound{static_cast<unsigned>(oid) + OID_RESERVATION_BLOCK};
+                    if (auto persisted = persist_oid_reservation(resource(), config_.path, bound);
+                        persisted.contains_error()) {
+                        error(log_, "manager_disk_t::allocate_oids_batch: no oid is handed out: {}", persisted.what);
+                        co_return std::vector<components::catalog::oid_t>{};
+                    }
+                    oid_reserved_until_ = bound;
+                }
+            }
+            oid_outstanding_[oid] = txn.start_time;
             batch.push_back(oid);
         }
         co_return batch;

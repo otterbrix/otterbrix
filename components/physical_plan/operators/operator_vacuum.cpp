@@ -8,9 +8,13 @@
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
+
+#include "operator_checkpoint.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -43,11 +47,6 @@ namespace components::operators {
                                                           lowest);
             co_await std::move(cvf);
         }
-
-        // No index rebuild here: nothing on this route moves a physical row id. Teaching VACUUM to
-        // compact must bring the rebuild back together with arming manager_index_t::rebuild_marker_path_
-        // (flush_all_indexes arms it for the compacting orchestrations), above the vacuum_all call --
-        // a rebuild without that marker leaves a crash mid-rebuild undetectable at restart.
 
         // The rest of this operator is the pg_computed_column GC, which needs the DISK actor
         // and not the index one — so it is gated on the disk address, not on the index one.
@@ -100,6 +99,11 @@ namespace components::operators {
             }
         }
         if (pg_class_batches.empty()) {
+            if (auto offload_error = co_await offload_and_reclaim_(ctx); offload_error.contains_error()) {
+                set_error(offload_error);
+                mark_failed();
+                co_return;
+            }
             mark_executed();
             co_return;
         }
@@ -309,7 +313,49 @@ namespace components::operators {
             }
         }
 
+        if (auto offload_error = co_await offload_and_reclaim_(ctx); offload_error.contains_error()) {
+            set_error(offload_error);
+            mark_failed();
+            co_return;
+        }
         mark_executed();
+    }
+
+    // The full offload a restart would leave behind: the checkpoint round compacts (with its own index flush and
+    // rebuild), and what nothing names afterwards is given back to the oid allocator.
+    actor_zeta::unique_future<core::error_t> operator_vacuum_t::offload_and_reclaim_(pipeline::context_t* ctx) {
+        if (auto round_error = co_await run_checkpoint_round(resource_, ctx); round_error.contains_error()) {
+            co_return round_error;
+        }
+        // without a journal no record can outlive its oid
+        services::wal::id_t current_wal_id{0};
+        services::wal::id_t oldest_retained_wal_id = std::numeric_limits<services::wal::id_t>::max();
+        if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
+            auto [_wc, wcf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                          &services::wal::manager_wal_replicate_t::current_wal_id,
+                                                          ctx->session);
+            auto current = co_await std::move(wcf);
+            if (current.has_error()) {
+                co_return current.error();
+            }
+            current_wal_id = current.value();
+            auto [_wo, wof] =
+                actor_zeta::otterbrix::send(ctx->wal_address,
+                                            &services::wal::manager_wal_replicate_t::oldest_retained_wal_id,
+                                            ctx->session);
+            auto oldest = co_await std::move(wof);
+            if (oldest.has_error()) {
+                co_return oldest.error();
+            }
+            oldest_retained_wal_id = oldest.value();
+        }
+        auto [_ro, rof] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::reclaim_oids,
+                                                      ctx->session,
+                                                      current_wal_id,
+                                                      oldest_retained_wal_id,
+                                                      ctx->lowest_active_start_time);
+        co_return co_await std::move(rof);
     }
 
 } // namespace components::operators

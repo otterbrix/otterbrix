@@ -3886,8 +3886,9 @@ namespace services::collection::executor {
 
             // DDL OID-batch allocation via node_allocate_oids_t; `self` supplies the coroutine frame its memory_resource.
             // Must not `co_return {}` on failure — that reads as success and stamps a garbage identity.
-            auto allocate_oids_inline = [this, session, &context_storage, registries]([[maybe_unused]] executor_t* self,
-                                                                                      std::size_t count)
+            auto allocate_oids_inline =
+                [this, session, &context_storage, registries, resolve_txn]([[maybe_unused]] executor_t* self,
+                                                                           std::size_t count)
                 -> executor_t::unique_future<core::result_wrapper_t<std::vector<components::catalog::oid_t>>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context};
@@ -3911,7 +3912,8 @@ namespace services::collection::executor {
                                                      disk_address_,
                                                      index_address_,
                                                      wal_address_};
-                pctx.txn = components::table::transaction_data::committed();
+                // oids stay in use for VACUUM while it can still write rows naming them
+                pctx.txn = resolve_txn;
                 op->prepare();
                 auto drive_err = co_await drive_subplan_(op, &pctx);
                 if (drive_err.contains_error()) {

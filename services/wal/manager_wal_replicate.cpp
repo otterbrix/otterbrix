@@ -301,6 +301,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::current_wal_id, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::oldest_retained_wal_id>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::oldest_retained_wal_id, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::run_auto_checkpoint>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::run_auto_checkpoint, msg);
                 break;
@@ -654,6 +658,27 @@ namespace services::wal {
             }
         }
         co_return core::result_wrapper_t<wal::id_t>{max_id};
+    }
+
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
+    manager_wal_replicate_t::oldest_retained_wal_id(session_id_t session) {
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
+        }
+        wal::id_t oldest = std::numeric_limits<wal::id_t>::max();
+        for (auto& [db_oid, worker] : wal_actors_) {
+            auto [needs_sched, fut] =
+                actor_zeta::otterbrix::send(worker->address(), &wal_worker_t::oldest_retained_wal_id, session);
+            if (needs_sched) {
+                scheduler_->enqueue(worker.get());
+            }
+            auto wid = co_await std::move(fut);
+            if (wid.has_error()) {
+                co_return wid;
+            }
+            oldest = std::min(oldest, wid.value());
+        }
+        co_return core::result_wrapper_t<wal::id_t>{oldest};
     }
 
     manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>

@@ -624,6 +624,14 @@ namespace services::disk {
         }
         oid_gen_.seed(high_water);
         trace(log_, "manager_disk_t::restore_oid_generator_sync : seeded high_water={}", high_water);
+
+        auto free_set = read_oid_free_set(resource(), config_.path);
+        if (free_set.has_error()) {
+            return core::error_t(
+                free_set.error().type,
+                std::pmr::string{"refusing to start: " + std::string{free_set.error().what.c_str()}, resource()});
+        }
+        oid_free_.assign(std::move(free_set.value()));
         return core::error_t::no_error();
     }
 

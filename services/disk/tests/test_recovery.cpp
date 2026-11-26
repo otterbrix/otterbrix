@@ -172,7 +172,9 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     {
         recovery_fixture fx(dir);
         components::execution_context_t uncommitted_ctx{session_id_t{}, components::table::transaction_data{1, 0}, {}};
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         ns_oid = oids[0];
         REQUIRE(ns_oid != components::catalog::INVALID_OID);
         auto writes =
@@ -195,7 +197,9 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         REQUIRE_FALSE(res.found);
 
         INFO("restart creates new oid");
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         REQUIRE(oids.size() == 1);
         CHECK(oids[0] > ns_oid);
     }

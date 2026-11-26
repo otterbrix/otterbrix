@@ -254,7 +254,9 @@ TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
     REQUIRE_FALSE(fx.boot.restore_oid_generator_sync().contains_error());
 
-    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                          components::table::transaction_data::committed(),
+                          std::size_t{2});
     REQUIRE(oids.size() == 2);
     REQUIRE(oids[0] >= FIRST_USER_OID);
     REQUIRE(static_cast<unsigned>(oids[1]) == static_cast<unsigned>(oids[0]) + 1);
@@ -383,7 +385,9 @@ TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_
     const bool refused = fd2.boot.bootstrap_system_tables_sync().contains_error();
     if (!refused) {
         REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
-        auto oids = fd2.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fd2.invoke(&manager_disk_t::allocate_oids_batch,
+                               components::table::transaction_data::committed(),
+                               std::size_t{1});
         REQUIRE(oids.size() == 1);
         INFO("fresh oid " << oids[0] << " would be minted over the live namespace oid " << live_ns);
         CHECK(oids[0] > live_ns);

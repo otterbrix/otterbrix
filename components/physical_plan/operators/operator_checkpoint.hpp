@@ -16,6 +16,10 @@ namespace components::operators {
     checkpoint_repopulate_gate_t* dev_checkpoint_repopulate_gate();
 #endif
 
+    // The CHECKPOINT statement's round: index flush, checkpoint_all, index rebuild, WAL truncate. VACUUM runs it too.
+    [[nodiscard]] actor_zeta::unique_future<core::error_t> run_checkpoint_round(std::pmr::memory_resource* resource,
+                                                                                pipeline::context_t* ctx);
+
     // Index rebuild must run before WAL truncation, so a refused rebuild stops the round
     // before the WAL is trimmed (same order as manager_wal_replicate_t::run_auto_checkpoint).
     class operator_checkpoint_t final : public read_write_operator_t {

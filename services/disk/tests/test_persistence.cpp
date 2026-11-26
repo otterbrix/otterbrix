@@ -611,7 +611,9 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         test_create_table(fd, ns_oid, "t", std::move(cols));
         test_create_view(fd, ns_oid, "v");
-        auto probe = fd.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto probe = fd.invoke(&manager_disk_t::allocate_oids_batch,
+                               components::table::transaction_data::committed(),
+                               std::size_t{1});
         REQUIRE(probe.size() == 1);
         pre_restart_peak = oid_t{static_cast<unsigned>(probe[0]) - 1};
         fd.checkpoint();
@@ -620,7 +622,9 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
         fresh_disk fd2(dir);
         REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
         REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
-        auto next = fd2.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto next = fd2.invoke(&manager_disk_t::allocate_oids_batch,
+                               components::table::transaction_data::committed(),
+                               std::size_t{1});
         REQUIRE(next.size() == 1);
         REQUIRE(next[0] > pre_restart_peak);
     }
@@ -692,7 +696,9 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fd, ns_oid, "cc_t", std::move(cols));
 
-        auto attoids = fd.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto attoids = fd.invoke(&manager_disk_t::allocate_oids_batch,
+                                 components::table::transaction_data::committed(),
+                                 std::size_t{1});
         col_attoid = attoids[0];
         constexpr oid_t pg_attr = well_known_oid::pg_attribute_table;
         auto attr_row = catalog::build_pg_attribute_row(&fd.resource,

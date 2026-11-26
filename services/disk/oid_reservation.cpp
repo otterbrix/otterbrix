@@ -2,6 +2,8 @@
 
 #include <core/file/local_file_system.hpp>
 
+#include <absl/crc/crc32c.h>
+
 #include <string>
 #include <system_error>
 
@@ -71,6 +73,10 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
+    std::uint32_t oid_sidecar_crc(const void* data, std::size_t size) noexcept {
+        return static_cast<std::uint32_t>(absl::ComputeCrc32c({static_cast<const char*>(data), size}));
+    }
+
     std::filesystem::path oid_reservation_path(const std::filesystem::path& db_path) {
         return db_path / "oid_reservation";
     }
@@ -90,22 +96,26 @@ namespace services::disk {
                               path,
                               "exists but could not be opened");
         }
-        std::uint32_t bound = 0;
-        if (core::filesystem::read(fs, *file, &bound, sizeof(bound)) != static_cast<int64_t>(sizeof(bound))) {
+        // bound, crc32c(bound)
+        std::uint32_t record[2] = {0, 0};
+        if (file->file_size() != sizeof(record) ||
+            core::filesystem::read(fs, *file, record, sizeof(record)) != static_cast<int64_t>(sizeof(record)) ||
+            record[1] != oid_sidecar_crc(&record[0], sizeof(record[0]))) {
             return file_error(resource,
                               core::error_code_t::data_corruption,
                               "oid reservation",
                               path,
                               "does not hold an oid, so the oids handed out before the restart are unknown");
         }
-        return components::catalog::oid_t{bound};
+        return components::catalog::oid_t{record[0]};
     }
 
     core::error_t persist_oid_reservation(std::pmr::memory_resource* resource,
                                           const std::filesystem::path& db_path,
                                           components::catalog::oid_t bound) {
-        std::uint32_t raw = static_cast<unsigned>(bound);
-        return replace_file_durably(resource, oid_reservation_path(db_path), &raw, sizeof(raw), "oid reservation");
+        std::uint32_t record[2] = {static_cast<unsigned>(bound), 0};
+        record[1] = oid_sidecar_crc(&record[0], sizeof(record[0]));
+        return replace_file_durably(resource, oid_reservation_path(db_path), record, sizeof(record), "oid reservation");
     }
 
 } // namespace services::disk

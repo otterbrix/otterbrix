@@ -302,6 +302,7 @@ namespace core::filesystem {
                 fl.l_len = 0;
                 rc = fcntl(fd, F_SETLK, &fl);
                 if (rc == -1) {
+                    ::close(fd);
                     return nullptr;
                 }
             }

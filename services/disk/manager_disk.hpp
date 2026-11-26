@@ -169,21 +169,13 @@ namespace services::disk {
         collection_storage_entry_t(std::pmr::memory_resource* resource,
                                    std::vector<components::table::column_definition_t> columns,
                                    const std::filesystem::path& otbx_path_in,
-                                   bool is_computed_create)
-            : table_storage(resource, std::move(columns), otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
-            , otbx_path(otbx_path_in)
-            , is_computed(is_computed_create) {}
+                                   bool is_computed_create);
 
         /// Load existing table.otbx; `catalog_columns` overlays a never-checkpointed schema, ignored otherwise.
         collection_storage_entry_t(std::pmr::memory_resource* resource,
                                    const std::filesystem::path& otbx_path_in,
                                    std::vector<components::table::column_definition_t> catalog_columns,
-                                   bool is_computed_load = false)
-            : table_storage(resource, otbx_path_in, std::move(catalog_columns), is_computed_load)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
-            , otbx_path(otbx_path_in)
-            , is_computed(is_computed_load) {}
+                                   bool is_computed_load = false);
 
         /// Recreates the storage adapter too — its data_table_t& would dangle after the rebuild.
         void add_column(components::table::column_definition_t& col, std::pmr::memory_resource* res) {

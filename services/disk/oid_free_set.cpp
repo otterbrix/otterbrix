@@ -153,11 +153,17 @@ namespace services::disk {
             return free_set_error(resource, core::error_code_t::io_error, path, "could not be read whole");
         }
         std::uint64_t count = 0;
-        if (size < sizeof(count)) {
+        std::uint32_t stored_crc = 0;
+        if (size < sizeof(count) + sizeof(stored_crc)) {
             return free_set_error(resource, core::error_code_t::data_corruption, path, "has no span count");
         }
+        const std::size_t payload = size - sizeof(stored_crc);
+        std::memcpy(&stored_crc, bytes.data() + payload, sizeof(stored_crc));
+        if (stored_crc != oid_sidecar_crc(bytes.data(), payload)) {
+            return free_set_error(resource, core::error_code_t::data_corruption, path, "fails its checksum");
+        }
         std::memcpy(&count, bytes.data(), sizeof(count));
-        if (size != sizeof(count) + count * span_record_size) {
+        if (payload != sizeof(count) + count * span_record_size) {
             return free_set_error(resource,
                                   core::error_code_t::data_corruption,
                                   path,
@@ -193,7 +199,9 @@ namespace services::disk {
                                        const std::filesystem::path& db_path,
                                        const std::pmr::vector<oid_span_t>& spans) {
         const std::uint64_t count = spans.size();
-        std::pmr::vector<char> bytes(sizeof(count) + count * span_record_size, resource);
+        const std::size_t payload = sizeof(count) + count * span_record_size;
+        std::uint32_t crc = 0;
+        std::pmr::vector<char> bytes(payload + sizeof(crc), resource);
         char* cursor = bytes.data();
         std::memcpy(cursor, &count, sizeof(count));
         cursor += sizeof(count);
@@ -210,6 +218,8 @@ namespace services::disk {
             std::memcpy(cursor, &span.wal_id, sizeof(span.wal_id));
             cursor += sizeof(span.wal_id);
         }
+        crc = oid_sidecar_crc(bytes.data(), payload);
+        std::memcpy(cursor, &crc, sizeof(crc));
         return replace_file_durably(resource, oid_free_set_path(db_path), bytes.data(), bytes.size(), "oid free set");
     }
 

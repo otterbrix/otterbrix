@@ -2,6 +2,7 @@
 
 #include <core/pmr.hpp>
 #include <services/disk/oid_free_set.hpp>
+#include <services/disk/oid_reservation.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -118,6 +119,59 @@ TEST_CASE("services::disk::oid_free_set::file") {
             torn.write(reinterpret_cast<const char*>(&count), sizeof(count));
         }
         CHECK(services::disk::read_oid_free_set(&resource, directory).has_error());
+    }
+
+    SECTION("a flipped wal id byte") {
+        oid_free_set_t set(&resource);
+        set.rebuild(oids(&resource, {12}), oid_t{10}, oid_t{20}, 7);
+        REQUIRE_FALSE(services::disk::persist_oid_free_set(&resource, directory, set.spans()).contains_error());
+        {
+            // count (8) + begin, end, held (12): the first byte of the first span's wal id
+            std::fstream file((directory / "oid_free_set").string(), std::ios::binary | std::ios::in | std::ios::out);
+            REQUIRE(file.is_open());
+            file.seekp(20);
+            file.put('\x7f');
+            REQUIRE(file.good());
+        }
+        CHECK(services::disk::read_oid_free_set(&resource, directory).has_error());
+    }
+
+    std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("services::disk::oid_reservation::file") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto directory = std::filesystem::temp_directory_path() / "otterbrix_test_oid_reservation";
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+
+    SECTION("a round trip") {
+        REQUIRE_FALSE(services::disk::persist_oid_reservation(&resource, directory, oid_t{24577}).contains_error());
+        auto read = services::disk::read_oid_reservation(&resource, directory);
+        REQUIRE_FALSE(read.has_error());
+        CHECK(read.value() == oid_t{24577});
+    }
+
+    SECTION("a bare bound") {
+        {
+            std::ofstream bare((directory / "oid_reservation").string(), std::ios::binary | std::ios::trunc);
+            const std::uint32_t bound = 24577;
+            bare.write(reinterpret_cast<const char*>(&bound), sizeof(bound));
+        }
+        CHECK(services::disk::read_oid_reservation(&resource, directory).has_error());
+    }
+
+    SECTION("a flipped bound byte") {
+        REQUIRE_FALSE(services::disk::persist_oid_reservation(&resource, directory, oid_t{24577}).contains_error());
+        {
+            std::fstream file((directory / "oid_reservation").string(),
+                              std::ios::binary | std::ios::in | std::ios::out);
+            REQUIRE(file.is_open());
+            file.seekp(0);
+            file.put('\x7a');
+            REQUIRE(file.good());
+        }
+        CHECK(services::disk::read_oid_reservation(&resource, directory).has_error());
     }
 
     std::filesystem::remove_all(directory);

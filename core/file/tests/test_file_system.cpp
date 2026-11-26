@@ -10,6 +10,7 @@
 #include <string>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 using namespace std;
@@ -454,6 +455,61 @@ TEST_CASE("core::file::filesystem::close_reports_its_refusal") {
         REQUIRE(refused.contains_error());
         REQUIRE(refused.type == core::error_code_t::io_error);
         wrapped.reset();
+    }
+
+    remove_file(fs, fname);
+}
+
+TEST_CASE("core::file::filesystem::lock") {
+    local_file_system_t fs;
+    if (!directory_exists(fs, testing_directory)) {
+        create_directory(fs, testing_directory);
+    }
+    const auto fname = testing_directory / "LOCKED_FILE";
+    create_dummy_file(fname);
+
+    auto open_descriptors = [] {
+        std::size_t count = 0;
+        for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+            ++count;
+        }
+        return count;
+    };
+
+    SECTION("a lock another process holds") {
+        int locked[2];
+        int release[2];
+        REQUIRE(::pipe(locked) == 0);
+        REQUIRE(::pipe(release) == 0);
+        const pid_t child = ::fork();
+        REQUIRE(child >= 0);
+        if (child == 0) {
+            local_file_system_t child_fs;
+            auto held = open_file(child_fs, fname, file_flags::READ | file_flags::WRITE, file_lock_type::WRITE_LOCK);
+            const char ready = held ? 'y' : 'n';
+            [[maybe_unused]] auto sent = ::write(locked[1], &ready, 1);
+            char done = 0;
+            [[maybe_unused]] auto received = ::read(release[0], &done, 1);
+            ::_exit(0);
+        }
+        char ready = 0;
+        REQUIRE(::read(locked[0], &ready, 1) == 1);
+        REQUIRE(ready == 'y');
+
+        const auto before = open_descriptors();
+        auto refused = open_file(fs, fname, file_flags::READ | file_flags::WRITE, file_lock_type::WRITE_LOCK);
+        const auto after = open_descriptors();
+
+        const char done = 'd';
+        REQUIRE(::write(release[1], &done, 1) == 1);
+        int status = 0;
+        REQUIRE(::waitpid(child, &status, 0) == child);
+        for (int fd : {locked[0], locked[1], release[0], release[1]}) {
+            ::close(fd);
+        }
+
+        CHECK(refused == nullptr);
+        CHECK(after == before);
     }
 
     remove_file(fs, fname);

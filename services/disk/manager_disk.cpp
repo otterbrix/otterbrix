@@ -177,6 +177,32 @@ namespace services::disk {
 #endif
     }
 
+    // A refused table_storage has no table_: the adapter stays null and the caller reads construction_failed().
+    collection_storage_entry_t::collection_storage_entry_t(std::pmr::memory_resource* resource,
+                                                           std::vector<components::table::column_definition_t> columns,
+                                                           const std::filesystem::path& otbx_path_in,
+                                                           bool is_computed_create)
+        : table_storage(resource, std::move(columns), otbx_path_in)
+        , otbx_path(otbx_path_in)
+        , is_computed(is_computed_create) {
+        if (!table_storage.construction_failed()) {
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource);
+        }
+    }
+
+    collection_storage_entry_t::collection_storage_entry_t(
+        std::pmr::memory_resource* resource,
+        const std::filesystem::path& otbx_path_in,
+        std::vector<components::table::column_definition_t> catalog_columns,
+        bool is_computed_load)
+        : table_storage(resource, otbx_path_in, std::move(catalog_columns), is_computed_load)
+        , otbx_path(otbx_path_in)
+        , is_computed(is_computed_load) {
+        if (!table_storage.construction_failed()) {
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource);
+        }
+    }
+
 #ifdef DEV_MODE
     // Skips in-place UPDATE by design (data_table_t::update sets the modified flag itself); this net
     // only catches a future mutating method that forgets to.

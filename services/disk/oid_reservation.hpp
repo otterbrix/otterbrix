@@ -18,6 +18,9 @@ namespace services::disk {
                                                      std::size_t size,
                                                      const char* what);
 
+    // The crc32c trailer both oid sidecars end with: a torn or foreign file is refused, never read as oids.
+    [[nodiscard]] std::uint32_t oid_sidecar_crc(const void* data, std::size_t size) noexcept;
+
     std::filesystem::path oid_reservation_path(const std::filesystem::path& db_path);
 
     [[nodiscard]] core::result_wrapper_t<components::catalog::oid_t>

@@ -299,3 +299,7 @@ CMakeUserPresets.json
 build-tsan/
 build-*/
 .cache
+.local_data/
+# Tracy captures
+/tracy_profiles/
+*.tracy

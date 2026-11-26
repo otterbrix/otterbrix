@@ -1,5 +1,7 @@
 #include "transaction_manager.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <algorithm>
 #include <cassert>
 
@@ -12,6 +14,7 @@ namespace components::table {
         , in_flight_commits_(resource) {}
 
     transaction_t& transaction_manager_t::begin_transaction(session::session_id_t session, transaction_scope_t scope) {
+        OTB_ZONE_N("transaction_manager::begin_transaction");
         std::lock_guard guard(lock_);
         assert(active_.find(session) == active_.end() && "begin_transaction opens; resolve_transaction joins");
         return open_locked(session, scope);
@@ -46,6 +49,7 @@ namespace components::table {
     }
 
     uint64_t transaction_manager_t::commit(session::session_id_t session, commit_view_t* view) {
+        OTB_ZONE_N("transaction_manager::commit");
         std::lock_guard guard(lock_);
         auto it = active_.find(session);
         if (it == active_.end()) {
@@ -99,6 +103,7 @@ namespace components::table {
     }
 
     void transaction_manager_t::publish(uint64_t commit_id) {
+        OTB_ZONE_N("transaction_manager::publish");
         std::lock_guard guard(lock_);
         in_flight_commits_.erase(commit_id);
         // CAS loop: multiple commits may publish out of order; we keep the max ever published.
@@ -117,6 +122,7 @@ namespace components::table {
     }
 
     transaction_manager_t::snapshot_t transaction_manager_t::take_snapshot(std::pmr::memory_resource* resource) const {
+        OTB_ZONE_N("transaction_manager::take_snapshot");
         std::lock_guard guard(lock_);
         snapshot_t snap{resource};
         snap.snapshot_horizon = published_horizon_.load(std::memory_order_relaxed);
@@ -128,6 +134,7 @@ namespace components::table {
     }
 
     void transaction_manager_t::abort(session::session_id_t session) {
+        OTB_ZONE_N("transaction_manager::abort");
         std::lock_guard guard(lock_);
         auto it = active_.find(session);
         if (it == active_.end()) {

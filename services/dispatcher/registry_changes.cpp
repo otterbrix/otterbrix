@@ -1,5 +1,7 @@
 #include "registry_changes.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 namespace services::dispatcher {
 
     registry_changes_t registry_changes_t::copy(std::pmr::memory_resource* resource) const {
@@ -27,6 +29,7 @@ namespace services::dispatcher {
     core::error_t registry_changes_t::apply_to(components::compute::function_registry_t& registry,
                                                components::casts::cast_registry_t* cast_registry,
                                                std::pmr::memory_resource* resource) const {
+        OTB_ZONE_N("registry_changes::apply_to");
         for (const auto& change : functions) {
             if (!change.function) {
                 if (!registry.remove_function(change.uid)) {

@@ -9,6 +9,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <thread>
 
@@ -115,6 +116,7 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::execute_plan(const session_id_t& session,
                                             components::logical_plan::execution_plan_t plan) -> cursor_t_ptr {
+        OTB_ZONE_N("wrapper_dispatcher::execute_plan");
         using namespace components::logical_plan;
         if (!plan.parameters) {
             plan.parameters = make_parameter_node(resource());
@@ -126,6 +128,7 @@ namespace otterbrix {
     cursor_t_ptr wrapper_dispatcher_t::execute_sql(const components::session::session_id_t& session,
                                                    const std::string& query,
                                                    uint32_t render_id) {
+        OTB_ZONE_N("wrapper_dispatcher::execute_sql");
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
@@ -149,6 +152,7 @@ namespace otterbrix {
     cursor_t_ptr wrapper_dispatcher_t::copy_from(const components::session::session_id_t& session,
                                                  const std::string& query,
                                                  std::string_view data) {
+        OTB_ZONE_N("wrapper_dispatcher::copy_from");
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::copy_from session: {}, bytes: {}", session.data(), data.size());
@@ -175,6 +179,7 @@ namespace otterbrix {
     wrapper_dispatcher_t::describe_sql(const components::session::session_id_t& session,
                                        const std::string& query,
                                        const std::vector<std::pair<size_t, components::vector::vector_t>>& params) {
+        OTB_ZONE_N("wrapper_dispatcher::describe_sql");
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::describe sql session: {}", session.data());
@@ -201,6 +206,7 @@ namespace otterbrix {
 
     core::result_wrapper_t<Node*> wrapper_dispatcher_t::parse_statement_(std::pmr::memory_resource* arena,
                                                                          const std::string& query) {
+        OTB_ZONE_N("wrapper_dispatcher::parse_statement");
         auto parsed = raw_parser(arena, query.c_str(), parser_extensions_);
         if (parsed.has_error()) {
             // error_on: the message lives on the arena, which ends with the caller
@@ -235,6 +241,7 @@ namespace otterbrix {
         const std::string& query,
         const std::vector<std::pair<size_t, components::vector::vector_t>>& params,
         uint32_t render_id) {
+        OTB_ZONE_N("wrapper_dispatcher::execute_sql_with_params");
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
@@ -303,6 +310,7 @@ namespace otterbrix {
 
     cursor_t_ptr wrapper_dispatcher_t::send_plan(const session_id_t& session,
                                                  components::logical_plan::execution_plan_t plan) {
+        OTB_ZONE_N("wrapper_dispatcher::send_plan");
         // Guarded at the CALL SITE, not inside trace(): the argument is evaluated before
         // trace() is entered, so rendering the whole plan tree happened at every log level,
         // including off, and was then discarded.

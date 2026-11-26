@@ -1,5 +1,7 @@
 #include "wal.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <charconv>
@@ -658,9 +660,13 @@ namespace services::wal {
 
         // filter_committed_records must stay the one shared filter with bootstrap replay, or a recycled txn id's
         // backfill could pass uncommitted.
-        std::vector<record_t> result = filter_committed_records(std::move(all_records));
+        std::vector<record_t> result;
+        {
+            OTB_ZONE_N("wal::load/filter_sort");
+            result = filter_committed_records(std::move(all_records));
 
-        std::sort(result.begin(), result.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
+            std::sort(result.begin(), result.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        }
 
         trace(log_, "wal_worker::load , returning {} records", result.size());
         co_return core::result_wrapper_t<std::vector<record_t>>{std::move(result)};
@@ -726,6 +732,7 @@ namespace services::wal {
     }
 
     void wal_worker_t::remove_segment(const std::filesystem::path& seg_path) {
+        OTB_ZONE_N("wal::remove_segment");
         std::error_code ec;
         if (!std::filesystem::remove(seg_path, ec) || ec) {
             warn(log_,
@@ -738,6 +745,7 @@ namespace services::wal {
 
     // A CRC break here does not truncate anything, only bounds the high-water mark; replay stops at the break (STOP-A).
     core::error_t wal_worker_t::recover_from_disk() {
+        OTB_ZONE_N("wal::recover_from_disk");
         VALUE_OR_RETURN(auto segments, discover_segments());
         if (segments.empty()) {
             trace(log_,
@@ -846,6 +854,7 @@ namespace services::wal {
     }
 
     core::error_t wal_worker_t::ensure_writer() {
+        OTB_ZONE_N("wal::ensure_writer");
         if (writer_ && writer_->torn_tail()) {
             // A refused mid-record flush left an orphan PARTIAL_CONT span; any page appended after it reads as
             // continuation bytes, not records.
@@ -893,6 +902,7 @@ namespace services::wal {
     }
 
     core::result_wrapper_t<std::pmr::vector<std::filesystem::path>> wal_worker_t::discover_segments() {
+        OTB_ZONE_N("wal::discover_segments");
         return find_wal_segments(this->resource(), database_dir_, "wal_" + database_dir_name_ + "_");
     }
 

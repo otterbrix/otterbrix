@@ -34,6 +34,7 @@
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <iterator>
 #include <string_view>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner {
 
@@ -793,6 +794,7 @@ namespace components::planner {
 
     auto planner_t::create_plan(std::pmr::memory_resource* resource, logical_plan::node_ptr node)
         -> logical_plan::node_ptr {
+        OTB_ZONE_N("planner::create_plan");
         return walk(resource, std::move(node));
     }
 
@@ -800,6 +802,7 @@ namespace components::planner {
                                 logical_plan::node_ptr node,
                                 std::vector<catalog::oid_t> oids,
                                 std::size_t need) -> core::result_wrapper_t<logical_plan::node_ptr> {
+        OTB_ZONE_N("planner::create_plan_ddl");
         auto batch = catalog::oid_batch_t::make(resource, std::move(oids), need);
         if (batch.has_error()) {
             return batch.error();

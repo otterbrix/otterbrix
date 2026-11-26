@@ -76,6 +76,7 @@
 #include <components/planner/view_expansion.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <core/executor.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/collection/view_definition.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/dispatcher/enrich_logical_plan.hpp>
@@ -476,7 +477,10 @@ namespace services::collection::executor {
                                        components::table::transaction_data txn,
                                        components::logical_plan::execution_plan_t& plan) {
         std::pmr::vector<components::logical_plan::node_dynamic_cascade_delete_t*> drops{resource()};
-        collect_drop_seeds(plan.sub_queries.back().get(), plan.catalog_resolves, drops);
+        {
+            OTB_ZONE_N("executor::stamp_storage_targets_/collect_drops");
+            collect_drop_seeds(plan.sub_queries.back().get(), plan.catalog_resolves, drops);
+        }
         if (drops.empty()) {
             co_return core::error_t::no_error();
         }
@@ -534,24 +538,27 @@ namespace services::collection::executor {
             }
         }
         std::pmr::vector<std::string> connections{resource()};
-        for (std::size_t i = 0; i < drops.size(); ++i) {
-            std::pmr::vector<components::logical_plan::storage_target_t> targets{resource()};
-            for (const auto table_oid : found[i]) {
-                const auto* table = plan.catalog_resolves.table_md(table_oid);
-                if (table == nullptr) {
-                    // Unreachable: the closure read the table's pg_class row in this statement's snapshot.
-                    std::fprintf(stderr,
-                                 "stamp_storage_targets_: table oid %u of the DROP's closure did not resolve\n",
-                                 static_cast<unsigned>(table_oid));
-                    assert(false && "stamp_storage_targets_: a table of the DROP's closure did not resolve");
-                    std::abort();
+        {
+            OTB_ZONE_N("executor::stamp_storage_targets_/stamp");
+            for (std::size_t i = 0; i < drops.size(); ++i) {
+                std::pmr::vector<components::logical_plan::storage_target_t> targets{resource()};
+                for (const auto table_oid : found[i]) {
+                    const auto* table = plan.catalog_resolves.table_md(table_oid);
+                    if (table == nullptr) {
+                        // Unreachable: the closure read the table's pg_class row in this statement's snapshot.
+                        std::fprintf(stderr,
+                                     "stamp_storage_targets_: table oid %u of the DROP's closure did not resolve\n",
+                                     static_cast<unsigned>(table_oid));
+                        assert(false && "stamp_storage_targets_: a table of the DROP's closure did not resolve");
+                        std::abort();
+                    }
+                    if (std::find(connections.begin(), connections.end(), table->connection.t) == connections.end()) {
+                        connections.push_back(table->connection.t);
+                    }
+                    targets.push_back({table_oid, table->address, services::planner::qualified_name_of(*table)});
                 }
-                if (std::find(connections.begin(), connections.end(), table->connection.t) == connections.end()) {
-                    connections.push_back(table->connection.t);
-                }
-                targets.push_back({table_oid, table->address, services::planner::qualified_name_of(*table)});
+                drops[i]->set_storage_targets(std::move(targets));
             }
-            drops[i]->set_storage_targets(std::move(targets));
         }
         if (connections.empty()) {
             co_return core::error_t::no_error();
@@ -1006,6 +1013,7 @@ namespace services::collection::executor {
         core::error_t apply_takes(std::pmr::memory_resource* resource,
                                   block_candidate_t& candidate,
                                   std::pmr::vector<services::disk::block_take_t>& takes) {
+            OTB_ZONE_N("executor::apply_takes");
             using components::logical_plan::node_remote_t;
             std::pmr::vector<node_ptr*> order{resource};
             std::pmr::vector<std::size_t> sizes{resource};
@@ -1155,7 +1163,10 @@ namespace services::collection::executor {
                               std::pmr::vector<held_take_t>& held) {
         // The statement's own tree: each sub-query was offered when it ran as a statement of its own.
         std::pmr::vector<block_candidate_t> candidates{resource()};
-        collect_remote_blocks(plan.sub_queries.back(), candidates);
+        {
+            OTB_ZONE_N("executor::offer_blocks_/collect_blocks");
+            collect_remote_blocks(plan.sub_queries.back(), candidates);
+        }
         if (candidates.empty()) {
             co_return core::error_t::no_error();
         }
@@ -1794,6 +1805,7 @@ namespace services::collection::executor {
 
     core::error_t executor_t::check_connection_target_(const components::logical_plan::execution_plan_t& plan,
                                                        const qualified_name_t& target) const {
+        OTB_ZONE_N("executor::check_connection_target_");
         using components::logical_plan::node_type;
         const auto* root = plan.sub_queries.back().get();
         const auto type = root->type();
@@ -1899,6 +1911,7 @@ namespace services::collection::executor {
     // without IF NOT EXISTS reports a column named twice before the table that already exists.
     core::result_wrapper_t<executor_t::target_outcome_t>
     executor_t::decide_target_(components::logical_plan::execution_plan_t& plan, const qualified_name_t& target) {
+        OTB_ZONE_N("executor::decide_target_");
         using components::logical_plan::node_type;
         auto* root = plan.sub_queries.back().get();
         if (root == nullptr) {
@@ -1951,6 +1964,7 @@ namespace services::collection::executor {
 
     core::error_t executor_t::check_drop_target_(const components::logical_plan::execution_plan_t& plan,
                                                  const qualified_name_t& target) const {
+        OTB_ZONE_N("executor::check_drop_target_");
         using components::logical_plan::drop_target_kind;
         using components::logical_plan::node_drop_t;
         const auto* drop_node = static_cast<const node_drop_t*>(plan.sub_queries.back().get());
@@ -2027,7 +2041,10 @@ namespace services::collection::executor {
                                       const std::pmr::vector<expanded_view_t>& expanded_views) {
         auto* view = static_cast<components::logical_plan::node_create_view_t*>(plan.sub_queries.back().get());
         const auto body = view->body();
-        services::dispatcher::resolve_expression_types(body, &plan.catalog_resolves);
+        {
+            OTB_ZONE_N("executor::validate_create_view_/resolve_types");
+            services::dispatcher::resolve_expression_types(body, &plan.catalog_resolves);
+        }
         if (auto vt_err =
                 services::dispatcher::validate_types(resource(), &plan.catalog_resolves, body.get(), settings);
             vt_err.contains_error()) {
@@ -2109,6 +2126,7 @@ namespace services::collection::executor {
     executor_t::check_alter_subcommands_(const components::logical_plan::catalog_resolves_t& resolves,
                                          const components::logical_plan::resolved_table_metadata_t& table,
                                          std::vector<components::logical_plan::alter_table_subcommand_t>& subcommands) {
+        OTB_ZONE_N("executor::check_alter_subcommands_");
         using components::logical_plan::alter_table_kind;
         // The columns as each subcommand finds them: the earlier subcommands of the statement applied, as PostgreSQL
         // 18 checks them one after another. All of them are checked before any runs, so a connection's backend sees
@@ -2850,6 +2868,7 @@ namespace services::collection::executor {
     executor_t::prepare_registry_change_(components::logical_plan::execution_plan_t& plan,
                                          statement_registries_t registries,
                                          components::compute::function_uid reserved_uid) {
+        OTB_ZONE_N("executor::prepare_registry_change_");
         using components::logical_plan::node_type;
         using components::types::logical_type;
         services::dispatcher::registry_changes_t change;
@@ -3216,9 +3235,17 @@ namespace services::collection::executor {
                                                                            set_place_name);
         }
 
-        services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
-        register_call_schemas(resource(), plan.sub_queries.back().get(), *registries.functions, plan.catalog_resolves);
-        register_registry_change_names(resource(), plan.sub_queries.back().get(), plan.catalog_resolves);
+        {
+            OTB_ZONE_N("executor::execute_statement_/register_targets");
+            services::dispatcher::register_plan_targets(resource(),
+                                                        plan.sub_queries.back().get(),
+                                                        &plan.catalog_resolves);
+            register_call_schemas(resource(),
+                                  plan.sub_queries.back().get(),
+                                  *registries.functions,
+                                  plan.catalog_resolves);
+            register_registry_change_names(resource(), plan.sub_queries.back().get(), plan.catalog_resolves);
+        }
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.settings);
         context_storage.place = place;
         context_storage.disk_address = disk_address_;
@@ -3429,6 +3456,7 @@ namespace services::collection::executor {
             co_return execute_result_t{make_cursor(resource(), std::move(crossing))};
         }
         if (plan.sub_queries.back()) {
+            OTB_ZONE_N("executor::execute_statement_/bind_catalog_data");
             services::dispatcher::bind_catalog_data(plan.sub_queries.back().get(), plan.catalog_resolves);
             // With the CHECK predicates bind_catalog_data brought.
             scope_calls(plan.sub_queries.back().get(), plan.catalog_resolves);
@@ -3725,6 +3753,7 @@ namespace services::collection::executor {
                 [[fallthrough]];
             }
             default: {
+                OTB_ZONE_N("executor::execute_statement_/validate");
                 services::dispatcher::resolve_expression_types(plan.sub_queries.back(), &plan.catalog_resolves);
                 auto vt_err = services::dispatcher::validate_types(resource(),
                                                                    &plan.catalog_resolves,
@@ -3865,8 +3894,11 @@ namespace services::collection::executor {
                 root != nullptr && root->type() == components::logical_plan::node_type::create_collection_t) {
                 root->set_target(in_own_names(plan.catalog_resolves, root->target()));
             }
-            components::planner::planner_t planner;
-            plan.sub_queries.back() = planner.create_plan(resource(), std::move(plan.sub_queries.back()));
+            {
+                OTB_ZONE_N("executor::execute_statement_/plan");
+                components::planner::planner_t planner;
+                plan.sub_queries.back() = planner.create_plan(resource(), std::move(plan.sub_queries.back()));
+            }
 
             // Re-populate known_oids/table_metadata from the freshly-stamped tree (captured before the executor's
             // own resolve ran) — without it, create_plan_match SEGFAULTs on a scan-less match.
@@ -4125,11 +4157,14 @@ namespace services::collection::executor {
                 }
             }
         }
-        plan.sub_queries.back() = components::planner::optimize(resource(),
-                                                                std::move(plan.sub_queries.back()),
-                                                                plan.parameters.get(),
-                                                                context_storage.execution_context,
-                                                                context_storage.indexes);
+        {
+            OTB_ZONE_N("executor::execute_statement_/optimize");
+            plan.sub_queries.back() = components::planner::optimize(resource(),
+                                                                    std::move(plan.sub_queries.back()),
+                                                                    plan.parameters.get(),
+                                                                    context_storage.execution_context,
+                                                                    context_storage.indexes);
+        }
         const components::execution_context_t statement_ctx{session,
                                                             resolve_txn,
                                                             context_storage.execution_context.timezone_offset};
@@ -4661,6 +4696,7 @@ namespace services::collection::executor {
     plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
                                       const components::logical_plan::storage_parameters& parameters,
                                       services::context_storage_t&& context_storage) {
+        OTB_ZONE_N("executor::traverse_plan_");
         std::stack<components::operators::operator_ptr> look_up;
         std::stack<components::operators::operator_ptr> sub_plans;
         look_up.push(plan);
@@ -4693,6 +4729,7 @@ namespace services::collection::executor {
 
     pipeline_run_t executor_t::start_pipeline_(components::operators::operator_t* root,
                                                components::pipeline::context_t* ctx) {
+        OTB_ZONE_N("executor::start_pipeline_");
         namespace ops = components::operators;
 #ifdef DEV_MODE
         g_streaming_pipeline_runs.fetch_add(1, std::memory_order_relaxed);
@@ -4765,6 +4802,8 @@ namespace services::collection::executor {
 
         // A batch from chain[from - 1] through the operators above it; what comes out is the run's.
         auto push_from = [&](std::size_t from, components::vector::data_chunk_t&& batch) -> core::error_t {
+            // Synchronous: the zone closes when the lambda returns, before the caller's next co_await.
+            OTB_ZONE_N("executor::pump_pipeline_/push");
             ops::chunks_vector_t stage{resource()};
             stage.push_back(std::move(batch));
             for (std::size_t i = from; i < chain.size(); ++i) {
@@ -4956,7 +4995,10 @@ namespace services::collection::executor {
         for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
             auto right = op->right();
             if (right && !right->is_executed()) {
-                right->prepare();
+                {
+                    OTB_ZONE_N("executor::materialize_build_sides_/prepare");
+                    right->prepare();
+                }
                 auto err = co_await drive_opened_subplan_(right, ctx);
                 if (err.contains_error()) {
                     co_return err;
@@ -5001,6 +5043,7 @@ namespace services::collection::executor {
     void executor_t::open_sources_(components::operators::operator_t* root,
                                    components::pipeline::context_t* ctx,
                                    opened_sources_t& opened) {
+        OTB_ZONE_N("executor::open_sources_");
         std::pmr::vector<components::operators::operator_t*> ops{resource()};
         collect_unexecuted(root, ops);
         for (auto* op : ops) {
@@ -5083,17 +5126,23 @@ namespace services::collection::executor {
                 core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"run_subplan: null root", resource()}});
         }
-        root->prepare();
+        {
+            OTB_ZONE_N("executor::run_subplan/prepare");
+            root->prepare();
+        }
         auto err = co_await drive_subplan_(root, ctx);
         if (err.contains_error()) {
             co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
         }
         ops::chunks_vector_t out{resource()};
-        if (root->output()) {
-            const auto& chunks = root->output()->chunks();
-            out.reserve(chunks.size());
-            for (const auto& c : chunks) {
-                out.push_back(c.partial_copy(resource(), 0, c.size()));
+        {
+            OTB_ZONE_N("executor::run_subplan/copy_output");
+            if (root->output()) {
+                const auto& chunks = root->output()->chunks();
+                out.reserve(chunks.size());
+                for (const auto& c : chunks) {
+                    out.push_back(c.partial_copy(resource(), 0, c.size()));
+                }
             }
         }
         co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(out));
@@ -5103,6 +5152,7 @@ namespace services::collection::executor {
                                                                        const plan_t& plan_data,
                                                                        components::table::transaction_data txn,
                                                                        uint64_t lowest_active_start_time) {
+        OTB_ZONE_N("executor::make_pipeline_context_");
         components::pipeline::context_t context{session,
                                                 address(),
                                                 parent_address_,
@@ -5221,6 +5271,7 @@ namespace services::collection::executor {
 
     std::optional<execute_result_t> executor_t::start_portal_(portal_t& portal,
                                                               services::context_storage_t context_storage) {
+        OTB_ZONE_N("executor::start_portal_");
         using namespace components::logical_plan;
         auto& plan = portal.plan;
 
@@ -5327,7 +5378,10 @@ namespace services::collection::executor {
 
     executor_t::unique_future<core::error_t> executor_t::begin_piece_(portal_t& portal,
                                                                       components::operators::operator_ptr piece) {
-        piece->prepare();
+        {
+            OTB_ZONE_N("executor::begin_piece_/prepare");
+            piece->prepare();
+        }
 
         // Top-down, as PostgreSQL starts a Limit before it asks below for a row: the Limit nodes of this piece
         // and of the pieces above it (the path up to the plan root, outermost first) are started first; those of
@@ -5436,59 +5490,62 @@ namespace services::collection::executor {
             }
         }
 
-        for (auto& a : pipeline_context.pg_catalog_appends) {
-            result_tracking.pg_catalog_appends.push_back(std::move(a));
-        }
-        for (auto& d : pipeline_context.pg_catalog_delete_tables) {
-            result_tracking.pg_catalog_delete_tables.insert(std::move(d));
-        }
-        for (auto& bf : pipeline_context.pg_attribute_commit_id_backfills) {
-            result_tracking.pg_attribute_commit_id_backfills.push_back(bf);
-        }
-        if (!pipeline_context.applied_settings.empty()) {
-            result_tracking.applied_setting_scope = pipeline_context.applied_setting_scope;
-            result_tracking.applied_settings = std::move(pipeline_context.applied_settings);
-            pipeline_context.applied_settings.clear();
-        }
-        if (pipeline_context.prepared_change.kind != components::logical_plan::prepared_change_t::kind_t::none) {
-            result_tracking.prepared_change = std::move(pipeline_context.prepared_change);
-            pipeline_context.prepared_change = {};
-        }
-        pipeline_context.pg_catalog_appends.clear();
-        pipeline_context.pg_catalog_delete_tables.clear();
-        pipeline_context.pg_attribute_commit_id_backfills.clear();
+        {
+            OTB_ZONE_N("executor::end_piece_/collect_results");
+            for (auto& a : pipeline_context.pg_catalog_appends) {
+                result_tracking.pg_catalog_appends.push_back(std::move(a));
+            }
+            for (auto& d : pipeline_context.pg_catalog_delete_tables) {
+                result_tracking.pg_catalog_delete_tables.insert(std::move(d));
+            }
+            for (auto& bf : pipeline_context.pg_attribute_commit_id_backfills) {
+                result_tracking.pg_attribute_commit_id_backfills.push_back(bf);
+            }
+            if (!pipeline_context.applied_settings.empty()) {
+                result_tracking.applied_setting_scope = pipeline_context.applied_setting_scope;
+                result_tracking.applied_settings = std::move(pipeline_context.applied_settings);
+                pipeline_context.applied_settings.clear();
+            }
+            if (pipeline_context.prepared_change.kind != components::logical_plan::prepared_change_t::kind_t::none) {
+                result_tracking.prepared_change = std::move(pipeline_context.prepared_change);
+                pipeline_context.prepared_change = {};
+            }
+            pipeline_context.pg_catalog_appends.clear();
+            pipeline_context.pg_catalog_delete_tables.clear();
+            pipeline_context.pg_attribute_commit_id_backfills.clear();
 
-        lift_ranges_(portal, pipeline_context);
-        for (auto oid : pipeline_context.dropped_storage_oids) {
-            result_tracking.dropped_storage_oids.push_back(oid);
-        }
-        pipeline_context.dropped_storage_oids.clear();
-        for (auto oid : pipeline_context.created_storage_oids) {
-            result_tracking.created_storage_oids.push_back(oid);
-        }
-        pipeline_context.created_storage_oids.clear();
-        for (auto& index : pipeline_context.created_indexes) {
-            result_tracking.created_indexes.push_back(std::move(index));
-        }
-        pipeline_context.created_indexes.clear();
-        for (auto& rows : pipeline_context.referenced_deletes) {
-            result_tracking.referenced_deletes.push_back(std::move(rows));
-        }
-        pipeline_context.referenced_deletes.clear();
-        for (const auto& object : pipeline_context.dropped_objects) {
-            result_tracking.dropped_objects.push_back(object);
-        }
-        pipeline_context.dropped_objects.clear();
-        for (auto& dropped : pipeline_context.dropped_functions) {
-            result_tracking.dropped_functions.push_back(std::move(dropped));
-        }
-        pipeline_context.dropped_functions.clear();
-        for (auto& rows : pipeline_context.host_rows) {
-            result_tracking.host_rows.push_back(std::move(rows));
-        }
-        pipeline_context.host_rows.clear();
-        if (pipeline_context.committed_id != 0) {
-            result_tracking.commit_id = pipeline_context.committed_id;
+            lift_ranges_(portal, pipeline_context);
+            for (auto oid : pipeline_context.dropped_storage_oids) {
+                result_tracking.dropped_storage_oids.push_back(oid);
+            }
+            pipeline_context.dropped_storage_oids.clear();
+            for (auto oid : pipeline_context.created_storage_oids) {
+                result_tracking.created_storage_oids.push_back(oid);
+            }
+            pipeline_context.created_storage_oids.clear();
+            for (auto& index : pipeline_context.created_indexes) {
+                result_tracking.created_indexes.push_back(std::move(index));
+            }
+            pipeline_context.created_indexes.clear();
+            for (auto& rows : pipeline_context.referenced_deletes) {
+                result_tracking.referenced_deletes.push_back(std::move(rows));
+            }
+            pipeline_context.referenced_deletes.clear();
+            for (const auto& object : pipeline_context.dropped_objects) {
+                result_tracking.dropped_objects.push_back(object);
+            }
+            pipeline_context.dropped_objects.clear();
+            for (auto& dropped : pipeline_context.dropped_functions) {
+                result_tracking.dropped_functions.push_back(std::move(dropped));
+            }
+            pipeline_context.dropped_functions.clear();
+            for (auto& rows : pipeline_context.host_rows) {
+                result_tracking.host_rows.push_back(std::move(rows));
+            }
+            pipeline_context.host_rows.clear();
+            if (pipeline_context.committed_id != 0) {
+                result_tracking.commit_id = pipeline_context.committed_id;
+            }
         }
         co_return core::error_t::no_error();
     }
@@ -5550,18 +5607,21 @@ namespace services::collection::executor {
             // A root the pipeline pushed into that executed itself (a write and its RETURNING) answers its own output;
             // the rows of a root that is the pipeline's input (it ran before the pipeline, or it is a WITH RECURSIVE
             // whose rows the pipeline pumps) went through the carry already.
-            const auto& run = portal.root_run;
-            const bool root_is_input = run.op_start >= run.chain.size();
-            const bool input_pumped = !run.sourceless_sink_root || run.pumpable_ancestors;
-            if (plan->is_executed() && !(root_is_input && input_pumped)) {
-                portal.carry.clear();
-                if (plan->output()) {
-                    for (auto& chunk : plan->output()->chunks()) {
-                        portal.carry.push_back(std::move(chunk));
+            {
+                OTB_ZONE_N("executor::pump_portal_/collect_output");
+                const auto& run = portal.root_run;
+                const bool root_is_input = run.op_start >= run.chain.size();
+                const bool input_pumped = !run.sourceless_sink_root || run.pumpable_ancestors;
+                if (plan->is_executed() && !(root_is_input && input_pumped)) {
+                    portal.carry.clear();
+                    if (plan->output()) {
+                        for (auto& chunk : plan->output()->chunks()) {
+                            portal.carry.push_back(std::move(chunk));
+                        }
                     }
+                } else if (!plan->is_executed()) {
+                    plan->mark_executed();
                 }
-            } else if (!plan->is_executed()) {
-                plan->mark_executed();
             }
             if (plan->has_error()) {
                 lift_ranges_(portal, ctx);
@@ -5914,14 +5974,17 @@ namespace services::collection::executor {
                 constraint.direction = direction;
                 constraints.add(std::move(constraint));
             };
-            for (const auto& append : drain.base_appends) {
-                request_constraints(append.table_oid, resolve_direction::outgoing);
-            }
-            for (const auto table_oid : drain.base_delete_tables) {
-                request_table(table_oid);
-            }
-            for (const auto& removed : drain.referenced_deletes) {
-                request_constraints(removed.table_oid, resolve_direction::referencing);
+            {
+                OTB_ZONE_N("executor::run_commit_pipeline_/collect_resolve_requests");
+                for (const auto& append : drain.base_appends) {
+                    request_constraints(append.table_oid, resolve_direction::outgoing);
+                }
+                for (const auto table_oid : drain.base_delete_tables) {
+                    request_table(table_oid);
+                }
+                for (const auto& removed : drain.referenced_deletes) {
+                    request_constraints(removed.table_oid, resolve_direction::referencing);
+                }
             }
             auto root = boost::intrusive_ptr<components::logical_plan::node_t>(
                 new components::logical_plan::node_sequence_t(resource()));
@@ -5944,6 +6007,7 @@ namespace services::collection::executor {
             if (resolved.cursor->is_error()) {
                 input.resolve_error = resolved.cursor->get_error();
             } else {
+                OTB_ZONE_N("executor::run_commit_pipeline_/resolve_fk_key_casts");
                 input.resolve_error =
                     services::dispatcher::resolve_fk_key_casts(resource(), *own_registries_().casts, resolves);
             }

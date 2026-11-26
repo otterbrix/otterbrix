@@ -2,6 +2,8 @@
 
 #include "btree_record_codec.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <cassert>
 #include <cstdlib>
 
@@ -64,6 +66,7 @@ namespace services::index {
     }
 
     core::error_t btree_index_disk_t::force_flush() {
+        OTB_ZONE_N("index::btree_disk::force_flush");
         if (db_) {
             RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         }
@@ -99,6 +102,7 @@ namespace services::index {
     } // namespace
 
     core::error_t btree_index_disk_t::find(const key_t& value, result& res) const {
+        OTB_ZONE_N("index::btree_disk::find");
         RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         const auto& index = value;
         size_t count = db_->item_count(index);
@@ -118,6 +122,7 @@ namespace services::index {
     core::error_t btree_index_disk_t::scan_range(components::expressions::compare_type compare,
                                                  const key_t& value,
                                                  result& res) const {
+        OTB_ZONE_N("index::btree_disk::scan_range");
         using components::expressions::compare_type;
 
         RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
@@ -182,11 +187,13 @@ namespace services::index {
     }
 
     void btree_index_disk_t::drop() {
+        OTB_ZONE_N("index::btree_disk::drop");
         db_.reset();
         core::filesystem::remove_directory(fs_, path_);
     }
 
     core::error_t btree_index_disk_t::clear() {
+        OTB_ZONE_N("index::btree_disk::clear");
         // Wipes tree contents in place (unlike drop(), the instance stays usable): re-creates an empty btree.
         db_.reset();
         const bool directory_removed = core::filesystem::remove_directory(fs_, path_);

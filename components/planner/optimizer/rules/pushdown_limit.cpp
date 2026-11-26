@@ -6,6 +6,7 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -119,6 +120,7 @@ namespace components::planner::optimizer {
     } // namespace
 
     logical_plan::node_ptr pushdown_limit(std::pmr::memory_resource* /*resource*/, logical_plan::node_ptr root) {
+        OTB_ZONE_N("optimizer::pushdown_limit");
         walk(root);
         return root;
     }

@@ -5,6 +5,7 @@
 #include <components/vector/cell_equal.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/operations_helper.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::operators {
 
@@ -92,6 +93,7 @@ namespace components::operators {
 
     core::error_t operator_hash_group_t::build_plan(pipeline::context_t* pipeline_context,
                                                     const vector::data_chunk_t& probe) {
+        OTB_ZONE_N("op::hash_group::build_plan");
         auto types = probe.types();
         graph_ = std::make_unique<execution_dag::execution_dag_t>(resource_, vector::DEFAULT_VECTOR_CAPACITY);
 
@@ -209,6 +211,7 @@ namespace components::operators {
     }
 
     core::error_t operator_hash_group_t::resolve_groups(vector::data_chunk_t& keys) {
+        OTB_ZONE_N("op::hash_group::resolve_groups");
         const uint64_t count = keys.size();
         if (keys.column_count() == 0) {
             // No GROUP BY: the whole input is one group, which exists even over zero rows. Every
@@ -253,6 +256,7 @@ namespace components::operators {
 
     core::error_t
     operator_hash_group_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        OTB_ZONE_N("op::hash_group::push");
         // SINK: fold this batch into the group table and append nothing. What is retained is the
         // group keys and one accumulator per group per aggregate — never the rows.
         if (input.size() > 0) {
@@ -304,6 +308,7 @@ namespace components::operators {
     }
 
     core::error_t operator_hash_group_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
+        OTB_ZONE_N("op::hash_group::finalize");
         // GROUP BY over an empty input has no groups, so it emits no ROWS — but it still emits its columns
         const bool no_groups = !keys_.empty() && group_count_ == 0;
         if (!plan_built_) {

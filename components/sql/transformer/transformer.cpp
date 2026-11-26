@@ -6,6 +6,7 @@
 #include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/extension.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::sql::transform {
     namespace {
@@ -69,6 +70,7 @@ namespace components::sql::transform {
     } // namespace
 
     transform_result transformer::transform(Node& node) {
+        OTB_ZONE_N("transformer::transform");
         logical_plan::execution_plan_t plan(resource_);
 
         auto root = transform(node, &plan);
@@ -104,6 +106,7 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform(Node& node,
                                                                           logical_plan::execution_plan_t* plan) {
+        OTB_ZONE_N("transformer::transform");
         core::result_wrapper_t<logical_plan::node_ptr> log_node{nullptr};
         switch (node.type) {
             case T_CreatedbStmt:

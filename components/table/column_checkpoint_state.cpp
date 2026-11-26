@@ -13,6 +13,7 @@
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/buffer_handle.hpp>
 #include <components/table/storage/buffer_manager.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::table {
 
@@ -173,6 +174,7 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     column_checkpoint_state_t::flush_segment(column_segment_t& segment, uint64_t row_start, uint64_t tuple_count) {
+        OTB_ZONE_N("column_checkpoint_state::flush_segment");
         auto& block_manager = column_data_.block_manager();
 
         const auto phys = segment.type.to_physical_type();

@@ -4,6 +4,7 @@
 #include <components/expressions/forward.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_builders.hpp>
+#include <core/tracy/tracy.hpp>
 #include <cstring>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
@@ -41,6 +42,7 @@ namespace components::operators {
 
     core::error_t index_scan::recheck_answered_rows_(const pipeline::context_t* ctx,
                                                      const vector::vector_t& key) const {
+        OTB_ZONE_N("op::index_scan::recheck_answered_rows");
         if (key_chunk_col_ < 0) {
             return core::error_t::no_error();
         }

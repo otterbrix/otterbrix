@@ -1,6 +1,8 @@
 #include "wal_page_reader.hpp"
 #include "wal_binary.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <algorithm>
 #include <cstring>
 
@@ -87,6 +89,7 @@ namespace services::wal {
     }
 
     wal_page_reader_t::segment_scan_t wal_page_reader_t::scan_pages() {
+        OTB_ZONE_N("wal::page_reader::scan_pages");
         segment_scan_t scan;
         if (!is_open()) {
             return scan;
@@ -146,6 +149,7 @@ namespace services::wal {
     // one, so a page continues the previous one exactly when that page spills and this page's page_lsn names the
     // spilled record (ids are unique, and a page appended after a restart starts past every id already written).
     core::result_wrapper_t<std::vector<record_t>> wal_page_reader_t::read_all_records(id_t after_id) {
+        OTB_ZONE_N("wal::page_reader::read_all_records");
         // AN UNREADABLE SEGMENT IS NOT AN EMPTY ONE. Returning {} here is what made every
         // committed transaction living in this segment disappear from startup replay in
         // silence; the caller now has to look at the refusal before it looks at the rows.

@@ -54,6 +54,7 @@
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_transaction.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace services::planner {
 
@@ -174,6 +175,7 @@ namespace services::planner {
                               const components::logical_plan::node_ptr& node,
                               components::logical_plan::limit_t limit,
                               const components::logical_plan::storage_parameters* params) {
+        OTB_ZONE_N("plan_generator::create_plan");
         switch (node->type()) {
             case node_type::aggregate_t:
                 return impl::create_plan_aggregate(context, function_registry, node, std::move(limit), params);

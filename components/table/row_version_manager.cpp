@@ -1,4 +1,6 @@
 #include "row_version_manager.hpp"
+
+#include <core/tracy/tracy.hpp>
 #include <algorithm>
 #include <atomic>
 
@@ -521,6 +523,7 @@ namespace components::table {
                                                     uint64_t,
                                                     uint64_t row_group_start,
                                                     uint64_t row_group_end) {
+        OTB_ZONE_N("row_version_manager::append_version_info");
         has_changes_ = true;
         uint64_t start_vector_idx = row_group_start / vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t end_vector_idx = (row_group_end - 1) / vector::DEFAULT_VECTOR_CAPACITY;
@@ -560,6 +563,7 @@ namespace components::table {
     }
 
     void row_version_manager_t::commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count) {
+        OTB_ZONE_N("row_version_manager::commit_append");
         if (count == 0) {
             return;
         }
@@ -580,6 +584,7 @@ namespace components::table {
     }
 
     void row_version_manager_t::abort_append(uint64_t row_group_start, uint64_t count) {
+        OTB_ZONE_N("row_version_manager::abort_append");
         has_changes_ = true;
         commit_append(ABORTED_ID, row_group_start, count);
     }
@@ -587,6 +592,7 @@ namespace components::table {
     void row_version_manager_t::cleanup_append(uint64_t lowest_active_transaction,
                                                uint64_t row_group_start,
                                                uint64_t count) {
+        OTB_ZONE_N("row_version_manager::cleanup_append");
         if (count == 0) {
             return;
         }
@@ -614,6 +620,7 @@ namespace components::table {
     }
 
     void row_version_manager_t::revert_append(uint64_t start_row) {
+        OTB_ZONE_N("row_version_manager::revert_append");
         uint64_t start_vector_idx =
             (start_row + (vector::DEFAULT_VECTOR_CAPACITY - 1)) / vector::DEFAULT_VECTOR_CAPACITY;
         for (uint64_t vector_idx = start_vector_idx; vector_idx < vector_info_.size(); vector_idx++) {
@@ -653,6 +660,7 @@ namespace components::table {
                                                 uint64_t command_id,
                                                 int64_t rows[],
                                                 uint64_t count) {
+        OTB_ZONE_N("row_version_manager::delete_rows");
         has_changes_ = true;
         return vector_info(vector_idx).delete_rows(transaction_id, sub_id, command_id, rows, count);
     }
@@ -663,6 +671,7 @@ namespace components::table {
     }
 
     void row_version_manager_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        OTB_ZONE_N("row_version_manager::commit_all_deletes");
         for (auto& info : vector_info_) {
             if (info && info->type == chunk_info_type::VECTOR_INFO) {
                 info->cast<chunk_vector_info>().commit_all_deletes(txn_id, commit_id);
@@ -671,6 +680,7 @@ namespace components::table {
     }
 
     void row_version_manager_t::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
+        OTB_ZONE_N("row_version_manager::revert_all_deletes");
         for (auto& info : vector_info_) {
             if (info && info->type == chunk_info_type::VECTOR_INFO) {
                 info->cast<chunk_vector_info>().revert_all_deletes(txn_id, from_sub_id);

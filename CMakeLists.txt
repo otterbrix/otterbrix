@@ -35,6 +35,7 @@ option(ENABLE_UBSAN "undefined behavior sanitizer" OFF)
 option(EXAMPLE "Example" OFF)
 option(ALLOW_BENCHMARK "Allow benchmark" OFF)
 option(BUILD_PYTHON "Build Python bindings" OFF)
+option(ENABLE_TRACY "Enable Tracy frame profiler (zero overhead when OFF)" OFF)
 option(CONAN_EXPERIMENTAL_INCLUDE "CONAN EXPERIMENT INCLUDE" ON)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -127,6 +128,13 @@ find_package(spdlog 1.15.1 REQUIRED)
 find_package(Catch2 3 REQUIRED)
 find_package(benchmark 1.6.1 REQUIRED)
 find_package(actor-zeta 2.0.1 REQUIRED)
+
+if(ENABLE_TRACY)
+    # Zones live in headers and in every component, so the client is linked into each target defined below.
+    find_package(Tracy REQUIRED)
+    add_compile_definitions(TRACY_ENABLE)
+    link_libraries(Tracy::TracyClient)
+endif()
 
 if(BUILD_PYTHON)
     set(PYBIND11_FINDPYTHON ON)

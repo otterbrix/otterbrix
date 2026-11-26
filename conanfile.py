@@ -15,10 +15,12 @@ class OtterbrixConan(ConanFile):
     options = {
         "shared": [True, False],
         "build_python": [True, False],
+        "with_tracy": [True, False],
     }
     default_options = {
         "shared": False,
         "build_python": False,
+        "with_tracy": False,
         "boost/*:header_only": True,
         "actor-zeta/*:cxx_standard": 20,
         "actor-zeta/*:fPIC": True,
@@ -41,6 +43,8 @@ class OtterbrixConan(ConanFile):
         self.requires("boost/1.88.0", transitive_headers=True)
         self.requires("fmt/11.1.3", transitive_headers=True)
         self.requires("spdlog/1.15.1", transitive_headers=True)
+        if self.options.with_tracy:
+            self.requires("tracy/0.14.1", transitive_headers=True)
         if self.options.build_python:
             self.requires("pybind11/2.13.6")
         self.requires("catch2/3.15.1")
@@ -55,6 +59,11 @@ class OtterbrixConan(ConanFile):
         self.tool_requires("bison/3.8.2")
         self.tool_requires("flex/2.6.4")
 
+    def configure(self):
+        if self.options.with_tracy:
+            # on_demand=False records from process start, so a profiler that attaches late still sees startup
+            self.options["tracy/*"].on_demand = False
+
     def validate(self):
         check_min_cppstd(self, 20)
 
@@ -67,6 +76,7 @@ class OtterbrixConan(ConanFile):
         # the shared option selects what package() ships; BUILD_SHARED_LIBS would turn every component into a .so
         tc.blocks.remove("shared")
         tc.variables["BUILD_PYTHON"] = bool(self.options.build_python)
+        tc.variables["ENABLE_TRACY"] = bool(self.options.with_tracy)
 
         # A prebuilt bison carries the m4 path of the machine that built it, and flex looks "m4" up on PATH,
         # so both run through wrappers that export the m4 of the build environment.
@@ -111,5 +121,8 @@ class OtterbrixConan(ConanFile):
         # otterbrix_add_parser_extension() is defined by find_package(otterbrix) itself.
         self.cpp_info.set_property("cmake_build_modules",
                                    [os.path.join("lib", "cmake", "otterbrix", "otterbrix_parser_extension.cmake")])
+        if self.options.with_tracy:
+            # the installed headers carry the profiling zones, so a consumer must compile them with the same switch
+            self.cpp_info.defines = ["TRACY_ENABLE"]
         if self.settings.os in ("Linux", "FreeBSD"):
             self.cpp_info.system_libs = ["dl", "pthread"]

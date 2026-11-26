@@ -14,6 +14,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -373,6 +374,7 @@ namespace components::planner::optimizer {
     } // namespace
 
     logical_plan::node_ptr eager_aggregation(std::pmr::memory_resource* resource, logical_plan::node_ptr root) {
+        OTB_ZONE_N("optimizer::eager_aggregation");
         walk(resource, root);
         return root;
     }

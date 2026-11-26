@@ -1,5 +1,7 @@
 #include "operator_having.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 namespace components::operators {
 
     operator_having_t::operator_having_t(std::pmr::memory_resource* resource,
@@ -10,6 +12,7 @@ namespace components::operators {
 
     core::error_t
     operator_having_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        OTB_ZONE_N("op::having::push");
         // Build + cache the predicate on the first batch. The group-output schema is stable across
         // every finalize chunk (operator_hash_group fixes out_types once), and resource_ (context.resource)
         // outlives them all, so the predicate's value-getter closures stay valid across all chunks.
@@ -77,6 +80,7 @@ namespace components::operators {
     }
 
     core::error_t operator_having_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {
+        OTB_ZONE_N("op::having::finalize");
         if (emitted() || stream_types_.empty()) {
             return core::error_t::no_error();
         }

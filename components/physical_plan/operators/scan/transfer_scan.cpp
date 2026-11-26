@@ -1,6 +1,7 @@
 #include "transfer_scan.hpp"
 #include "guard_chunk.hpp"
 
+#include <core/tracy/tracy.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <utility>
@@ -147,6 +148,7 @@ namespace components::operators {
     // rows.)
     core::result_wrapper_t<std::optional<vector::data_chunk_t>>
     transfer_scan::emit_or_skip(std::unique_ptr<vector::data_chunk_t> batch) {
+        OTB_ZONE_N("op::transfer_scan::emit_or_skip");
         const uint64_t sz = batch ? batch->size() : 0;
 
         if (sz == 0) {

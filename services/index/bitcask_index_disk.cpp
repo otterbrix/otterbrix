@@ -1,6 +1,7 @@
 #include "bitcask_index_disk.hpp"
 
 #include <core/file/list_dir.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include "absl/crc/crc32c.h"
 #include <components/vector/vector_builders.hpp>
@@ -518,6 +519,7 @@ namespace services::index {
 
     // open() writes to its directory (CURRENT via temp+rename); no lock, so it must own the directory alone.
     core::error_t bitcask_index_disk_t::open() {
+        OTB_ZONE_N("index::bitcask::open");
         RETURN_IF_ERROR(initialize_storage());
         if (auto open_result = open_hash_index(); open_result.contains_error()) {
             return open_result;
@@ -662,6 +664,7 @@ namespace services::index {
 
     // None of the three refusal paths below may be swallowed: an unresolved manifest would resurrect dropped keys.
     core::error_t bitcask_index_disk_t::apply_merge_recovery_cleanup() {
+        OTB_ZONE_N("index::bitcask::merge_recovery_cleanup");
         const auto manifest_path = merge_manifest_path(path_);
         std::error_code ec;
 
@@ -720,6 +723,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::load_from_disk() {
+        OTB_ZONE_N("index::bitcask::load_from_disk");
         invalidate_rotated_read_cache_();
         crc_failure_ = false;
         const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
@@ -873,6 +877,7 @@ namespace services::index {
 
     core::result_wrapper_t<std::pmr::vector<bitcask_index_disk_t::segment_info_t>>
     bitcask_index_disk_t::collect_segments() const {
+        OTB_ZONE_N("index::bitcask::collect_segments");
         std::pmr::vector<segment_info_t> segments(resource());
         const auto listing_failure = [this](const std::error_code& code) {
             return io_failure("bitcask: the index directory " + path_.string() +
@@ -949,6 +954,7 @@ namespace services::index {
     uint64_t bitcask_index_disk_t::allocate_next_segment_id() { return next_segment_id_++; }
 
     core::error_t bitcask_index_disk_t::rotate_active_segment() {
+        OTB_ZONE_N("index::bitcask::rotate_segment");
         RETURN_IF_ERROR(sync_if_dirty());
         file_.reset();
         active_segment_id_ = allocate_next_segment_id();
@@ -961,6 +967,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::merge_pending_segments() {
+        OTB_ZONE_N("index::bitcask::merge_pending");
         if (!merge_pending_) {
             return core::error_t::no_error();
         }
@@ -986,6 +993,7 @@ namespace services::index {
                                                                     uint64_t value_offset,
                                                                     row_ids_t& rows,
                                                                     std::pmr::string* out_key) const {
+        OTB_ZONE_N("index::bitcask::read_rows_at");
         const auto segment_path = segment_file_path(path_, segment_id);
         // Reuses this store's own descriptor: a fresh open() per read refused spuriously roughly once in ten runs.
         core::filesystem::file_handle_t* f = nullptr;
@@ -1083,6 +1091,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::erase_all_refs_for_key(uint32_t key_hash, std::string_view key_bytes) {
+        OTB_ZONE_N("index::bitcask::erase_all_refs");
         while (true) {
             VALUE_OR_RETURN(const bool erased, hash_index_->erase(key_hash, key_bytes, key_loader()));
             if (!erased) {
@@ -1208,6 +1217,7 @@ namespace services::index {
                                                           uint64_t commit_id,
                                                           uint8_t op_kind,
                                                           const key_batch_t& values) {
+        OTB_ZONE_N("index::bitcask::append_txn_record");
         RETURN_IF_ERROR(refuse_if_sealed());
         using components::types::logical_type;
         using components::types::physical_type;
@@ -1347,6 +1357,7 @@ namespace services::index {
 
     // Txn-log frames land durable before the WAL commit marker; a frame applies only if commit_ids_ has it.
     core::error_t bitcask_index_disk_t::recover_txn_log() {
+        OTB_ZONE_N("index::bitcask::recover_txn_log");
         const auto log_path = txn_log_file_path();
         txn_log_clean_end_ = no_tail_to_trim;
         std::error_code exists_ec;
@@ -1432,6 +1443,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id, uint64_t commit_id, key_batch_t& values) {
+        OTB_ZONE_N("index::bitcask::apply_txn_inserts");
         // The durable index frame is written before the data segments, so bailing here leaves segments untouched.
         if (auto err = append_txn_record(txn_id, commit_id, 1, values); err.contains_error()) {
             return err;
@@ -1446,6 +1458,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::apply_inserts(key_batch_t& values) {
+        OTB_ZONE_N("index::bitcask::apply_inserts");
         return for_each_batch_key(
             values,
             hash_index_->hash_seed(),
@@ -1463,6 +1476,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id, uint64_t commit_id, key_batch_t& values) {
+        OTB_ZONE_N("index::bitcask::apply_txn_deletes");
         if (auto err = append_txn_record(txn_id, commit_id, 2, values); err.contains_error()) {
             return err;
         }
@@ -1476,6 +1490,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::apply_deletes(key_batch_t& values) {
+        OTB_ZONE_N("index::bitcask::apply_deletes");
         return for_each_batch_key(
             values,
             hash_index_->hash_seed(),
@@ -1507,6 +1522,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::force_flush() {
+        OTB_ZONE_N("index::bitcask::force_flush");
         // The checkpoint trims the WAL behind this value, so a refused fsync must not report no_error.
         auto flush_error = sync_if_dirty();
         auto pending = pending_write_error_;
@@ -1540,6 +1556,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::sync_if_dirty() {
+        OTB_ZONE_N("index::bitcask::sync_if_dirty");
         if (!is_dirty() || !file_) {
             return core::error_t::no_error();
         }
@@ -1552,6 +1569,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::load_entries(entries_t& entries) const {
+        OTB_ZONE_N("index::bitcask::load_entries");
         core::error_t read_error = core::error_t::no_error();
         auto walk_error = hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
             if (read_error.contains_error()) {
@@ -1578,6 +1596,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::find(uint32_t key_hash, std::string_view key_bytes, result& res) const {
+        OTB_ZONE_N("index::bitcask::find");
         VALUE_OR_RETURN(auto ref, hash_index_->get(key_hash, key_bytes, key_loader()));
         if (!ref.has_value()) {
             return core::error_t::no_error();
@@ -1593,6 +1612,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::find_not_null(result& res) const {
+        OTB_ZONE_N("index::bitcask::find_not_null");
         const std::string_view null_bytes("\0", 1);
         entries_t entries(resource());
         RETURN_IF_ERROR(load_entries(entries));
@@ -1608,6 +1628,7 @@ namespace services::index {
     // No scan_range here: a hashed store has no ordering to scan (bitcask_index_agent_t::read_rows refuses it).
 
     core::error_t bitcask_index_disk_t::merge_immutable_segments() {
+        OTB_ZONE_N("index::bitcask::merge_immutable_segments");
         invalidate_rotated_read_cache_();
         std::vector<segment_info_t> immutable_segments;
         std::vector<uint64_t> removed_segment_ids;
@@ -1894,6 +1915,7 @@ namespace services::index {
 
     // Unlike drop(), wipes in place, instance stays alive; failure returns by value, not via pending_write_error_.
     core::error_t bitcask_index_disk_t::clear() {
+        OTB_ZONE_N("index::bitcask::clear");
         VALUE_OR_RETURN(auto segments, collect_segments());
 
         invalidate_rotated_read_cache_();
@@ -1956,6 +1978,7 @@ namespace services::index {
         return first_error;
     }
     void bitcask_index_disk_t::drop() {
+        OTB_ZONE_N("index::bitcask::drop");
         merge_pending_ = false;
         invalidate_rotated_read_cache_();
         if (is_dirty() && file_) {

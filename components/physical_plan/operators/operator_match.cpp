@@ -1,6 +1,7 @@
 #include "operator_match.hpp"
 
 #include <components/expressions/function_expression.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::operators {
 
@@ -23,6 +24,7 @@ namespace components::operators {
                                                   const vector::data_chunk_t& chunk,
                                                   uint64_t& limit_total,
                                                   chunks_vector_t& out) {
+        OTB_ZONE_N("op::match::filter_batch");
         // Already at the LIMIT, or an empty input batch: nothing to emit.
         if (!cap_.admits(limit_total) || chunk.size() == 0) {
             return core::error_t::no_error();
@@ -65,6 +67,7 @@ namespace components::operators {
     }
 
     core::error_t operator_match_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        OTB_ZONE_N("op::match::push");
         // Streaming filter: run the per-chunk filter+projection on the single batch
         // handed in via `input`. The predicate + projection metadata depend only on the
         // (stable) chunk schema, so they are built once on the first batch and reused.
@@ -125,6 +128,7 @@ namespace components::operators {
     }
 
     core::error_t operator_match_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {
+        OTB_ZONE_N("op::match::finalize");
         if (emitted() || stream_types_.empty()) {
             return core::error_t::no_error();
         }

@@ -10,6 +10,7 @@
 
 #include <limits>
 #include <optional>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -428,6 +429,7 @@ namespace components::planner::optimizer {
                         const logical_plan::node_ptr& node,
                         logical_plan::parameter_node_t* parameters,
                         const graph_execution_context& ctx) {
+        OTB_ZONE_N("optimizer::fold_constants");
         if (!node) {
             return;
         }

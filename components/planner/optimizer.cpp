@@ -9,6 +9,7 @@
 #include "optimizer/rules/promote_cross_join.hpp"
 #include "optimizer/rules/pushdown_filter.hpp"
 #include "optimizer/rules/pushdown_limit.hpp"
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner {
 
@@ -17,6 +18,7 @@ namespace components::planner {
                                     logical_plan::parameter_node_t* parameters,
                                     const graph_execution_context& ctx,
                                     const logical_plan::index_facts_t& indexes) {
+        OTB_ZONE_N("planner::optimize");
         if (!node) {
             return nullptr;
         }

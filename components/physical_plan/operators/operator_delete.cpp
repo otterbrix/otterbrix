@@ -9,6 +9,7 @@
 
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <core/tracy/tracy.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -64,6 +65,7 @@ namespace components::operators {
 
     core::error_t operator_delete::consume_batch_(pipeline::context_t* pipeline_context,
                                                   const vector::data_chunk_t& chunk) {
+        OTB_ZONE_N("op::delete::consume_batch");
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk.size() == 0) {
@@ -130,6 +132,7 @@ namespace components::operators {
     core::error_t operator_delete::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
+        OTB_ZONE_N("op::delete::consume_join_batch");
         // RIGHT stays per-chunk: merging it could overflow a single chunk past DEFAULT_VECTOR_CAPACITY.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
@@ -270,6 +273,7 @@ namespace components::operators {
 
     core::error_t
     operator_delete::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        OTB_ZONE_N("op::delete::push");
 #ifdef DEV_MODE
         g_delete_scanned_columns.fetch_add(input.column_count(), std::memory_order_relaxed);
 #endif

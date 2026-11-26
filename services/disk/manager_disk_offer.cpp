@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -243,41 +244,44 @@ namespace services::disk {
                                   components::logical_plan::detached_block_t block,
                                   components::vector::storage_parameters /*parameters*/) {
         std::pmr::vector<block_take_t> takes{resource()};
-        offer_walk_t walk{resource(), block, std::pmr::vector<offer_walk_t::found_t>{resource()}};
-        walk.walk(block.root);
-        for (std::size_t i = 0; i < walk.found.size(); ++i) {
-            auto& found = walk.found[i];
-            // The block is the disk's own: the take keeps its SELECT block, cut to the clauses the disk runs, and
-            // its table, moved out at the table's last take.
-            auto& children = found.select->children();
-            children.erase(std::remove_if(children.begin(),
-                                          children.end(),
-                                          [&found](const lp::node_ptr& child) {
-                                              return !(child->type() == node_type::match_t ||
-                                                       (found.grouped && child->type() == node_type::group_t));
-                                          }),
-                           children.end());
-            const auto oid = found.select->table_oid();
-            const bool read_again = std::any_of(walk.found.begin() + static_cast<std::ptrdiff_t>(i) + 1,
-                                                walk.found.end(),
-                                                [oid](const auto& later) { return later.select->table_oid() == oid; });
-            auto& table = *std::find_if(block.tables.begin(), block.tables.end(), [oid](const auto& candidate) {
-                return candidate.oid == oid;
-            });
-            const uint64_t request = next_take_++;
-            kept_takes_.emplace(request,
-                                kept_take_t{std::move(found.select),
-                                            read_again ? lp::copy_table(resource(), table) : std::move(table)});
-            block_take_t take;
-            take.preorder = found.preorder;
-            take.request = std::pmr::string{std::to_string(request), resource()};
-            take.explain = std::move(found.explain);
-            take.residual = std::pmr::vector<uint32_t>{resource()};
-            takes.push_back(std::move(take));
-        }
+        {
+            OTB_ZONE_N("manager_disk::storage_offer");
+            offer_walk_t walk{resource(), block, std::pmr::vector<offer_walk_t::found_t>{resource()}};
+            walk.walk(block.root);
+            for (std::size_t i = 0; i < walk.found.size(); ++i) {
+                auto& found = walk.found[i];
+                // The block is the disk's own: the take keeps its SELECT block, cut to the clauses the disk runs, and
+                // its table, moved out at the table's last take.
+                auto& children = found.select->children();
+                children.erase(std::remove_if(children.begin(),
+                                              children.end(),
+                                              [&found](const lp::node_ptr& child) {
+                                                  return !(child->type() == node_type::match_t ||
+                                                           (found.grouped && child->type() == node_type::group_t));
+                                              }),
+                               children.end());
+                const auto oid = found.select->table_oid();
+                const bool read_again = std::any_of(walk.found.begin() + static_cast<std::ptrdiff_t>(i) + 1,
+                                                    walk.found.end(),
+                                                    [oid](const auto& later) { return later.select->table_oid() == oid; });
+                auto& table = *std::find_if(block.tables.begin(), block.tables.end(), [oid](const auto& candidate) {
+                    return candidate.oid == oid;
+                });
+                const uint64_t request = next_take_++;
+                kept_takes_.emplace(request,
+                                    kept_take_t{std::move(found.select),
+                                                read_again ? lp::copy_table(resource(), table) : std::move(table)});
+                block_take_t take;
+                take.preorder = found.preorder;
+                take.request = std::pmr::string{std::to_string(request), resource()};
+                take.explain = std::move(found.explain);
+                take.residual = std::pmr::vector<uint32_t>{resource()};
+                takes.push_back(std::move(take));
+            }
 #ifdef DEV_MODE
-        g_disk_held_takes.store(kept_takes_.size(), std::memory_order_relaxed);
+            g_disk_held_takes.store(kept_takes_.size(), std::memory_order_relaxed);
 #endif
+        }
         co_return std::move(takes);
     }
 

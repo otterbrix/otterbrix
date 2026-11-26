@@ -1,6 +1,7 @@
 #include "validate_logical_plan.hpp"
 
 #include <core/date/date_parse.hpp>
+#include <core/tracy/tracy.hpp>
 #include <cstdio>
 
 #include "enrich_logical_plan.hpp"
@@ -182,6 +183,7 @@ namespace services::dispatcher {
     core::error_t resolve_fk_key_casts(std::pmr::memory_resource* resource,
                                        const components::casts::cast_registry_t& cast_registry,
                                        catalog_resolves_t& resolves) {
+        OTB_ZONE_N("validate::resolve_fk_key_casts");
         if (!resolves.constraints) {
             return core::error_t::no_error();
         }
@@ -1790,6 +1792,7 @@ namespace services::dispatcher {
                                  const catalog_resolves_t* resolves,
                                  node_t* logical_plan,
                                  const components::graph_execution_context&) {
+        OTB_ZONE_N("validate::types");
         core::error_t result = core::error_t::no_error();
         char insert_target_relkind = 0;
         // Breadth-first walk visits INSERT before its data child, the only moment the two
@@ -3883,6 +3886,7 @@ namespace services::dispatcher {
                                                          const components::logical_plan::storage_parameters& parameters,
                                                          cte_schemas_t* cte_schemas,
                                                          validation::untyped_literals literals) {
+        OTB_ZONE_N("validate::schema");
         cte_schemas_t local_cte_schemas;
         if (cte_schemas == nullptr) {
             cte_schemas = &local_cte_schemas;

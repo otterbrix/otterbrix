@@ -2,6 +2,7 @@
 #include "join_utils.hpp"
 
 #include <components/vector/vector_operations.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::operators {
 
@@ -28,6 +29,7 @@ namespace components::operators {
 
     core::error_t operator_join_t::build_layout_(pipeline::context_t* context,
                                                  const vector::data_chunk_t& probe_front) {
+        OTB_ZONE_N("op::join::build_layout");
         // Lazily derive the output layout, condition graph and (right/full) the
         // matched marker once, from the materialized build (right) side and one probe
         // (left) schema chunk. Used by push().
@@ -87,6 +89,7 @@ namespace components::operators {
     void operator_join_t::probe_batch_(pipeline::context_t* context,
                                        const vector::data_chunk_t& probe,
                                        chunks_vector_t& out) {
+        OTB_ZONE_N("op::join::probe_batch");
         // Probe ONE left batch against the materialized build (right) chunks and
         // emit per join_type_, in left-major order (mirrors operator_hash_join_t):
         // for each probe row, emit matched rows across the build chunks (build-chunk
@@ -206,6 +209,7 @@ namespace components::operators {
     }
 
     core::error_t operator_join_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        OTB_ZONE_N("op::join::push");
         // The build (right) side is materialized by a separate sub-plan before the
         // first push and always holds at least one (possibly empty) chunk. A truly
         // absent right_ is a degenerate plan: emit nothing (no build rows to
@@ -227,6 +231,7 @@ namespace components::operators {
     }
 
     core::error_t operator_join_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
+        OTB_ZONE_N("op::join::finalize");
         // RIGHT/FULL: drain unmatched build rows, NULL-padded on the left side. The
         // builder holds its output chunk across probe batches, so this is also where
         // the last partial chunk is emitted, for EVERY join type.

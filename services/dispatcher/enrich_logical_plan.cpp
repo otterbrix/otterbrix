@@ -5,6 +5,7 @@
 #include "resolve_type.hpp"
 
 #include <core/executor.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -113,6 +114,7 @@ namespace services::dispatcher { namespace {
 
     core::error_t build_insert_fill_list(components::logical_plan::node_insert_t* node,
                                          const components::logical_plan::resolved_table_metadata_t& md) {
+        OTB_ZONE_N("enrich::build_insert_fill_list");
         auto* resource = node->resource();
         components::logical_plan::insert_fill_list_t fill(resource);
         std::pmr::vector<uint64_t> slots(resource);
@@ -177,6 +179,7 @@ namespace services::dispatcher { namespace {
                            const std::vector<std::pair<std::string, std::string>>& stored,
                            std::vector<std::pair<std::string, components::expressions::expression_ptr>>* predicates,
                            components::logical_plan::parameter_node_ptr* params) {
+        OTB_ZONE_N("enrich::parse_check_predicates");
         predicates->clear();
         if (stored.empty()) {
             return core::error_t::no_error();
@@ -196,6 +199,7 @@ namespace services::dispatcher { namespace {
     }
 
     core::error_t spend_literal_digits(components::logical_plan::node_insert_t* node) {
+        OTB_ZONE_N("enrich::spend_literal_digits");
         using components::types::logical_type;
         const auto& digits = node->literal_digits();
         if (digits.empty() || node->column_bindings().empty() || node->children().empty()) {
@@ -303,6 +307,7 @@ namespace services::dispatcher { namespace {
     // chunk, so the binding's cast, resolved against the typed rows, no longer applies.
     core::error_t spend_deferred_cells(components::logical_plan::node_insert_t* node,
                                        const components::graph_execution_context& settings) {
+        OTB_ZONE_N("enrich::spend_deferred_cells");
         auto* resource = node->resource();
         auto* source = node->children().empty() ? nullptr : node->children().front().get();
         if (source == nullptr || source->type() != components::logical_plan::node_type::data_t) {
@@ -489,6 +494,7 @@ namespace services::catalog_resolve {
     void stamp_table_has_indexes(components::logical_plan::node_t* root,
                                  components::catalog::oid_t table_oid,
                                  bool has_indexes) {
+        OTB_ZONE_N("catalog_resolve::stamp_table_has_indexes");
         using namespace components::logical_plan;
         if (root == nullptr || table_oid == components::catalog::INVALID_OID) {
             return;
@@ -504,6 +510,7 @@ namespace services::catalog_resolve {
     void stamp_index_key_columns(components::logical_plan::node_t* root,
                                  components::catalog::oid_t table_oid,
                                  const std::pmr::vector<components::index::keys_base_storage_t>& indexes) {
+        OTB_ZONE_N("catalog_resolve::stamp_index_key_columns");
         using namespace components::logical_plan;
         if (root == nullptr || table_oid == components::catalog::INVALID_OID || indexes.empty()) {
             return;
@@ -536,6 +543,7 @@ namespace services::catalog_resolve {
     }
 
     void bind_catalog_data(components::logical_plan::node_t* root, const catalog_resolves_t& resolves) {
+        OTB_ZONE_N("catalog_resolve::bind_catalog_data");
         using namespace components::logical_plan;
         if (!root)
             return;
@@ -700,6 +708,7 @@ namespace services::catalog_resolve {
     void register_plan_targets(std::pmr::memory_resource* resource,
                                const components::logical_plan::node_t* root,
                                catalog_resolves_t* resolves) {
+        OTB_ZONE_N("catalog_resolve::register_plan_targets");
         using namespace components::logical_plan;
         if (!root || !resolves) {
             return;
@@ -749,6 +758,7 @@ namespace services::catalog_resolve {
     // up; here only a FOREIGN KEY may not cross databases.
     core::error_t refuse_cross_database_references(std::pmr::memory_resource* resource,
                                                    const catalog_resolves_t& resolves) {
+        OTB_ZONE_N("catalog_resolve::refuse_cross_database_references");
         // A database is named by its connection and name; a name without a database is in the place's.
         const auto database_of = [&resolves](const qualified_name_t& written) {
             return written.database.t.empty()
@@ -771,6 +781,7 @@ namespace services::catalog_resolve {
     }
 
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
+        OTB_ZONE_N("catalog_resolve::refuse_stale_pins");
         if (!resolves.tables) {
             return core::error_t::no_error();
         }
@@ -817,6 +828,7 @@ namespace services::dispatcher { namespace {
                                                            components::logical_plan::node_create_constraint_t* node,
                                                            const constraint_table_view_t* local,
                                                            const constraint_table_view_t* referenced) {
+        OTB_ZONE_N("enrich::resolve_constraint_columns");
         using components::logical_plan::constraint_kind;
         auto describe_constraint = [&]() {
             std::string out;
@@ -1215,27 +1227,33 @@ namespace services::dispatcher {
             std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
                 desc_futures(resource);
             std::pmr::vector<components::catalog::oid_t> queried_oids(resource);
-            for (auto tbl_oid : root->table_oid_dependencies()) {
-                if (tbl_oid == components::catalog::INVALID_OID) {
-                    continue;
+            {
+                OTB_ZONE_N("enrich_plan::send_index_queries");
+                for (auto tbl_oid : root->table_oid_dependencies()) {
+                    if (tbl_oid == components::catalog::INVALID_OID) {
+                        continue;
+                    }
+                    queried_oids.push_back(tbl_oid);
+                    auto [_ik, ikf] = actor_zeta::otterbrix::send(index_address,
+                                                                  &index::manager_index_t::get_indexed_keys,
+                                                                  ctx.session,
+                                                                  tbl_oid);
+                    keys_futures.push_back(std::move(ikf));
+                    auto [_id, idf] = actor_zeta::otterbrix::send(index_address,
+                                                                  &index::manager_index_t::get_indexed_descriptions,
+                                                                  ctx.session,
+                                                                  tbl_oid);
+                    desc_futures.push_back(std::move(idf));
                 }
-                queried_oids.push_back(tbl_oid);
-                auto [_ik, ikf] = actor_zeta::otterbrix::send(index_address,
-                                                              &index::manager_index_t::get_indexed_keys,
-                                                              ctx.session,
-                                                              tbl_oid);
-                keys_futures.push_back(std::move(ikf));
-                auto [_id, idf] = actor_zeta::otterbrix::send(index_address,
-                                                              &index::manager_index_t::get_indexed_descriptions,
-                                                              ctx.session,
-                                                              tbl_oid);
-                desc_futures.push_back(std::move(idf));
             }
             for (std::size_t i = 0; i < keys_futures.size(); ++i) {
                 auto keys = co_await std::move(keys_futures[i]);
-                catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());
-                catalog_resolve::stamp_index_key_columns(root.get(), queried_oids[i], keys);
-                collections_ctx->indexes.index_info_slot(queried_oids[i]).keys = std::move(keys);
+                {
+                    OTB_ZONE_N("enrich_plan::stamp_index_keys");
+                    catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());
+                    catalog_resolve::stamp_index_key_columns(root.get(), queried_oids[i], keys);
+                    collections_ctx->indexes.index_info_slot(queried_oids[i]).keys = std::move(keys);
+                }
             }
             for (std::size_t i = 0; i < desc_futures.size(); ++i) {
                 auto descriptions = co_await std::move(desc_futures[i]);

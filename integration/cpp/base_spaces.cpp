@@ -3,6 +3,7 @@
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
 #include <core/pmr.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <optional>
 
@@ -28,6 +29,7 @@ namespace otterbrix {
 
     core::result_wrapper_t<base_otterbrix_t::host_ptr>
     base_otterbrix_t::open(const configuration::config& config, components::planner::primitives_t primitives) {
+        OTB_ZONE_N("base_otterbrix::open");
         host_ptr host{new host_t()};
         auto log = make_log("otterbrix", config.log.path);
         if (log.has_error()) {

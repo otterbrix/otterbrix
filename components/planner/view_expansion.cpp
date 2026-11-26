@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <queue>
 #include <string>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner {
 
@@ -78,6 +79,7 @@ namespace components::planner {
     std::pmr::vector<view_reference_t> collect_view_references(std::pmr::memory_resource* resource,
                                                                const logical_plan::catalog_resolves_t& resolves,
                                                                logical_plan::node_t* root) {
+        OTB_ZONE_N("view::collect_view_references");
         std::pmr::vector<view_reference_t> out{resource};
         if (!root || !resolves.tables) {
             return out;
@@ -136,6 +138,7 @@ namespace components::planner {
 
     core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
                                                          const core::body_sql_t& view_sql) {
+        OTB_ZONE_N("view::expand_view_body");
         core::pmr::arena_resource_t parser_arena(resource);
         auto statement = parse_stored_body(resource, &parser_arena, view_sql.t, "view body");
         if (statement.has_error()) {
@@ -161,6 +164,7 @@ namespace components::planner {
 
     core::result_wrapper_t<view_body_t> bind_view_body(std::pmr::memory_resource* resource,
                                                        const logical_plan::resolved_table_metadata_t& view) {
+        OTB_ZONE_N("view::bind_view_body");
         auto body = expand_view_body(resource, core::body_sql_t{view.view_sql});
         if (body.has_error()) {
             return body;
@@ -170,6 +174,7 @@ namespace components::planner {
     }
 
     core::error_t splice_view_body(logical_plan::node_aggregate_t* ref, logical_plan::node_ptr body) {
+        OTB_ZONE_N("view::splice_view_body");
         if (!ref) {
             return core::error_t::no_error();
         }
@@ -342,6 +347,7 @@ namespace components::planner {
     logical_plan::node_ptr project_view_body(std::pmr::memory_resource* resource,
                                              logical_plan::node_ptr body,
                                              const logical_plan::resolved_table_metadata_t& view) {
+        OTB_ZONE_N("view::project_view_body");
         if (!contains_star(body.get()) && !passes_every_column(body.get())) {
             return body;
         }
@@ -377,6 +383,7 @@ namespace components::planner {
 
     core::result_wrapper_t<refresh_matview_plan_t>
     refresh_matview_plan(std::pmr::memory_resource* resource, const logical_plan::resolved_table_metadata_t& matview) {
+        OTB_ZONE_N("view::refresh_matview_plan");
         auto bound = bind_view_body(resource, matview);
         if (bound.has_error()) {
             return bound.error();

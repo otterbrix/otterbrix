@@ -1,5 +1,7 @@
 #include "standard_column_data.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include "persistent_column_data.hpp"
 
 namespace components::table {
@@ -32,6 +34,7 @@ namespace components::table {
     }
 
     void standard_column_data_t::initialize_scan(column_scan_state& state) {
+        OTB_ZONE_N("standard_column_data::initialize_scan");
         column_data_t::initialize_scan(state);
 
         assert(state.child_states.size() == 1);
@@ -46,6 +49,7 @@ namespace components::table {
     }
 
     uint64_t standard_column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
+        OTB_ZONE_N("standard_column_data::scan");
         assert(state.row_index == state.child_states[0].row_index);
         // Targets the same result base as the main data: without this sync a multi-vector scan
         // into one growing chunk (compact's rebuild) folded the whole table's NULL pattern into
@@ -60,6 +64,7 @@ namespace components::table {
 
     uint64_t
     standard_column_data_t::scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
+        OTB_ZONE_N("standard_column_data::scan_committed");
         assert(state.row_index == state.child_states[0].row_index);
         state.child_states[0].result_offset = state.result_offset; // see scan(): validity targets the same base
         auto scan_count = column_data_t::scan_committed(state, result, target_count);
@@ -94,6 +99,7 @@ namespace components::table {
                                                                      vector::unified_vector_format& uvf,
                                                                      uint64_t offset,
                                                                      uint64_t count) {
+        OTB_ZONE_N("standard_column_data::append_data");
         auto base = column_data_t::append_data(state, uvf, offset, count);
         if (base.has_error()) {
             return base; // out_of_memory: no exceptions across actors
@@ -107,6 +113,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> standard_column_data_t::revert_append(cut_cursor_t& cut) {
+        OTB_ZONE_N("standard_column_data::revert_append");
         auto own = column_data_t::revert_append(cut);
         if (own.has_error()) {
             return own;
@@ -115,6 +122,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> standard_column_data_t::transition_children(storage::partial_block_manager_t& pbm) {
+        OTB_ZONE_N("standard_column_data::transition_children");
         return validity.transition_to_disk(pbm);
     }
 
@@ -159,6 +167,7 @@ namespace components::table {
     core::result_wrapper_t<bool>
     standard_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                                                 persistent_column_data_t& persistent) {
+        OTB_ZONE_N("standard_column_data::checkpoint_children");
         // v1 convention: child_columns[0] = validity. Flushed through the SAME
         // partial_block_manager as the main data, so it's packed into shared blocks too.
         auto child = validity.checkpoint(partial_block_manager);

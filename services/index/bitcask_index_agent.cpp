@@ -1,5 +1,7 @@
 #include "bitcask_index_agent.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -125,11 +127,14 @@ namespace services::index {
 
     bitcask_index_agent_t::unique_future<void> bitcask_index_agent_t::drop(session_id_t session) {
         trace(log_, "bitcask_index_agent_t::drop, session: {}", session.data());
-        store_.drop();
-        // A bucket left standing would be answered from by a read that arrived behind the drop.
-        pending_inserts_.clear();
-        pending_deletes_.clear();
-        is_dropped_ = true;
+        {
+            OTB_ZONE_N("bitcask_index_agent::drop");
+            store_.drop();
+            // A bucket left standing would be answered from by a read that arrived behind the drop.
+            pending_inserts_.clear();
+            pending_deletes_.clear();
+            is_dropped_ = true;
+        }
         co_return;
     }
 
@@ -141,10 +146,14 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::clear: the index has been dropped", resource()}};
         }
-        auto clear_error = store_.clear();
-        // Bucket 0 erases even on a store refusal; only bucket 0 (pinned by test_index_agent_rebuild_clear.cpp).
-        pending_inserts_.erase(0);
-        pending_deletes_.erase(0);
+        core::error_t clear_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("bitcask_index_agent::clear");
+            clear_error = store_.clear();
+            // Bucket 0 erases even on a store refusal; only bucket 0 (pinned by test_index_agent_rebuild_clear.cpp).
+            pending_inserts_.erase(0);
+            pending_deletes_.erase(0);
+        }
         // The store's own error, not no_error -- repopulate_table folds this into its first_error.
         co_return clear_error;
     }
@@ -162,7 +171,10 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::stage_inserts: the index has been dropped", resource()}};
         }
-        append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
+        {
+            OTB_ZONE_N("bitcask_index_agent::stage_inserts");
+            append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
+        }
         co_return core::error_t::no_error();
     }
 
@@ -178,12 +190,16 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::stage_deletes: the index has been dropped", resource()}};
         }
-        append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
+        {
+            OTB_ZONE_N("bitcask_index_agent::stage_deletes");
+            append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
+        }
         co_return core::error_t::no_error();
     }
 
     // Merges once per commit, not at rotation time (N segments would pay N compactions mid-record).
     core::error_t bitcask_index_agent_t::pay_merge_debt(core::error_t write_error) {
+        OTB_ZONE_N("bitcask_index_agent::pay_merge_debt");
         if (write_error.contains_error()) {
             return write_error;
         }
@@ -225,7 +241,11 @@ namespace services::index {
                 pending_inserts_.erase(txn_id);
                 co_return core::error_t::no_error();
             }
-            auto apply_error = store_.apply_txn_inserts(txn_id, commit_id, it->second);
+            core::error_t apply_error = core::error_t::no_error();
+            {
+                OTB_ZONE_N("bitcask_index_agent::commit_inserts/apply_txn");
+                apply_error = store_.apply_txn_inserts(txn_id, commit_id, it->second);
+            }
             if (!apply_error.contains_error()) {
                 pending_inserts_.erase(txn_id);
             }
@@ -234,6 +254,7 @@ namespace services::index {
         // txn_id == 0: committed-for-everyone (rebuild feed), no journal.
         core::error_t publish_error = core::error_t::no_error();
         {
+            OTB_ZONE_N("bitcask_index_agent::commit_inserts/publish");
             struct bulk_guard_t {
                 bitcask_index_disk_t& store;
                 ~bulk_guard_t() { store.set_bulk_mode(false); }
@@ -266,15 +287,23 @@ namespace services::index {
                 pending_deletes_.erase(txn_id);
                 co_return core::error_t::no_error();
             }
-            auto apply_error = store_.apply_txn_deletes(txn_id, commit_id, it->second);
+            core::error_t apply_error = core::error_t::no_error();
+            {
+                OTB_ZONE_N("bitcask_index_agent::commit_deletes/apply_txn");
+                apply_error = store_.apply_txn_deletes(txn_id, commit_id, it->second);
+            }
             if (!apply_error.contains_error()) {
                 pending_deletes_.erase(txn_id);
             }
             co_return pay_merge_debt(std::move(apply_error));
         }
-        auto publish_error = publish_buckets(pending_deletes_, txn_id, [this](key_batch_t& batch) {
-            return store_.apply_deletes(batch);
-        });
+        core::error_t publish_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("bitcask_index_agent::commit_deletes/publish");
+            publish_error = publish_buckets(pending_deletes_, txn_id, [this](key_batch_t& batch) {
+                return store_.apply_deletes(batch);
+            });
+        }
         co_return pay_merge_debt(std::move(publish_error));
     }
 
@@ -339,11 +368,16 @@ namespace services::index {
         const auto& probe = probe_result.value();
         // find() unrolls the whole row list; the keydir alone keeps only `rows.back()` per key.
         // A committed half that could not be read is not an empty one, so the reason travels instead.
-        if (is_not_null_test) {
-            if (auto read_error = store_.find_not_null(rows); read_error.contains_error()) {
-                co_return read_error;
+        core::error_t read_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("bitcask_index_agent::read_rows/lookup");
+            if (is_not_null_test) {
+                read_error = store_.find_not_null(rows);
+            } else {
+                read_error = store_.find(probe.hash, probe.bytes, rows);
             }
-        } else if (auto read_error = store_.find(probe.hash, probe.bytes, rows); read_error.contains_error()) {
+        }
+        if (read_error.contains_error()) {
             co_return read_error;
         }
 
@@ -382,21 +416,22 @@ namespace services::index {
         };
 
         // Inserts first, then deletes, so a row both inserted and deleted ends up absent.
-        if (auto merge_error = add_bucket(0); merge_error.contains_error()) {
-            co_return merge_error;
-        }
-        if (txn_id != 0) {
-            if (auto merge_error = add_bucket(txn_id); merge_error.contains_error()) {
-                co_return merge_error;
+        core::error_t merge_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("bitcask_index_agent::read_rows/merge_staged");
+            merge_error = add_bucket(0);
+            if (!merge_error.contains_error() && txn_id != 0) {
+                merge_error = add_bucket(txn_id);
+            }
+            if (!merge_error.contains_error()) {
+                merge_error = drop_bucket(0);
+            }
+            if (!merge_error.contains_error() && txn_id != 0 && hides_own_deletes) {
+                merge_error = drop_bucket(txn_id);
             }
         }
-        if (auto merge_error = drop_bucket(0); merge_error.contains_error()) {
+        if (merge_error.contains_error()) {
             co_return merge_error;
-        }
-        if (txn_id != 0 && hides_own_deletes) {
-            if (auto merge_error = drop_bucket(txn_id); merge_error.contains_error()) {
-                co_return merge_error;
-            }
         }
         co_return std::move(rows);
     }
@@ -408,7 +443,12 @@ namespace services::index {
             co_return core::error_t::no_error();
         }
         // Hands back the sticky write error the void-returning write paths could not report themselves.
-        co_return store_.force_flush();
+        core::error_t flush_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("bitcask_index_agent::force_flush");
+            flush_error = store_.force_flush();
+        }
+        co_return flush_error;
     }
 
 } // namespace services::index

@@ -1,6 +1,7 @@
 #include "btree_index_agent.hpp"
 
 #include <components/index/binary_codec.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -148,10 +149,13 @@ namespace services::index {
 
     btree_index_agent_t::unique_future<void> btree_index_agent_t::drop(session_id_t session) {
         trace(log_, "btree_index_agent_t::drop, session: {}", session.data());
-        store_.drop();
-        pending_inserts_.clear();
-        pending_deletes_.clear();
-        is_dropped_ = true;
+        {
+            OTB_ZONE_N("btree_index_agent::drop");
+            store_.drop();
+            pending_inserts_.clear();
+            pending_deletes_.clear();
+            is_dropped_ = true;
+        }
         co_return;
     }
 
@@ -162,9 +166,13 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::clear: the index has been dropped", resource()}};
         }
-        auto clear_error = store_.clear();
-        pending_inserts_.erase(0);
-        pending_deletes_.erase(0);
+        core::error_t clear_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("btree_index_agent::clear");
+            clear_error = store_.clear();
+            pending_inserts_.erase(0);
+            pending_deletes_.erase(0);
+        }
         co_return clear_error;
     }
 
@@ -180,7 +188,10 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::stage_inserts: the index has been dropped", resource()}};
         }
-        append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
+        {
+            OTB_ZONE_N("btree_index_agent::stage_inserts");
+            append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
+        }
         co_return core::error_t::no_error();
     }
 
@@ -196,7 +207,10 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::stage_deletes: the index has been dropped", resource()}};
         }
-        append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
+        {
+            OTB_ZONE_N("btree_index_agent::stage_deletes");
+            append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
+        }
         co_return core::error_t::no_error();
     }
 
@@ -244,9 +258,15 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::commit_inserts: the index has been dropped", resource()}};
         }
-        co_return publish_buckets(pending_inserts_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
-            store_.insert_bulk_unchecked(record);
-        });
+        core::error_t publish_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("btree_index_agent::commit_inserts");
+            publish_error =
+                publish_buckets(pending_inserts_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
+                    store_.insert_bulk_unchecked(record);
+                });
+        }
+        co_return publish_error;
     }
 
     btree_index_agent_t::unique_future<core::error_t>
@@ -261,9 +281,15 @@ namespace services::index {
                 core::error_code_t::internal_error,
                 std::pmr::string{"btree_index_agent_t::commit_deletes: the index has been dropped", resource()}};
         }
-        co_return publish_buckets(pending_deletes_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
-            store_.remove_bulk_unchecked(record);
-        });
+        core::error_t publish_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("btree_index_agent::commit_deletes");
+            publish_error =
+                publish_buckets(pending_deletes_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
+                    store_.remove_bulk_unchecked(record);
+                });
+        }
+        co_return publish_error;
     }
 
     btree_index_agent_t::unique_future<core::error_t> btree_index_agent_t::revert_inserts(session_id_t session,
@@ -336,14 +362,17 @@ namespace services::index {
             }
         }
 
-        if (store_compare == compare_type::eq) {
-            if (auto read_error = store_.find(probe, rows); read_error.contains_error()) {
-                co_return read_error;
+        core::error_t read_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("btree_index_agent::read_rows/lookup");
+            if (store_compare == compare_type::eq) {
+                read_error = store_.find(probe, rows);
+            } else {
+                read_error = store_.scan_range(store_compare, probe, rows);
             }
-        } else {
-            if (auto read_error = store_.scan_range(store_compare, probe, rows); read_error.contains_error()) {
-                co_return read_error;
-            }
+        }
+        if (read_error.contains_error()) {
+            co_return read_error;
         }
 
         // Unlike the hashed family's merge, this compares decoded tree-key VALUES, not encoded bytes,
@@ -390,21 +419,22 @@ namespace services::index {
             });
         };
 
-        if (auto merge_error = add_bucket(0); merge_error.contains_error()) {
-            co_return merge_error;
-        }
-        if (txn_id != 0) {
-            if (auto merge_error = add_bucket(txn_id); merge_error.contains_error()) {
-                co_return merge_error;
+        core::error_t merge_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("btree_index_agent::read_rows/merge_staged");
+            merge_error = add_bucket(0);
+            if (!merge_error.contains_error() && txn_id != 0) {
+                merge_error = add_bucket(txn_id);
+            }
+            if (!merge_error.contains_error()) {
+                merge_error = drop_bucket(0);
+            }
+            if (!merge_error.contains_error() && txn_id != 0 && hides_own_deletes) {
+                merge_error = drop_bucket(txn_id);
             }
         }
-        if (auto merge_error = drop_bucket(0); merge_error.contains_error()) {
+        if (merge_error.contains_error()) {
             co_return merge_error;
-        }
-        if (txn_id != 0 && hides_own_deletes) {
-            if (auto merge_error = drop_bucket(txn_id); merge_error.contains_error()) {
-                co_return merge_error;
-            }
         }
         // A merge whose staged half couldn't be decoded is a wrong answer, not a smaller one.
         if (!staged_ok) {
@@ -422,7 +452,12 @@ namespace services::index {
             co_return core::error_t::no_error();
         }
         // Must propagate, or a checkpoint could truncate the WAL behind an index that never reached disk.
-        co_return store_.force_flush();
+        core::error_t flush_error = core::error_t::no_error();
+        {
+            OTB_ZONE_N("btree_index_agent::force_flush");
+            flush_error = store_.force_flush();
+        }
+        co_return flush_error;
     }
 
 } // namespace services::index

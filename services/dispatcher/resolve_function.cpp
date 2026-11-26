@@ -2,6 +2,7 @@
 
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <core/tracy/tracy.hpp>
 
 #include <algorithm>
 #include <optional>
@@ -266,6 +267,7 @@ namespace services::dispatcher {
                      components::compute::function_types_mask allowed_function_types,
                      const components::compute::function_scope_t& scope,
                      std::span<const components::compute::function_pin_t> pins) {
+        OTB_ZONE_N("dispatcher::resolve_function");
         const std::string written = name.to_string();
 
         bool name_exists = false;

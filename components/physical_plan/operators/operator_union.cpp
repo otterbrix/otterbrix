@@ -6,6 +6,7 @@
 #include <components/vector/indexing_vector.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/operations_helper.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::operators {
 
@@ -59,6 +60,7 @@ namespace components::operators {
                                        const chunks_vector_t& left_chunks,
                                        const chunks_vector_t& right_chunks,
                                        chunks_vector_t& out_chunks) {
+        OTB_ZONE_N("op::union::emit_union");
         // Output column types are the validator-stamped union schema (see set_output_types):
         // the reconciliation — including the PostgreSQL NULL-literal rule — happened
         // data-INDEPENDENTLY at validation, so the result type never depends on which rows
@@ -154,12 +156,14 @@ namespace components::operators {
     }
 
     core::error_t operator_union_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t&) {
+        OTB_ZONE_N("op::union::push");
         // Blocking sink: accumulate the left batch; the right side is not readable until finalize()
         buffered_left_.emplace_back(std::move(input));
         return core::error_t::no_error();
     }
 
     core::error_t operator_union_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
+        OTB_ZONE_N("op::union::finalize");
         chunks_vector_t empty_right(resource_);
         const chunks_vector_t& right_chunks = (right_ && right_->output()) ? right_->output()->chunks() : empty_right;
         emit_union_(resource_, buffered_left_, right_chunks, out);

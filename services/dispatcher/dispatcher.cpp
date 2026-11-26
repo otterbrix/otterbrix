@@ -109,7 +109,7 @@ namespace services::dispatcher {
         , txn_manager_(resource_ptr)
         , function_registry_(resource_ptr)
         , pending_void_(resource_ptr) {
-        ZoneScoped;
+        OTB_ZONE_N("dispatcher::ctor");
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
         // Restores BOTH halves of the commit clock: raising only the horizon left post-reopen
         // INSERTs reusing already-published commit-ids (symptom: SSB q1-1 returned 0 rows on reopen).
@@ -229,13 +229,13 @@ namespace services::dispatcher {
     }
 
     manager_dispatcher_t::~manager_dispatcher_t() {
+        OTB_ZONE_N("dispatcher::dtor");
         stop_loop();
         in_flight_.clear();
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drop{raw};
         }
-        ZoneScoped;
         trace(log_, "delete manager_dispatcher_t");
     }
 
@@ -962,17 +962,20 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) {
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
-        ack_futures.reserve(executor_addresses_.size());
-        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(executor_addresses_[i],
-                                            &collection::executor::executor_t::set_explain_renderer,
-                                            id,
-                                            fn);
-            if (needs_sched && executors_[i]) {
-                scheduler_->enqueue(executors_[i].get());
+        {
+            OTB_ZONE_N("dispatcher::set_explain_renderer");
+            ack_futures.reserve(executor_addresses_.size());
+            for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
+                auto [needs_sched, fut] =
+                    actor_zeta::otterbrix::send(executor_addresses_[i],
+                                                &collection::executor::executor_t::set_explain_renderer,
+                                                id,
+                                                fn);
+                if (needs_sched && executors_[i]) {
+                    scheduler_->enqueue(executors_[i].get());
+                }
+                ack_futures.push_back(std::move(fut));
             }
-            ack_futures.push_back(std::move(fut));
         }
         core::error_t fanout_error = core::error_t::no_error();
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
@@ -996,6 +999,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::create_session_context(components::session::session_id_t session,
                                                  components::logical_plan::execution_plan_t* plan,
                                                  bool joins_held) {
+        OTB_ZONE_N("dispatcher::create_session_context");
         if (failed_sessions_.contains(session)) {
             if (!ends_transaction(*plan->sub_queries.back())) {
                 return failed_transaction_();
@@ -1214,6 +1218,7 @@ namespace services::dispatcher {
     }
 
     void manager_dispatcher_t::publish_registry_changes_(registry_changes_t changes) {
+        OTB_ZONE_N("dispatcher::publish_registry_changes");
         if (auto refused = changes.apply_to(function_registry_, nullptr, resource()); refused.contains_error()) {
             std::fprintf(stderr,
                          "dispatcher: the master registry refused a committed change: %s\n",
@@ -1263,6 +1268,7 @@ namespace services::dispatcher {
 
     void manager_dispatcher_t::end_statement_transaction_(components::session::session_id_t session,
                                                           uint64_t transaction_id) {
+        OTB_ZONE_N("dispatcher::end_statement_transaction");
         auto* txn = statement_transaction_(session, transaction_id);
         if (txn == nullptr || txn->scope() != components::table::transaction_scope_t::statement) {
             return;
@@ -1405,42 +1411,50 @@ namespace services::dispatcher {
         if (!txn_t->has_accumulated()) {
             // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon. The
             // storages it read still get its end. With no catalog row to publish, its registrations go now.
-            out.txn = txn_t->data();
-            out.participants = txn_t->drain_participants();
-            txn_manager_.abort(session);
-            try_trigger_cleanup_if_horizon_advanced();
-            if (!committing.empty()) {
-                publish_registry_changes_(std::move(committing));
+            {
+                OTB_ZONE_N("dispatcher::txn_commit_drain_msg/empty");
+                out.txn = txn_t->data();
+                out.participants = txn_t->drain_participants();
+                txn_manager_.abort(session);
+                try_trigger_cleanup_if_horizon_advanced();
+                if (!committing.empty()) {
+                    publish_registry_changes_(std::move(committing));
+                }
             }
             co_return out;
         }
-        out.txn = txn_t->data();
-        txn_t->drain_pg_catalog_pending(out.swap_appends, out.swap_deletes);
-        out.swap_backfills = txn_t->drain_pg_attribute_commit_id_backfills();
-        auto drained_appends = txn_t->drain_base_appends();
-        out.base_appends.reserve(drained_appends.size());
-        for (const auto& r : drained_appends) {
-            out.base_appends.push_back(components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
-        }
-        auto drained_deletes = txn_t->drain_base_deletes();
-        for (const auto& d : drained_deletes) {
-            out.base_delete_tables.insert(d.table_oid);
-        }
-        out.dropped_storage_oids = txn_t->drain_dropped_storages();
-        out.created_storage_oids = txn_t->drain_created_storages();
-        out.created_indexes = txn_t->drain_created_indexes();
-        out.referenced_deletes = txn_t->drain_referenced_deletes();
-        out.dropped_objects = txn_t->drain_dropped_objects();
-        out.participants = txn_t->drain_participants();
-        // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
-        out.commit_id = txn_manager_.commit(session, &out.commit_view);
-        if (!committing.empty()) {
-            committing_registry_changes_.insert_or_assign(out.commit_id, std::move(committing));
+        {
+            OTB_ZONE_N("dispatcher::txn_commit_drain_msg");
+            out.txn = txn_t->data();
+            txn_t->drain_pg_catalog_pending(out.swap_appends, out.swap_deletes);
+            out.swap_backfills = txn_t->drain_pg_attribute_commit_id_backfills();
+            auto drained_appends = txn_t->drain_base_appends();
+            out.base_appends.reserve(drained_appends.size());
+            for (const auto& r : drained_appends) {
+                out.base_appends.push_back(
+                    components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
+            }
+            auto drained_deletes = txn_t->drain_base_deletes();
+            for (const auto& d : drained_deletes) {
+                out.base_delete_tables.insert(d.table_oid);
+            }
+            out.dropped_storage_oids = txn_t->drain_dropped_storages();
+            out.created_storage_oids = txn_t->drain_created_storages();
+            out.created_indexes = txn_t->drain_created_indexes();
+            out.referenced_deletes = txn_t->drain_referenced_deletes();
+            out.dropped_objects = txn_t->drain_dropped_objects();
+            out.participants = txn_t->drain_participants();
+            // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
+            out.commit_id = txn_manager_.commit(session, &out.commit_view);
+            if (!committing.empty()) {
+                committing_registry_changes_.insert_or_assign(out.commit_id, std::move(committing));
+            }
         }
         co_return out;
     }
 
     components::table::txn_abort_drain_t manager_dispatcher_t::drain_for_abort_(components::table::transaction_t& txn) {
+        OTB_ZONE_N("dispatcher::drain_for_abort");
         components::table::txn_abort_drain_t out;
         out.txn = txn.data();
         txn.drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
@@ -1473,8 +1487,11 @@ namespace services::dispatcher {
         auto* txn_t = statement_transaction_(session, transaction_id);
         assert(txn_t != nullptr);
         auto out = drain_for_abort_(*txn_t);
-        txn_manager_.abort(session);
-        try_trigger_cleanup_if_horizon_advanced();
+        {
+            OTB_ZONE_N("dispatcher::txn_abort_drain_msg");
+            txn_manager_.abort(session);
+            try_trigger_cleanup_if_horizon_advanced();
+        }
         co_return out;
     }
 
@@ -1504,35 +1521,38 @@ namespace services::dispatcher {
                                  "accumulated ranges cannot be parked",
                                  resource()}};
         }
-        for (const auto& app : payload.base_appends) {
-            txn_t->accumulate_base_append(app);
-        }
-        for (const auto& del : payload.base_deletes) {
-            txn_t->accumulate_base_delete(del);
-        }
-        txn_t->accumulate_pg_catalog_pending(std::move(payload.pg_catalog_appends),
-                                             std::move(payload.pg_catalog_delete_tables));
-        txn_t->accumulate_pg_attribute_commit_id_backfills(std::move(payload.backfills));
-        for (auto oid : payload.dropped_storage_oids) {
-            txn_t->accumulate_dropped_storage(oid);
-        }
-        for (auto oid : payload.created_storage_oids) {
-            txn_t->accumulate_created_storage(oid);
-        }
-        for (auto& index : payload.created_indexes) {
-            txn_t->accumulate_created_index(std::move(index));
-        }
-        for (auto& rows : payload.referenced_deletes) {
-            txn_t->accumulate_referenced_delete(std::move(rows));
-        }
-        for (const auto& object : payload.dropped_objects) {
-            txn_t->accumulate_dropped_object(object);
-        }
-        for (const auto& participant : payload.participants) {
-            txn_t->accumulate_participant(participant);
-        }
-        if (!payload.registry_changes.empty()) {
-            registry_changes_.try_emplace(session).first->second.add(std::move(payload.registry_changes));
+        {
+            OTB_ZONE_N("dispatcher::txn_accumulate_msg");
+            for (const auto& app : payload.base_appends) {
+                txn_t->accumulate_base_append(app);
+            }
+            for (const auto& del : payload.base_deletes) {
+                txn_t->accumulate_base_delete(del);
+            }
+            txn_t->accumulate_pg_catalog_pending(std::move(payload.pg_catalog_appends),
+                                                 std::move(payload.pg_catalog_delete_tables));
+            txn_t->accumulate_pg_attribute_commit_id_backfills(std::move(payload.backfills));
+            for (auto oid : payload.dropped_storage_oids) {
+                txn_t->accumulate_dropped_storage(oid);
+            }
+            for (auto oid : payload.created_storage_oids) {
+                txn_t->accumulate_created_storage(oid);
+            }
+            for (auto& index : payload.created_indexes) {
+                txn_t->accumulate_created_index(std::move(index));
+            }
+            for (auto& rows : payload.referenced_deletes) {
+                txn_t->accumulate_referenced_delete(std::move(rows));
+            }
+            for (const auto& object : payload.dropped_objects) {
+                txn_t->accumulate_dropped_object(object);
+            }
+            for (const auto& participant : payload.participants) {
+                txn_t->accumulate_participant(participant);
+            }
+            if (!payload.registry_changes.empty()) {
+                registry_changes_.try_emplace(session).first->second.add(std::move(payload.registry_changes));
+            }
         }
         co_return core::error_t::no_error();
     }
@@ -1605,23 +1625,29 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_publish_msg, commit_id: {}", commit_id);
-        // The registries take the commit's changes before any statement can see its catalog rows.
-        if (auto committing = committing_registry_changes_.find(commit_id);
-            committing != committing_registry_changes_.end()) {
-            auto changes = std::move(committing->second);
-            committing_registry_changes_.erase(committing);
-            publish_registry_changes_(std::move(changes));
+        {
+            OTB_ZONE_N("dispatcher::txn_publish_msg");
+            // The registries take the commit's changes before any statement can see its catalog rows.
+            if (auto committing = committing_registry_changes_.find(commit_id);
+                committing != committing_registry_changes_.end()) {
+                auto changes = std::move(committing->second);
+                committing_registry_changes_.erase(committing);
+                publish_registry_changes_(std::move(changes));
+            }
+            txn_manager_.publish(commit_id);
+            try_trigger_cleanup_if_horizon_advanced();
         }
-        txn_manager_.publish(commit_id);
-        try_trigger_cleanup_if_horizon_advanced();
         co_return txn_manager_.compact_watermark();
     }
 
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::txn_discard_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_discard_msg, commit_id: {}", commit_id);
-        committing_registry_changes_.erase(commit_id);
-        txn_manager_.discard(commit_id);
-        try_trigger_cleanup_if_horizon_advanced();
+        {
+            OTB_ZONE_N("dispatcher::txn_discard_msg");
+            committing_registry_changes_.erase(commit_id);
+            txn_manager_.discard(commit_id);
+            try_trigger_cleanup_if_horizon_advanced();
+        }
         co_return;
     }
 

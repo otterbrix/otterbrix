@@ -1,6 +1,7 @@
 #include "index_selection.hpp"
 
 #include <components/logical_plan/node_match.hpp>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -89,6 +90,9 @@ namespace components::planner::optimizer {
         }
     }
 
-    void select_indexes(const lp::node_ptr& root, const lp::index_facts_t& indexes) { walk(root, indexes); }
+    void select_indexes(const lp::node_ptr& root, const lp::index_facts_t& indexes) {
+        OTB_ZONE_N("optimizer::select_indexes");
+        walk(root, indexes);
+    }
 
 } // namespace components::planner::optimizer

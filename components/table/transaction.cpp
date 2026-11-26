@@ -1,5 +1,7 @@
 #include "transaction.hpp"
 
+#include <core/tracy/tracy.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <iterator>
@@ -88,6 +90,7 @@ namespace components::table {
     }
 
     bool transaction_t::rollback_to_savepoint(std::string_view name, txn_abort_drain_t* drain) {
+        OTB_ZONE_N("transaction::rollback_to_savepoint");
         auto latest = find_latest(savepoints_, name);
         if (latest == savepoints_.rend()) {
             return false;

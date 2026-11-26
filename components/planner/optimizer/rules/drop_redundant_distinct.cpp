@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <core/tracy/tracy.hpp>
 
 namespace components::planner::optimizer {
 
@@ -161,7 +162,9 @@ namespace components::planner::optimizer {
 
     logical_plan::node_ptr drop_redundant_distinct(std::pmr::memory_resource* /*resource*/,
                                                    logical_plan::node_ptr root) {
+        OTB_ZONE_N("optimizer::drop_redundant_distinct");
         walk(root);
+
         return root;
     }
 

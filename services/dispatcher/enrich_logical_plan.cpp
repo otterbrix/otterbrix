@@ -286,6 +286,7 @@ namespace services::dispatcher { namespace {
                 }
                 chunk.data[column] = std::move(rebuilt);
             }
+            node->column_bindings()[column].source_type = rebuilt_type;
             node->column_bindings()[column].cast = {};
             if (source->has_output_types()) {
                 auto declared = source->output_types();
@@ -332,6 +333,7 @@ namespace services::dispatcher { namespace {
             }
             auto target_type = binding.target_type;
             target_type.set_alias(std::string(data->data_chunk().data[column].type().alias()));
+            binding.source_type = target_type;
             binding.cast = {};
             if (source->has_output_types()) {
                 auto declared = source->output_types();

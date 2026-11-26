@@ -3239,6 +3239,7 @@ namespace services::dispatcher {
                             .target_index = i,
                             .target_name = std::pmr::string{target_name.c_str(), insert_node->resource()},
                             .target_type = incoming_type,
+                            .source_type = incoming_type,
                             .cast = {}};
                         if (incoming_type.type() == logical_type::STRING_LITERAL) {
                             binding.target_type = complex_logical_type{logical_type::TEXT};
@@ -3368,6 +3369,7 @@ namespace services::dispatcher {
                             .target_index = index,
                             .target_name = std::pmr::string{target_name.c_str(), insert_node->resource()},
                             .target_type = corresponding_table_type,
+                            .source_type = incoming_type,
                             .cast = {}};
                         if (incoming_type != corresponding_table_type) {
                             auto cast = cast_registry->resolve(incoming_type,

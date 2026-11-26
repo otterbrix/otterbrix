@@ -132,31 +132,6 @@ namespace {
         return std::move(widened.value());
     }
 
-    // A chunk is always a prefix of the final schema (fill_row only appends/widens in place).
-    core::error_t conform_param_chunks(std::pmr::memory_resource* resource,
-                                       std::pmr::vector<components::vector::data_chunk_t>& chunks,
-                                       const std::pmr::vector<components::types::complex_logical_type>& schema) {
-        for (auto& chunk : chunks) {
-            for (size_t i = 0; i < schema.size(); ++i) {
-                const auto& want = schema[i];
-                if (i >= chunk.data.size()) {
-                    components::vector::vector_t col(resource, want, chunk.capacity());
-                    col.set_null(true);
-                    chunk.data.emplace_back(std::move(col));
-                } else if (chunk.data[i].type() != want) {
-                    VALUE_OR_RETURN(auto promoted_col,
-                                    promote_column(resource,
-                                                   chunk.data[i],
-                                                   chunk.size(),
-                                                   components::types::complex_logical_type{want.type()},
-                                                   chunk.capacity()));
-                    chunk.data[i] = std::move(promoted_col);
-                }
-            }
-        }
-        return core::error_t::no_error();
-    }
-
 } // anonymous namespace
 
 #ifdef DEV_MODE
@@ -294,7 +269,8 @@ namespace components::sql::transform {
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {
             const auto& vals = pg_ptr_cast<List>(pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists)->lst;
 
-            // Parameterised INSERT binds by absolute index in transform_result, so it stays one chunk.
+            // A parameterised INSERT keeps its chunks in the transformer: transform_result binds each $n at its
+            // (chunk, row, column) location and builds the data node from the bound chunks.
             bool has_params = false;
             for (auto row : vals) {
                 for (auto value : pg_ptr_cast<List>(row.data)->lst) {
@@ -328,11 +304,14 @@ namespace components::sql::transform {
             logical_plan::deferred_cells_t deferred_cells(resource_);
             logical_plan::insert_default_cells_t default_cells(resource_);
 
-            auto fill_row = [&](vector::data_chunk_t& chunk,
-                                size_t chunk_index,
+            // Fills a row of the last chunk. A column has one type across all chunks (node_data_t's contract): a
+            // column that changes type in this row changes in the chunks already filled as well.
+            auto fill_row = [&](std::pmr::vector<vector::data_chunk_t>& chunks,
                                 size_t chunk_row,
                                 size_t global_row,
                                 List* values_list) -> core::error_t {
+                auto& chunk = chunks.back();
+                const size_t chunk_index = chunks.size() - 1;
                 const auto& values = values_list->lst;
                 if (values.size() != field_names.size()) {
                     const char* what = fields.empty() ? "VALUES lists must all be the same length"
@@ -463,60 +442,82 @@ namespace components::sql::transform {
                             deferred_cells.push_back(
                                 logical_plan::deferred_cell_t{row, column_index, std::move(cell), {}});
                         };
+                        // Rows of the current chunk below chunk_row, and every row of the chunks before it.
+                        const auto rows_filled = [&](size_t index) -> uint64_t {
+                            return index + 1 == chunks.size() ? chunk_row : chunks[index].size();
+                        };
+                        const auto retype_column = [&](const auto& retype) -> core::error_t {
+                            for (size_t index = 0; index < chunks.size(); ++index) {
+                                auto& filled = chunks[index].data[column_index];
+                                VALUE_OR_RETURN(auto retyped,
+                                                retype(filled, rows_filled(index), chunks[index].capacity()));
+                                filled = std::move(retyped);
+                            }
+                            return core::error_t::no_error();
+                        };
                         if (col_type == types::logical_type::NA) {
                             // Column came from a leading NULL literal; it takes the first value's whole type.
-                            VALUE_OR_RETURN(
-                                auto na_promoted,
-                                promote_column(resource_, column, chunk_row, value.type(), chunk.capacity()));
-                            column = std::move(na_promoted);
+                            RETURN_IF_ERROR(retype_column([&](const vector::vector_t& filled,
+                                                              uint64_t rows,
+                                                              uint64_t capacity) {
+                                return promote_column(resource_, filled, rows, value.type(), capacity);
+                            }));
                         } else if (column.type() == value.type()) {
                             // Same type: stored in place.
                         } else if (col_type == types::logical_type::STRING_LITERAL ||
                                    col_type == types::logical_type::TEXT) {
                             // The rows so far are text (literals, or cast to text); the column takes this value's type
                             // and the text rows wait for the table column's.
-                            auto row_node =
-                                std::next(vals.begin(), static_cast<std::ptrdiff_t>(global_row - chunk_row));
-                            for (size_t row = 0; row < chunk_row; ++row, ++row_node) {
-                                if (column.is_null(row)) {
-                                    continue;
+                            auto row_node = vals.begin();
+                            uint64_t first_row = 0;
+                            for (size_t index = 0; index < chunks.size(); ++index) {
+                                const auto& filled = chunks[index].data[column_index];
+                                for (uint64_t row = 0; row < rows_filled(index); ++row, ++row_node) {
+                                    if (filled.is_null(row)) {
+                                        continue;
+                                    }
+                                    auto* written =
+                                        pg_ptr_cast<Node>(std::next(pg_ptr_cast<List>(row_node->data)->lst.begin(),
+                                                                    static_cast<std::ptrdiff_t>(field_pos))
+                                                              ->data);
+                                    if (nodeTag(written) == T_ParamRef) {
+                                        // Bind writes this cell; its placeholder is not text to defer.
+                                        continue;
+                                    }
+                                    deferred_cells.push_back(logical_plan::deferred_cell_t{
+                                        first_row + row,
+                                        column_index,
+                                        vector::make_scalar(resource_,
+                                                            types::complex_logical_type{col_type},
+                                                            filled.get_value<std::string_view>(row)),
+                                        {}});
                                 }
-                                auto* written =
-                                    pg_ptr_cast<Node>(std::next(pg_ptr_cast<List>(row_node->data)->lst.begin(),
-                                                                static_cast<std::ptrdiff_t>(field_pos))
-                                                          ->data);
-                                if (nodeTag(written) == T_ParamRef) {
-                                    // Bind writes this cell; its placeholder is not text to defer.
-                                    continue;
-                                }
-                                const std::string_view text = column.get_value<std::string_view>(row);
-                                defer(vector::make_scalar(resource_, types::complex_logical_type{col_type}, text),
-                                      global_row - chunk_row + row);
+                                first_row += chunks[index].size();
                             }
                             auto retyped_type = value.type();
                             retyped_type.set_alias(std::string(column.type().alias()));
-                            vector::vector_t retyped(resource_, std::move(retyped_type), chunk.capacity());
-                            for (size_t row = 0; row < chunk_row; ++row) {
-                                retyped.set_null(row, true);
-                            }
-                            column = std::move(retyped);
-                        } else if (val_type == types::logical_type::STRING_LITERAL) {
+                            RETURN_IF_ERROR(retype_column([&](const vector::vector_t&, uint64_t rows, uint64_t capacity)
+                                                              -> core::result_wrapper_t<vector::vector_t> {
+                                vector::vector_t retyped(resource_, retyped_type, capacity);
+                                for (uint64_t row = 0; row < rows; ++row) {
+                                    retyped.set_null(row, true);
+                                }
+                                return retyped;
+                            }));
+                        } else if (val_type == types::logical_type::STRING_LITERAL ||
+                                   col_type == types::logical_type::DECIMAL ||
+                                   val_type == types::logical_type::DECIMAL) {
+                            // DECIMAL has no promotion path: the cell waits for the table column's type.
                             defer(std::move(value), global_row);
                             continue;
-                        } else if (col_type == types::logical_type::DECIMAL ||
-                                   val_type == types::logical_type::DECIMAL) {
-                            // DECIMAL has no promotion path; refuse rather than store a wrongly-typed cell.
-                            return core::error_t(core::error_code_t::sql_parse_error,
-                                                 std::pmr::string{"INSERT cannot mix a DECIMAL value with values of a "
-                                                                  "different type in one column of a VALUES list",
-                                                                  resource_});
                         } else if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type)) {
                             const types::complex_logical_type promoted{types::promote_type(col_type, val_type)};
                             if (promoted.type() != col_type) {
-                                VALUE_OR_RETURN(
-                                    auto promoted_col,
-                                    promote_column(resource_, column, chunk_row, promoted, chunk.capacity()));
-                                column = std::move(promoted_col);
+                                RETURN_IF_ERROR(retype_column([&](const vector::vector_t& filled,
+                                                                  uint64_t rows,
+                                                                  uint64_t capacity) {
+                                    return promote_column(resource_, filled, rows, promoted, capacity);
+                                }));
                             }
                             if (promoted.type() != val_type) {
                                 VALUE_OR_RETURN(auto widened, cast_checked(resource_, value, promoted, 1));
@@ -541,10 +542,11 @@ namespace components::sql::transform {
                                     types::promote_type(column_element.type(), value_element.type())};
                             }
                             if (col_type == types::logical_type::ARRAY) {
-                                VALUE_OR_RETURN(
-                                    auto list_col,
-                                    promote_array_to_list(resource_, column, chunk_row, element, chunk.capacity()));
-                                column = std::move(list_col);
+                                RETURN_IF_ERROR(retype_column([&](const vector::vector_t& filled,
+                                                                  uint64_t rows,
+                                                                  uint64_t capacity) {
+                                    return promote_array_to_list(resource_, filled, rows, element, capacity);
+                                }));
                             } else if (column_element != element) {
                                 defer(std::move(value), global_row);
                                 continue;
@@ -571,47 +573,28 @@ namespace components::sql::transform {
             auto qn = rangevar_to_qualified_name(node.relation);
             // Identity travels via the catalog-resolve wrap; the insert node carries only payload + table_oid().
             logical_plan::node_ptr ins;
-            if (has_params) {
-                const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
-                const uint64_t total = vals.size();
-                std::pmr::vector<types::complex_logical_type> schema(resource_);
-                auto row_it = vals.begin();
-                uint64_t global_row = 0;
-                while (global_row < total) {
-                    const uint64_t batch = std::min<uint64_t>(cap, total - global_row);
-                    vector::data_chunk_t chunk(resource_, schema, batch);
-                    chunk.set_cardinality(batch);
-                    for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        RETURN_IF_ERROR(fill_row(chunk,
-                                                 parameter_insert_rows_.size(),
-                                                 chunk_row,
-                                                 global_row,
-                                                 pg_ptr_cast<List>(row_it->data)));
-                    }
-                    schema = chunk.types(); // carry the (possibly grown/widened) layout to the next chunk
-                    parameter_insert_rows_.emplace_back(std::move(chunk));
+            std::pmr::vector<vector::data_chunk_t> literal_chunks(resource_);
+            auto& chunks = has_params ? parameter_insert_rows_ : literal_chunks;
+            const uint64_t total = vals.size();
+            auto row_it = vals.begin();
+            uint64_t global_row = 0;
+            while (global_row < total) {
+                const uint64_t batch = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, total - global_row);
+                // A chunk starts with the columns, and their types, of the chunks before it.
+                auto schema = chunks.empty() ? std::pmr::vector<types::complex_logical_type>(resource_)
+                                             : chunks.back().types();
+                chunks.emplace_back(resource_, schema, batch);
+                chunks.back().set_cardinality(batch);
+                for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
+                    RETURN_IF_ERROR(fill_row(chunks, chunk_row, global_row, pg_ptr_cast<List>(row_it->data)));
                 }
-                RETURN_IF_ERROR(conform_param_chunks(resource_, parameter_insert_rows_, schema));
+            }
+            if (has_params) {
                 ins = logical_plan::make_node_insert(resource_,
                                                      vector::data_chunk_t(resource_, {}, 0),
                                                      std::move(key_translation));
             } else {
-                const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
-                const uint64_t total = vals.size();
-                std::pmr::vector<vector::data_chunk_t> chunks(resource_);
-                auto row_it = vals.begin();
-                uint64_t global_row = 0;
-                while (global_row < total) {
-                    const uint64_t batch = std::min<uint64_t>(cap, total - global_row);
-                    vector::data_chunk_t chunk(resource_, {}, batch);
-                    chunk.set_cardinality(batch);
-                    for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        RETURN_IF_ERROR(
-                            fill_row(chunk, chunks.size(), chunk_row, global_row, pg_ptr_cast<List>(row_it->data)));
-                    }
-                    chunks.emplace_back(std::move(chunk));
-                }
-                ins = logical_plan::make_node_insert(resource_, std::move(chunks), std::move(key_translation));
+                ins = logical_plan::make_node_insert(resource_, std::move(literal_chunks), std::move(key_translation));
             }
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
             ins_node->set_literal_digits(std::move(literal_digits));

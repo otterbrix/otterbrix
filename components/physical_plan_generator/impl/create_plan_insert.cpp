@@ -48,6 +48,7 @@ namespace services::planner::impl {
                 .target_index = binding.target_index,
                 .target_name = std::pmr::string{binding.target_name.c_str(), context.resource},
                 .target_type = binding.target_type,
+                .source_type = binding.source_type,
                 .cast = binding.cast});
         }
         plan->set_column_bindings(std::move(bindings));

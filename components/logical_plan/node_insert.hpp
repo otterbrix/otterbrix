@@ -20,6 +20,8 @@ namespace components::logical_plan {
         uint64_t target_index{0};
         std::pmr::string target_name;
         types::complex_logical_type target_type;
+        // The incoming column's type: what `cast` was resolved from, or target_type when there is no cast.
+        types::complex_logical_type source_type;
         casts::cast_t cast;
     };
 

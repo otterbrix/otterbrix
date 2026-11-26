@@ -3977,29 +3977,51 @@ namespace {
     }
 } // namespace
 
-TEST_CASE("integration::cpp::correctness_bugs::insert_values_null_chunk_then_mixed_chunk_is_refused") {
-    auto error = insert_error("ev_chunks_null",
-                              "CREATE TABLE db.t (n integer);",
-                              "INSERT INTO db.t (n) VALUES (NULL)" + repeated_rows(1023, "(NULL)") + ", (1), ('2');");
-    INFO("error: " << error);
-    CHECK(error.find("several chunks") != std::string::npos);
-}
+// Each row is stored as PostgreSQL's transformInsertRow coerces it to the column, past the 1024-row chunk too.
+TEST_CASE("integration::cpp::correctness_bugs::insert_values_chunk_types") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_chunks"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto run = [&](const std::string& sql) {
+        auto cursor = test_helpers::exec(dispatcher, sql);
+        INFO("statement: " << sql.substr(0, 120));
+        INFO("error: " << (cursor->is_error() ? cursor->get_error().what.c_str() : "none"));
+        REQUIRE(cursor->is_success());
+        return cursor;
+    };
+    auto number = [&](const std::string& sql) {
+        auto cursor = run(sql);
+        REQUIRE(cursor->size() == 1);
+        auto cell = cursor->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell.has_error());
+        return cell.value();
+    };
+    run("CREATE SCHEMA db;");
 
-TEST_CASE("integration::cpp::correctness_bugs::insert_values_chunk_types_differ_into_double_is_refused") {
-    auto error = insert_error("ev_chunks_dbl",
-                              "CREATE TABLE db.t (d double precision);",
-                              "INSERT INTO db.t (d) VALUES ('1')" + repeated_rows(1100, "(3)") + ", (2.5);");
-    INFO("error: " << error);
-    CHECK(error.find("several chunks") != std::string::npos);
-}
+    SECTION("a chunk of NULLs, then a chunk of an integer and a string") {
+        run("CREATE TABLE db.t (n integer);");
+        run("INSERT INTO db.t (n) VALUES (NULL)" + repeated_rows(1023, "(NULL)") + ", (1), ('2');");
+        CHECK(number("SELECT count(*) FROM db.t;") == 1026);
+        CHECK(number("SELECT count(n) FROM db.t;") == 2);
+        CHECK(number("SELECT sum(n) FROM db.t;") == 3);
+    }
 
-TEST_CASE("integration::cpp::correctness_bugs::insert_values_chunk_types_differ_into_text_is_refused") {
-    auto error =
-        insert_error("ev_chunks_text",
-                     "CREATE TABLE db.t (s text);",
-                     "INSERT INTO db.t (s) VALUES (1), ('a'::text)" + repeated_rows(1022, "(3)") + ", ('b'), ('c');");
-    INFO("error: " << error);
-    CHECK(error.find("several chunks") != std::string::npos);
+    SECTION("a string, integers past the chunk, then a fraction, into double precision") {
+        run("CREATE TABLE db.t (d double precision);");
+        run("INSERT INTO db.t (d) VALUES ('1')" + repeated_rows(1100, "(3)") + ", (2.5);");
+        CHECK(number("SELECT count(*) FROM db.t;") == 1102);
+        CHECK(number("SELECT count(*) FROM db.t WHERE d = 1;") == 1);
+        CHECK(number("SELECT count(*) FROM db.t WHERE d = 3;") == 1100);
+        CHECK(number("SELECT count(*) FROM db.t WHERE d = 2.5;") == 1);
+    }
+
+    SECTION("an integer, a typed text, integers past the chunk, then strings, into text") {
+        run("CREATE TABLE db.t (s text);");
+        run("INSERT INTO db.t (s) VALUES (1), ('a'::text)" + repeated_rows(1022, "(3)") + ", ('b'), ('c');");
+        CHECK(number("SELECT count(*) FROM db.t;") == 1026);
+        CHECK(number("SELECT count(*) FROM db.t WHERE s = '3';") == 1022);
+        CHECK(number("SELECT count(*) FROM db.t WHERE s = '1' OR s = 'a' OR s = 'c';") == 3);
+    }
 }
 
 // A row comparison reads an operand more than once, and every further read is a copy of the call

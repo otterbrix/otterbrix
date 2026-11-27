@@ -4079,3 +4079,40 @@ TEST_CASE("integration::cpp::correctness_bugs::count_star_inside_an_expression")
     // (3, 0) < (3, 1) is `3 < 3 OR (3 = 3 AND 0 < 1)`.
     CHECK(one_int("SELECT CASE WHEN (count(*), 0) < (3, 1) THEN 1 ELSE 0 END FROM s.d;") == 1);
 }
+
+TEST_CASE("integration::cpp::correctness_bugs::non_recursive_cte_sees_only_earlier_siblings") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/cte_self_reference"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    const auto session = otterbrix::session_id_t();
+    const auto exec = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
+    REQUIRE(exec("CREATE SCHEMA s;")->is_success());
+    REQUIRE(exec("SET search_path = 's';")->is_success());
+    REQUIRE(exec("CREATE TABLE org (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO org (id) VALUES (1), (2), (3);")->is_success());
+    REQUIRE(exec("CREATE TABLE b (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO b (id) VALUES (7);")->is_success());
+
+    const auto sum_of = [&](const std::string& sql) -> int64_t {
+        auto cur = exec(sql);
+        INFO(sql << " error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        int64_t sum = 0;
+        for (std::size_t row = 0; row < cur->size(); ++row) {
+            auto cell = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell.has_error());
+            sum += cell.value();
+        }
+        return sum;
+    };
+    // The body's org is the table, not the CTE being defined.
+    CHECK(sum_of("WITH org AS (SELECT id FROM org) SELECT id FROM org;") == 6);
+    // a's b is the table: b is defined after a.
+    CHECK(sum_of("WITH a AS (SELECT id FROM b), b AS (SELECT id FROM a) SELECT id FROM b;") == 7);
+    CHECK(sum_of("WITH a AS (SELECT id + 10 AS id FROM org), c AS (SELECT id FROM a) SELECT id FROM c;") == 36);
+    CHECK(exec("WITH x AS (SELECT id FROM x) SELECT id FROM x;")->is_error());
+    // An inner WITH is scoped to its query: each reference to a declares c anew, and the outer b is the table.
+    CHECK(sum_of("WITH a AS (WITH c AS (SELECT id FROM org) SELECT id FROM c) "
+                 "SELECT x.id FROM a x JOIN a y ON x.id = y.id;") == 6);
+    CHECK(sum_of("WITH a AS (WITH b AS (SELECT id + 100 AS id FROM org) SELECT id FROM b) SELECT id FROM b;") == 7);
+}

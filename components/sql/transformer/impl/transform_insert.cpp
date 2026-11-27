@@ -151,7 +151,8 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_insert(InsertStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
         // A leading WITH must be registered before the inner SELECT so INSERT ... SELECT ... FROM cte works.
-        RETURN_IF_ERROR(register_with_ctes(node.withClause));
+        with_scope_t with_scope{this};
+        RETURN_IF_ERROR(register_with_ctes(node.withClause, &with_scope));
         const auto& fields = pg_ptr_cast<List>(node.cols)->lst;
         std::pmr::vector<expressions::key_t> key_translation(resource_);
         for (const auto& field : fields) {

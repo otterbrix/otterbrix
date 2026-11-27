@@ -54,7 +54,8 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_update(UpdateStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
         // A leading WITH must be registered before the body so the WHERE / FROM can reference the CTE.
-        RETURN_IF_ERROR(register_with_ctes(node.withClause));
+        with_scope_t with_scope{this};
+        RETURN_IF_ERROR(register_with_ctes(node.withClause, &with_scope));
         logical_plan::node_match_ptr match;
         std::pmr::vector<expression_ptr> updates(resource_);
         name_collection_t names;

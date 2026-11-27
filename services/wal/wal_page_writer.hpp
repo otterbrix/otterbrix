@@ -55,6 +55,11 @@ namespace services::wal {
         /// True after a refused mid-record flush leaves an ORPHAN (PARTIAL_CONT) span; the owner
         /// must rotate to a fresh segment or the next page is read as that span's continuation.
         [[nodiscard]] bool torn_tail() const noexcept { return torn_tail_; }
+        /// Remembers the journal as it is now, for retract_to_mark().
+        void mark();
+        /// Takes everything appended since mark() out of the segment and the page buffer; what was buffered before
+        /// it is written again by the next flush. A refusal means the retracted bytes may still be in the segment.
+        [[nodiscard]] core::error_t retract_to_mark();
 
     private:
         [[nodiscard]] core::error_t write_file_header();
@@ -80,6 +85,18 @@ namespace services::wal {
         size_t file_size_{0};   // total bytes written to file so far
         bool has_data_{false};  // whether current page has any data
         bool torn_tail_{false}; // an orphan PARTIAL_CONT span sits at the end of the file
+
+        struct mark_t {
+            size_t file_size{0};
+            size_t offset{PAGE_HEADER_SIZE};
+            uint32_t num_records{0};
+            id_t page_lsn{0};
+            id_t page_end_lsn{0};
+            uint16_t page_flags{PAGE_NORMAL};
+            bool has_data{false};
+        };
+        mark_t mark_;
+        alignas(4096) char mark_page_[PAGE_SIZE];
         core::error_t open_error_;
         core::error_t last_error_;
     };

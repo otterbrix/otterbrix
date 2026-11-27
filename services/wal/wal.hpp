@@ -33,7 +33,8 @@ namespace services::wal {
 
     // The one committed-record filter shared by both replay readers (a second copy already drifted
     // apart once): a record is committed only when a COMMIT marker for the same txn sits at a
-    // STRICTLY GREATER wal id -- txn ids are reused across restarts, but wal ids keep growing.
+    // STRICTLY GREATER wal id. That is sound only because no txn id the journal still holds is issued
+    // again: startup seeds the id counter past every journaled record (wal_reader_t's txn_id_high_water_out).
     [[nodiscard]] inline std::vector<record_t> filter_committed_records(std::vector<record_t>&& records) {
         struct commit_marker_t {
             id_t wal_id;
@@ -232,7 +233,8 @@ namespace services::wal {
 
         std::unique_ptr<wal_page_writer_t> writer_;
 
-        /// Set when recover_from_disk() failed; while set, every write and truncate REFUSES.
+        /// Set when the journal cannot be trusted: recover_from_disk() failed, no segment opens, or a refused COMMIT
+        /// marker could not be taken out. While set, every write and truncate REFUSES.
         core::error_t recovery_error_;
 
         /// Temporary encode buffer, reused across writes to avoid re-allocation.

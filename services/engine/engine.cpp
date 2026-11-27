@@ -144,6 +144,8 @@ namespace services::engine {
             std::vector<wal::record_t> wal_records;
             // Index txn-log frames are durable before the WAL commit marker, so uncommitted entries need this set.
             std::set<std::uint64_t> commit_ids;
+            // The highest transaction id the journal holds, committed or not.
+            std::uint64_t txn_id_high_water{0};
             schedulers_t schedulers{nullptr, nullptr, nullptr};
             std::unique_ptr<dispatcher::manager_dispatcher_t, actor_zeta::pmr::deleter_t> dispatcher;
             std::unique_ptr<disk::manager_disk_t, actor_zeta::pmr::deleter_t> disk;
@@ -260,7 +262,7 @@ namespace services::engine {
             auto parts = std::make_unique<engine_parts_t>(resource, log, std::move(lock));
 
             services::wal::wal_reader_t wal_reader(resource, config.wal, parts->log);
-            auto wal_records_result = wal_reader.read_committed_records(&parts->commit_ids);
+            auto wal_records_result = wal_reader.read_committed_records(&parts->commit_ids, &parts->txn_id_high_water);
             // Refuses rather than allocating IDs below what's already on disk; writes/deletes nothing.
             if (wal_records_result.has_error()) {
                 error(parts->log,
@@ -842,17 +844,15 @@ namespace services::engine {
 
             // Both commit-clock halves are raised together, from one frontier, so they never disagree.
             VALUE_OR_RETURN(uint64_t reopen_frontier, disk.max_persisted_commit_id_sync());
-            uint64_t txn_high_water = 0;
             for (const auto& r : parts.wal_records) {
                 if (r.is_commit_marker() && r.commit_id > reopen_frontier) {
                     reopen_frontier = r.commit_id;
                 }
-                if (r.transaction_id > txn_high_water) {
-                    txn_high_water = r.transaction_id;
-                }
             }
             seed.commit_frontier = reopen_frontier;
-            seed.txn_id_high_water = txn_high_water;
+            // From every journaled record, not the committed ones: a rolled-back or interrupted transaction's id
+            // reissued here would let the new transaction's COMMIT marker commit the old records too.
+            seed.txn_id_high_water = parts.txn_id_high_water;
 
             // Recovers pg_class rows tombstoned by a pre-crash DROP TABLE that never removed the .otbx.
             auto dropped_oids = disk.scan_dropped_oids_sync();

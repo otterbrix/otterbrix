@@ -534,6 +534,7 @@ namespace services::wal {
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
         }
+        writer_->mark();
         if (auto append_error = writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
             append_error.contains_error()) {
             error(log_,
@@ -543,7 +544,6 @@ namespace services::wal {
                   append_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
         }
-        last_crc_ = record_crc;
 
         // This call is the durability claim: under FULL, a failed fsync over a returned wal_id reports a commit that
         // never reached the device; under NORMAL a refused write still isn't in the journal.
@@ -555,8 +555,25 @@ namespace services::wal {
                   transaction_id,
                   static_cast<int>(sync_mode),
                   sync_error.what);
+            // The caller aborts: a marker left behind, written or still buffered, would commit it on reopen.
+            if (auto retract_error = writer_->retract_to_mark(); retract_error.contains_error()) {
+                recovery_error_ = core::error_t(
+                    core::error_code_t::io_error,
+                    std::pmr::string{"wal_worker: the COMMIT marker of refused transaction " +
+                                         std::to_string(transaction_id) +
+                                         " could not be taken out of the journal, so its outcome after reopen is "
+                                         "unknown: " +
+                                         std::string(retract_error.what),
+                                     this->resource()});
+                error(log_,
+                      "wal_worker::commit_txn , db_oid={} , this worker REFUSES every write and every truncate: {}",
+                      static_cast<unsigned>(database_oid_),
+                      recovery_error_.what);
+                co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
+            }
             co_return core::result_wrapper_t<wal::id_t>{std::move(sync_error)};
         }
+        last_crc_ = record_crc;
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }

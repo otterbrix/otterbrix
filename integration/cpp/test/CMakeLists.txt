@@ -169,6 +169,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_create_index_backfill_addressing.cpp
         test_index_stale_marker_crash.cpp
         test_row_id_reuse_crash.cpp
+        test_txn_id_reuse_replay.cpp
         test_correctness_bugs.cpp
         test_order_by_expressions.cpp
         test_order_by_nulls.cpp

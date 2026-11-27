@@ -63,7 +63,7 @@ namespace services::wal {
     }
 
     core::result_wrapper_t<std::vector<record_t>>
-    wal_reader_t::read_committed_records(std::set<std::uint64_t>* committed_out) {
+    wal_reader_t::read_committed_records(std::set<std::uint64_t>* committed_out, std::uint64_t* txn_id_high_water_out) {
         std::vector<record_t> merged;
 
         std::error_code ec;
@@ -99,7 +99,7 @@ namespace services::wal {
             }
             trace(log_, "wal_reader::read_committed_records , scanning database '{}'", db_name);
 
-            auto db_records = read_database_segments(entry.path, committed_out);
+            auto db_records = read_database_segments(entry.path, committed_out, txn_id_high_water_out);
             if (db_records.has_error()) {
                 return db_records.error();
             }
@@ -115,7 +115,9 @@ namespace services::wal {
     }
 
     core::result_wrapper_t<std::vector<record_t>>
-    wal_reader_t::read_database_segments(const std::filesystem::path& db_dir, std::set<std::uint64_t>* committed_out) {
+    wal_reader_t::read_database_segments(const std::filesystem::path& db_dir,
+                                         std::set<std::uint64_t>* committed_out,
+                                         std::uint64_t* txn_id_high_water_out) {
         auto found = find_wal_segments(resource_, db_dir, "wal_");
         if (found.has_error()) {
             error(log_, "wal_reader: {}", found.error().what);
@@ -165,6 +167,9 @@ namespace services::wal {
                 return seg_records.error();
             }
             for (auto& r : seg_records.value()) {
+                if (txn_id_high_water_out != nullptr && r.is_valid() && r.transaction_id > *txn_id_high_water_out) {
+                    *txn_id_high_water_out = r.transaction_id;
+                }
                 all_records.push_back(std::move(r));
             }
 

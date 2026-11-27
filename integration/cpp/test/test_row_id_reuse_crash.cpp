@@ -14,7 +14,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
 
 // row_id is the ONLY thing an index answer carries, and the commit path makes it durable in the
@@ -53,9 +52,9 @@
 // services/wal/wal.cpp:332), so an un-checkpointed tail comes straight back (MEASURED: 400 of 400
 // rows). The window is the one commit whose journal fsync REFUSED -- wal.cpp:332, whose own error
 // text is "the commit is NOT durable". That refusal is injected here through the WAL's DEV_MODE
-// file seam, the statement fails as it should, and what is then dropped from the crash copy is
-// exactly the bytes that fsync refused and nothing else. This is a power loss inside that window,
-// not an accusation of a lying device.
+// file seam, the statement fails as it should, and the WAL takes the refused COMMIT marker back out
+// of the journal, so a plain copy of the directory is the crash: the journal holds the
+// transaction's rows without a marker, while the index already named them.
 
 using namespace test_helpers;
 
@@ -99,52 +98,6 @@ namespace {
         std::filesystem::remove_all(to);
         std::filesystem::create_directories(to.parent_path());
         std::filesystem::copy(from, to, std::filesystem::copy_options::recursive);
-    }
-
-    using wal_sizes_t = std::map<std::string, std::uintmax_t>;
-
-    // Segment path relative to the WAL root (segments live in per-database subdirectories) -> byte
-    // length, taken at a moment when every WAL fsync so far has SUCCEEDED.
-    wal_sizes_t durable_wal_sizes(const std::filesystem::path& wal_dir) {
-        wal_sizes_t sizes;
-        std::error_code ec;
-        for (std::filesystem::recursive_directory_iterator it(wal_dir, ec), end; !ec && it != end; it.increment(ec)) {
-            if (it->is_regular_file() && it->path().filename().string().rfind("wal_", 0) == 0) {
-                sizes.emplace(std::filesystem::relative(it->path(), wal_dir).string(),
-                              std::filesystem::file_size(it->path()));
-            }
-        }
-        return sizes;
-    }
-
-    // Drops exactly the WAL bytes the engine itself refused to call durable (wal.cpp:332-341: "the
-    // commit is NOT durable") -- the page reached the page cache, fsync said no, the machine died
-    // there. Returns the byte count removed, so the caller can prove the fault was not a no-op.
-    std::uintmax_t rewind_wal_to_last_fsync(const std::filesystem::path& wal_dir, const wal_sizes_t& durable) {
-        std::vector<std::filesystem::path> segments;
-        std::error_code ec;
-        for (std::filesystem::recursive_directory_iterator it(wal_dir, ec), end; !ec && it != end; it.increment(ec)) {
-            if (it->is_regular_file() && it->path().filename().string().rfind("wal_", 0) == 0) {
-                segments.push_back(it->path());
-            }
-        }
-        // Collected first: the remove() below would invalidate a live recursive iterator.
-        std::uintmax_t dropped = 0;
-        for (const auto& segment : segments) {
-            const auto now = std::filesystem::file_size(segment);
-            const auto found = durable.find(std::filesystem::relative(segment, wal_dir).string());
-            if (found == durable.end()) {
-                // A segment that did not exist at the last good fsync never reached the device at all.
-                dropped += now;
-                std::filesystem::remove(segment);
-                continue;
-            }
-            if (now > found->second) {
-                dropped += now - found->second;
-                std::filesystem::resize_file(segment, found->second);
-            }
-        }
-        return dropped;
     }
 
     std::string rows_sql(int64_t from, int64_t to) {
@@ -264,16 +217,11 @@ namespace {
     // The whole prologue. Leaves `crash_dir` holding a crashed copy whose btree index names row
     // ids 200..399 for keys 2010..4000 and whose table holds only rows 1..200.
     void stage_a_ghost_index(const configuration::config& config, const std::filesystem::path& crash_dir) {
-        wal_sizes_t durable;
         {
             wal_fault_scope_t fault;
             test_spaces space(config);
             auto* d = space.dispatcher();
             build_durable_prefix(d);
-
-            // Everything the WAL holds up to here was fsync'd and answered SUCCESS.
-            durable = durable_wal_sizes(config.wal.path);
-            REQUIRE_FALSE(durable.empty());
 
             // ARM: the next fsync of a WAL segment is refused. Under wal_sync_mode::FULL that is
             // the commit marker's own flush_and_sync (services/wal/wal.cpp:332).
@@ -293,14 +241,11 @@ namespace {
             // kill -9 HERE: the btree store already force_flush()ed the tail's keys.
             copy_dir_as_crash(config.main_path, crash_dir);
         } // the destructor's CHECKPOINT runs against the ORIGINAL directory only
-
-        INFO("NOT VACUOUS (3): the crash has to remove something, or this is just a reopen");
-        REQUIRE(rewind_wal_to_last_fsync(crash_dir / "wal", durable) > 0);
     }
 
     // Every crash case starts from here: the table is short, and the new row lands on row id 200.
     void reopen_and_insert_the_intruder(otterbrix::wrapper_dispatcher_t* d) {
-        INFO("NOT VACUOUS (4): the TABLE must come up without the refused transaction's rows");
+        INFO("NOT VACUOUS (3): the TABLE must come up without the refused transaction's rows");
         const auto truth = full_scan_truth(d);
         REQUIRE(truth.size() == static_cast<std::size_t>(kCheckpointed));
         REQUIRE(truth.find(kVictimKey) == truth.end());
@@ -452,7 +397,6 @@ TEST_CASE("integration::cpp::row_id_reuse_crash::control_a_committed_tail_surviv
 
         copy_dir_as_crash(config.main_path, crash_dir);
     }
-    // and no rewind: nothing here was ever declared non-durable.
 
     auto crash_config = crash_proof_config(crash_dir.string());
     {

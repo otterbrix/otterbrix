@@ -253,7 +253,8 @@ namespace components::operators {
                                                         services::wal::wal_sync_mode::FULL,
                                                         marker_db_oid,
                                                         commit_id_);
-            // A refused fsync here is still a clean abort — commit_id is stamped nowhere yet.
+            // A refused fsync here is still a clean abort — commit_id is stamped nowhere yet, and the WAL takes the
+            // marker back out of the journal (or refuses every later write when it cannot).
             if (auto commit_result = co_await std::move(wf); commit_result.has_error()) {
                 co_await refuse_(ctx, std::move(undo), commit_result.error());
                 co_return;

@@ -503,7 +503,10 @@ namespace services::dispatcher {
                     return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                 }
             } else {
-                assert(node->expressions().size() == 1);
+                if (node->expressions().size() != 1) {
+                    return core::error_t(core::error_code_t::protocol_violation,
+                                         std::pmr::string{"a WHERE holds more than one predicate", resource});
+                }
                 if (node->expressions()[0]->group() == expression_group::compare) {
                     auto* expr = reinterpret_cast<compare_expression_t*>(node->expressions()[0].get());
                     return validate_schema(context, expr, parameters, schema_left, schema_right);
@@ -2829,8 +2832,6 @@ namespace services::dispatcher {
                             shows(expr, nullptr);
                             key_schema.emplace_back(result.back());
                         } else {
-                            // TODO: add check to validate schema, if assert is triggered
-                            assert(false);
                             return core::error_t(core::error_code_t::unimplemented_yet,
                                                  std::pmr::string{"unrecognized state in validate_schema", resource});
                         }
@@ -2963,7 +2964,12 @@ namespace services::dispatcher {
                     named_schema projected(resource);
                     projected.reserve(node_select->expressions().size());
                     for (const auto& expr : node_select->expressions()) {
-                        assert(expr->group() == expression_group::scalar && "a select under a group projects scalars");
+                        if (expr->group() != expression_group::scalar) {
+                            return core::error_t(
+                                core::error_code_t::protocol_violation,
+                                std::pmr::string{"a select over the groups projects an expression that is not scalar",
+                                                 resource});
+                        }
                         auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
                         if (scalar_expr->type() != scalar_type::get_field) {
                             auto entry = type_from_t{node->result_alias(), scalar_expr->result_type()};
@@ -3869,8 +3875,6 @@ namespace services::dispatcher {
                 return cte_result;
             }
             default:
-                // TODO: add check to validate schema, if assert is triggered
-                assert(false);
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"encountered an unknown state during plan validation", resource});
         }

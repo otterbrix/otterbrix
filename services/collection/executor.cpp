@@ -3606,7 +3606,7 @@ namespace services::collection::executor {
             case node_type::unregister_cast_t:
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
-            // Leaf control nodes like checkpoint/vacuum — omitting this hits validate_schema's default assert(false).
+            // Leaf control nodes like checkpoint/vacuum — omitting this makes validate_schema refuse them.
             case node_type::transaction_t:
             case node_type::fetch_t:
             case node_type::close_cursor_t:

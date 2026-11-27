@@ -8,16 +8,18 @@ using file_lock_type = core::filesystem::file_lock_type;
 
 namespace core::b_plus_tree {
 
-#ifdef DEV_MODE
     namespace {
-        size_t g_max_leaf_nodes_override = 0;
-
         size_t block_for_item(uint32_t item_size) {
             return align_to_block_size(item_size + block_t::header_size + block_t::metadata_size);
         }
 
         // A view key points into an item inside a block, so no copy of it outgrows a block's payload.
         size_t key_copy_bound(size_t block_size, bool view) { return view ? block_size - block_t::header_size : 0; }
+    } // namespace
+
+#ifdef DEV_MODE
+    namespace {
+        size_t g_max_leaf_nodes_override = 0;
     } // namespace
 
     void dev_set_max_leaf_nodes(size_t limit) noexcept { g_max_leaf_nodes_override = limit; }

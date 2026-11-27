@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <limits>
+#include <string>
 #include <string_view>
 
 #include <components/types/type_spec_codec.hpp>
@@ -93,16 +94,6 @@ namespace components::vector {
         uint64_t array_stride(const types::complex_logical_type& type) {
             const auto* extension = type.extension_as<types::array_logical_type_extension>();
             return extension ? extension->size() : 0;
-        }
-
-        // Column type header = [spec_size:u32][spec bytes]; spec_size 0 marks a refused encode.
-        void encode_type_spec_or_poison(const types::complex_logical_type& column_type,
-                                        std::pmr::vector<std::byte>& spec) {
-            spec.clear();
-            auto encoded = types::encode_type_spec(column_type, spec);
-            if (encoded.has_error()) {
-                spec.clear(); // poison marker: spec_size 0 → loud decode failure
-            }
         }
 
         types::complex_logical_type
@@ -204,7 +195,7 @@ namespace components::vector {
             return child_count;
         }
 
-        // False means no rule for this payload; the caller poisons the column rather than writing a short one.
+        // False means no rule for this payload; the caller refuses the chunk rather than writing a short column.
         bool append_vector_payload(const payload_rows_t& rows, uint64_t count, services::wal::buffer_t& buffer) {
             const vector_t& vector = rows.vector;
             const auto physical_type = vector.type().to_physical_type();
@@ -269,8 +260,8 @@ namespace components::vector {
 
             const size_t element_size = fixed_type_size(physical_type);
             if (element_size == 0) {
-                // BIT / UNKNOWN / INVALID have no payload rule; only 0 rows can be written.
-                return count == 0;
+                // BIT / UNKNOWN / INVALID have no payload rule, so no row count of them can be written.
+                return false;
             }
             const size_t at = buffer.size();
             append_bytes(buffer, vector.data(), element_size * count);
@@ -394,7 +385,8 @@ namespace components::vector {
 
     } // anonymous namespace
 
-    void serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer) {
+    core::error_t serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer) {
+        const size_t chunk_start = buffer.size();
         const auto num_columns = static_cast<uint16_t>(chunk.column_count());
         const auto num_rows = static_cast<uint32_t>(chunk.size());
 
@@ -437,9 +429,21 @@ namespace components::vector {
         std::pmr::vector<std::byte> spec(chunk.resource());
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
             const auto& column = chunk.data[column_index];
-            const size_t column_start = buffer.size();
+            const auto refuse = [&](const char* reason) {
+                buffer.resize(chunk_start);
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"WAL: column " +
+                                                          std::to_string(static_cast<unsigned>(column_index)) + " ('" +
+                                                          std::string(column.type().alias()) + "') of logical type " +
+                                                          std::to_string(static_cast<int>(column.type().type())) + " " +
+                                                          reason + "; nothing was journaled",
+                                                      chunk.resource()});
+            };
 
-            encode_type_spec_or_poison(column.type(), spec);
+            spec.clear();
+            if (types::encode_type_spec(column.type(), spec).has_error() || spec.empty()) {
+                return refuse("has no type spec");
+            }
             append_le32(buffer, static_cast<uint32_t>(spec.size()));
             append_bytes(buffer, spec.data(), spec.size());
 
@@ -447,18 +451,16 @@ namespace components::vector {
             append_le32(buffer, 0); // data_size, back-patched once the payload is written
             const size_t data_start = buffer.size();
 
-            const bool payload_written = append_vector_payload(payload_rows_t{column, nullptr, 1}, num_rows, buffer);
+            if (!append_vector_payload(payload_rows_t{column, nullptr, 1}, num_rows, buffer)) {
+                return refuse("has no payload encoding");
+            }
             const size_t payload_size = buffer.size() - data_start;
-
-            if (!payload_written || spec.empty() || payload_size > std::numeric_limits<uint32_t>::max()) {
-                // Poison the whole column (spec_size 0) so the reader refuses it outright.
-                buffer.resize(column_start);
-                append_le32(buffer, 0);
-                append_le32(buffer, 0);
-                continue;
+            if (payload_size > std::numeric_limits<uint32_t>::max()) {
+                return refuse("is larger than one record holds");
             }
             write_le32(buffer.data() + length_position, static_cast<uint32_t>(payload_size));
         }
+        return core::error_t::no_error();
     }
 
     data_chunk_t deserialize_binary(const char* data, size_t len, std::pmr::memory_resource* resource, bool& ok) {

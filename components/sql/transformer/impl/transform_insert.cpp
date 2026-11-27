@@ -457,11 +457,10 @@ namespace components::sql::transform {
                         };
                         if (col_type == types::logical_type::NA) {
                             // Column came from a leading NULL literal; it takes the first value's whole type.
-                            RETURN_IF_ERROR(retype_column([&](const vector::vector_t& filled,
-                                                              uint64_t rows,
-                                                              uint64_t capacity) {
-                                return promote_column(resource_, filled, rows, value.type(), capacity);
-                            }));
+                            RETURN_IF_ERROR(
+                                retype_column([&](const vector::vector_t& filled, uint64_t rows, uint64_t capacity) {
+                                    return promote_column(resource_, filled, rows, value.type(), capacity);
+                                }));
                         } else if (column.type() == value.type()) {
                             // Same type: stored in place.
                         } else if (col_type == types::logical_type::STRING_LITERAL ||
@@ -513,11 +512,10 @@ namespace components::sql::transform {
                         } else if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type)) {
                             const types::complex_logical_type promoted{types::promote_type(col_type, val_type)};
                             if (promoted.type() != col_type) {
-                                RETURN_IF_ERROR(retype_column([&](const vector::vector_t& filled,
-                                                                  uint64_t rows,
-                                                                  uint64_t capacity) {
-                                    return promote_column(resource_, filled, rows, promoted, capacity);
-                                }));
+                                RETURN_IF_ERROR(retype_column(
+                                    [&](const vector::vector_t& filled, uint64_t rows, uint64_t capacity) {
+                                        return promote_column(resource_, filled, rows, promoted, capacity);
+                                    }));
                             }
                             if (promoted.type() != val_type) {
                                 VALUE_OR_RETURN(auto widened, cast_checked(resource_, value, promoted, 1));
@@ -542,11 +540,10 @@ namespace components::sql::transform {
                                     types::promote_type(column_element.type(), value_element.type())};
                             }
                             if (col_type == types::logical_type::ARRAY) {
-                                RETURN_IF_ERROR(retype_column([&](const vector::vector_t& filled,
-                                                                  uint64_t rows,
-                                                                  uint64_t capacity) {
-                                    return promote_array_to_list(resource_, filled, rows, element, capacity);
-                                }));
+                                RETURN_IF_ERROR(retype_column(
+                                    [&](const vector::vector_t& filled, uint64_t rows, uint64_t capacity) {
+                                        return promote_array_to_list(resource_, filled, rows, element, capacity);
+                                    }));
                             } else if (column_element != element) {
                                 defer(std::move(value), global_row);
                                 continue;
@@ -581,8 +578,8 @@ namespace components::sql::transform {
             while (global_row < total) {
                 const uint64_t batch = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, total - global_row);
                 // A chunk starts with the columns, and their types, of the chunks before it.
-                auto schema = chunks.empty() ? std::pmr::vector<types::complex_logical_type>(resource_)
-                                             : chunks.back().types();
+                auto schema =
+                    chunks.empty() ? std::pmr::vector<types::complex_logical_type>(resource_) : chunks.back().types();
                 chunks.emplace_back(resource_, schema, batch);
                 chunks.back().set_cardinality(batch);
                 for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {

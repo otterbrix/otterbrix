@@ -173,9 +173,18 @@ namespace services::wal {
             }
         }
 
+        auto combined = combine_record_parts(std::move(all_records));
+        if (combined.dropped_groups > 0) {
+            error(log_,
+                  "wal_reader , database '{}' holds {} operation(s) whose parts did not all reach the journal , "
+                  "they are not replayed: a write that did not finish journals nothing",
+                  db_dir.filename().string(),
+                  combined.dropped_groups);
+        }
+
         // Shares wal_worker_t::load's filter: an independent copy would test membership by
         // (recycled) txn id and could promote uncommitted records under a stale marker.
-        auto committed = filter_committed_records(std::move(all_records));
+        auto committed = filter_committed_records(std::move(combined.records));
 
         // COMMIT IDS, issued once and never 0.
         if (committed_out != nullptr) {

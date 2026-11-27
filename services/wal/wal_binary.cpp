@@ -1,8 +1,14 @@
 #include "wal_binary.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <tuple>
 
 #include <absl/crc/crc32c.h>
 
@@ -34,8 +40,8 @@ namespace services::wal {
         }
 
         // Layout: [chunk_count:4][chunk_size:4][chunk]*; the whole batch is one record, so recovery sees all or none.
-        void serialize_chunk_batch(buffer_t& payload_buf,
-                                   const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
+        core::error_t serialize_chunk_batch(buffer_t& payload_buf,
+                                            const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
             const size_t count_pos = payload_buf.size();
             payload_buf.resize(count_pos + 4);
             write_le32(payload_buf.data() + count_pos, static_cast<uint32_t>(chunks.size()));
@@ -43,10 +49,11 @@ namespace services::wal {
                 const size_t len_pos = payload_buf.size();
                 payload_buf.resize(len_pos + 4); // size placeholder
                 const size_t data_start = payload_buf.size();
-                components::vector::serialize_binary(chunk, payload_buf);
+                RETURN_IF_ERROR(components::vector::serialize_binary(chunk, payload_buf));
                 const auto chunk_size = static_cast<uint32_t>(payload_buf.size() - data_start);
                 write_le32(payload_buf.data() + len_pos, chunk_size);
             }
+            return core::error_t::no_error();
         }
 
         // Layout: [attoid_count:4][attoid:4]*.
@@ -192,7 +199,169 @@ namespace services::wal {
             return crc;
         }
 
+        // The payload one record can carry: its size field counts the fixed header too.
+        constexpr std::size_t MAX_RECORD_PAYLOAD = std::numeric_limits<uint32_t>::max() - DML_FIXED_HEADER;
+        // [part_index:4][part_count:4] ahead of a part's payload.
+        constexpr std::size_t PART_PREFIX_BYTES = 8;
+
+        std::atomic<std::size_t> g_part_payload_override{0};
+
+        void append_part_prefix(buffer_t& payload, std::size_t part, std::size_t part_count) {
+            const size_t at = payload.size();
+            payload.resize(at + PART_PREFIX_BYTES);
+            write_le32(payload.data() + at, static_cast<uint32_t>(part));
+            write_le32(payload.data() + at + 4, static_cast<uint32_t>(part_count));
+        }
+
+        // serialize_chunk_batch's framing over the part's already serialized chunks.
+        void append_part_chunks(buffer_t& payload, const wal_operation_t& operation, const wal_part_t& part) {
+            const size_t count_pos = payload.size();
+            payload.resize(count_pos + 4);
+            write_le32(payload.data() + count_pos, static_cast<uint32_t>(part.chunk_count));
+            for (std::size_t index = part.first_chunk; index < part.first_chunk + part.chunk_count; ++index) {
+                const auto& chunk = operation.chunks[index];
+                const size_t len_pos = payload.size();
+                payload.resize(len_pos + 4);
+                write_le32(payload.data() + len_pos, static_cast<uint32_t>(chunk.size()));
+                payload.append(chunk);
+            }
+        }
+
     } // anonymous namespace
+
+    std::size_t wal_part_payload_bytes() noexcept {
+        const auto override_bytes = g_part_payload_override.load(std::memory_order_relaxed);
+        return override_bytes != 0 ? override_bytes : WAL_PART_PAYLOAD_BYTES;
+    }
+
+#ifdef DEV_MODE
+    void dev_set_wal_part_payload_bytes(std::size_t bytes) noexcept {
+        g_part_payload_override.store(bytes, std::memory_order_relaxed);
+    }
+#endif
+
+    core::result_wrapper_t<wal_operation_t>
+    cut_into_parts(const std::pmr::vector<components::vector::data_chunk_t>& chunks,
+                   std::size_t attoid_count,
+                   bool carries_row_ids,
+                   std::size_t part_bytes,
+                   std::pmr::memory_resource* resource) {
+        wal_operation_t operation{std::pmr::vector<buffer_t>(resource), std::pmr::vector<wal_part_t>(resource)};
+        operation.chunks.reserve(chunks.size());
+        for (const auto& chunk : chunks) {
+            buffer_t serialized(resource);
+            RETURN_IF_ERROR(components::vector::serialize_binary(chunk, serialized));
+            operation.chunks.push_back(std::move(serialized));
+        }
+
+        // prefix, attoids, chunk count, and an UPDATE's row-id length
+        const std::size_t fixed = PART_PREFIX_BYTES + 4 + 4 * attoid_count + 4 + (carries_row_ids ? 4 : 0);
+        wal_part_t current{};
+        std::size_t current_bytes = fixed;
+        uint64_t row = 0;
+        for (std::size_t index = 0; index < chunks.size(); ++index) {
+            const uint64_t rows = chunks[index].size();
+            const std::size_t cost = 4 + operation.chunks[index].size() + (carries_row_ids ? 8 * rows : 0);
+            if (current.chunk_count > 0 && current_bytes + cost > part_bytes) {
+                operation.parts.push_back(current);
+                current = wal_part_t{index, 0, row, 0};
+                current_bytes = fixed;
+            }
+            if (current.chunk_count == 0) {
+                current.first_chunk = index;
+                current.first_row = row;
+            }
+            if (current_bytes + cost > MAX_RECORD_PAYLOAD) {
+                return core::error_t(core::error_code_t::program_limit_exceeded,
+                                     std::pmr::string{"WAL: chunk " + std::to_string(index) + " of the operation (" +
+                                                          std::to_string(operation.chunks[index].size()) +
+                                                          " bytes) is larger than one record holds; nothing "
+                                                          "was journaled",
+                                                      resource});
+            }
+            ++current.chunk_count;
+            current.row_count += rows;
+            current_bytes += cost;
+            row += rows;
+        }
+        operation.parts.push_back(current);
+        return operation;
+    }
+
+    crc32_t encode_insert_part(buffer_t& buffer,
+                               crc32_t last_crc32,
+                               id_t wal_id,
+                               uint64_t txn_id,
+                               uint64_t sub_id,
+                               components::catalog::oid_t table_oid,
+                               const column_attoids_t& attoids,
+                               const wal_operation_t& operation,
+                               std::size_t part,
+                               uint64_t row_start,
+                               uint64_t row_count) {
+        const auto& slice = operation.parts[part];
+        const bool whole = operation.parts.size() == 1;
+        // Payload: [part prefix, parts only][attoids][chunk_batch].
+        buffer_t payload_buf(buffer.get_allocator());
+        if (!whole) {
+            append_part_prefix(payload_buf, part, operation.parts.size());
+        }
+        serialize_attoids(payload_buf, attoids);
+        append_part_chunks(payload_buf, operation, slice);
+        return write_dml_record(buffer,
+                                last_crc32,
+                                wal_id,
+                                txn_id,
+                                sub_id,
+                                whole ? wal_record_type::PHYSICAL_INSERT : wal_record_type::PHYSICAL_INSERT_PART,
+                                table_oid,
+                                whole ? row_start : row_start + slice.first_row,
+                                whole ? row_count : slice.row_count,
+                                payload_buf.data(),
+                                static_cast<uint32_t>(payload_buf.size()));
+    }
+
+    crc32_t encode_update_part(buffer_t& buffer,
+                               crc32_t last_crc32,
+                               id_t wal_id,
+                               uint64_t txn_id,
+                               uint64_t sub_id,
+                               components::catalog::oid_t table_oid,
+                               const int64_t* row_ids,
+                               const column_attoids_t& attoids,
+                               const wal_operation_t& operation,
+                               std::size_t part,
+                               uint64_t count) {
+        const auto& slice = operation.parts[part];
+        const bool whole = operation.parts.size() == 1;
+        const uint64_t id_count = whole ? count : slice.row_count;
+        const int64_t* ids = whole ? row_ids : row_ids + slice.first_row;
+        // Payload: [part prefix, parts only][row_ids_size:4][row_ids][attoids][chunk_batch].
+        buffer_t payload_buf(buffer.get_allocator());
+        if (!whole) {
+            append_part_prefix(payload_buf, part, operation.parts.size());
+        }
+        const auto row_ids_bytes = static_cast<uint32_t>(id_count * sizeof(int64_t));
+        const size_t at = payload_buf.size();
+        payload_buf.resize(at + 4 + row_ids_bytes);
+        write_le32(payload_buf.data() + at, row_ids_bytes);
+        if (row_ids_bytes > 0) {
+            std::memcpy(payload_buf.data() + at + 4, ids, row_ids_bytes);
+        }
+        serialize_attoids(payload_buf, attoids);
+        append_part_chunks(payload_buf, operation, slice);
+        return write_dml_record(buffer,
+                                last_crc32,
+                                wal_id,
+                                txn_id,
+                                sub_id,
+                                whole ? wal_record_type::PHYSICAL_UPDATE : wal_record_type::PHYSICAL_UPDATE_PART,
+                                table_oid,
+                                0,
+                                id_count,
+                                payload_buf.data(),
+                                static_cast<uint32_t>(payload_buf.size()));
+    }
 
     bool attoids_match_chunks(const column_attoids_t& attoids,
                               const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
@@ -204,45 +373,46 @@ namespace services::wal {
         return true;
     }
 
-    crc32_t encode_insert(buffer_t& buffer,
-                          std::pmr::memory_resource* /*resource*/,
-                          crc32_t last_crc32,
-                          id_t wal_id,
-                          uint64_t txn_id,
-                          uint64_t sub_id,
-                          components::catalog::oid_t table_oid,
-                          const column_attoids_t& attoids,
-                          const std::pmr::vector<components::vector::data_chunk_t>& chunks,
-                          uint64_t row_start,
-                          uint64_t row_count) {
-        // Payload: [attoids][chunk_batch].
-        buffer_t payload_buf(buffer.get_allocator());
-        serialize_attoids(payload_buf, attoids);
-        serialize_chunk_batch(payload_buf, chunks);
-
-        return write_dml_record(buffer,
-                                last_crc32,
-                                wal_id,
-                                txn_id,
-                                sub_id,
-                                wal_record_type::PHYSICAL_INSERT,
-                                table_oid,
-                                row_start,
-                                row_count,
-                                payload_buf.data(),
-                                static_cast<uint32_t>(payload_buf.size()));
+    core::result_wrapper_t<crc32_t> encode_insert(buffer_t& buffer,
+                                                  std::pmr::memory_resource* /*resource*/,
+                                                  crc32_t last_crc32,
+                                                  id_t wal_id,
+                                                  uint64_t txn_id,
+                                                  uint64_t sub_id,
+                                                  components::catalog::oid_t table_oid,
+                                                  const column_attoids_t& attoids,
+                                                  const std::pmr::vector<components::vector::data_chunk_t>& chunks,
+                                                  uint64_t row_start,
+                                                  uint64_t row_count) {
+        VALUE_OR_RETURN(auto operation,
+                        cut_into_parts(chunks,
+                                       attoids.size(),
+                                       false,
+                                       std::numeric_limits<std::size_t>::max(),
+                                       buffer.get_allocator().resource()));
+        return encode_insert_part(buffer,
+                                  last_crc32,
+                                  wal_id,
+                                  txn_id,
+                                  sub_id,
+                                  table_oid,
+                                  attoids,
+                                  operation,
+                                  0,
+                                  row_start,
+                                  row_count);
     }
 
     // Schema-growth record: payload is a 0-row data_chunk whose columns are the new ones; row_count = new-column count.
-    crc32_t encode_add_column(buffer_t& buffer,
-                              crc32_t last_crc32,
-                              id_t wal_id,
-                              uint64_t txn_id,
-                              uint64_t sub_id,
-                              components::catalog::oid_t table_oid,
-                              const column_attoids_t& attoids,
-                              const components::vector::data_chunk_t& schema_chunk,
-                              uint64_t first_position) {
+    core::result_wrapper_t<crc32_t> encode_add_column(buffer_t& buffer,
+                                                      crc32_t last_crc32,
+                                                      id_t wal_id,
+                                                      uint64_t txn_id,
+                                                      uint64_t sub_id,
+                                                      components::catalog::oid_t table_oid,
+                                                      const column_attoids_t& attoids,
+                                                      const components::vector::data_chunk_t& schema_chunk,
+                                                      uint64_t first_position) {
         // Payload: [attoids][chunk_batch].
         buffer_t payload_buf(buffer.get_allocator());
         serialize_attoids(payload_buf, attoids);
@@ -255,7 +425,7 @@ namespace services::wal {
         schema_chunk.copy(schema_copy, 0);
         schema_copy.set_cardinality(schema_chunk.size());
         schema_batch.emplace_back(std::move(schema_copy));
-        serialize_chunk_batch(payload_buf, schema_batch);
+        RETURN_IF_ERROR(serialize_chunk_batch(payload_buf, schema_batch));
 
         return write_dml_record(buffer,
                                 last_crc32,
@@ -294,43 +464,34 @@ namespace services::wal {
                                 payload_size);
     }
 
-    crc32_t encode_update(buffer_t& buffer,
-                          std::pmr::memory_resource* /*resource*/,
-                          crc32_t last_crc32,
-                          id_t wal_id,
-                          uint64_t txn_id,
-                          uint64_t sub_id,
-                          components::catalog::oid_t table_oid,
-                          const int64_t* row_ids,
-                          const column_attoids_t& attoids,
-                          const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
-                          uint64_t count) {
-        // Payload: [row_ids_size:4][row_ids][attoids][chunk_batch: serialize_chunk_batch's own framing].
-
-        buffer_t payload_buf(buffer.get_allocator());
-
-        const auto row_ids_bytes = static_cast<uint32_t>(count * sizeof(int64_t));
-
-        payload_buf.resize(4 + row_ids_bytes);
-        char* p = payload_buf.data();
-        write_le32(p, row_ids_bytes);
-        p += 4;
-        std::memcpy(p, row_ids, row_ids_bytes);
-
-        serialize_attoids(payload_buf, attoids);
-        serialize_chunk_batch(payload_buf, new_chunks);
-
-        return write_dml_record(buffer,
-                                last_crc32,
-                                wal_id,
-                                txn_id,
-                                sub_id,
-                                wal_record_type::PHYSICAL_UPDATE,
-                                table_oid,
-                                0,
-                                count,
-                                payload_buf.data(),
-                                static_cast<uint32_t>(payload_buf.size()));
+    core::result_wrapper_t<crc32_t> encode_update(buffer_t& buffer,
+                                                  std::pmr::memory_resource* /*resource*/,
+                                                  crc32_t last_crc32,
+                                                  id_t wal_id,
+                                                  uint64_t txn_id,
+                                                  uint64_t sub_id,
+                                                  components::catalog::oid_t table_oid,
+                                                  const int64_t* row_ids,
+                                                  const column_attoids_t& attoids,
+                                                  const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
+                                                  uint64_t count) {
+        VALUE_OR_RETURN(auto operation,
+                        cut_into_parts(new_chunks,
+                                       attoids.size(),
+                                       true,
+                                       std::numeric_limits<std::size_t>::max(),
+                                       buffer.get_allocator().resource()));
+        return encode_update_part(buffer,
+                                  last_crc32,
+                                  wal_id,
+                                  txn_id,
+                                  sub_id,
+                                  table_oid,
+                                  row_ids,
+                                  attoids,
+                                  operation,
+                                  0,
+                                  count);
     }
 
     // Marker (37 bytes): [size:4][last_crc32:4][wal_id:8][txn_id:8][record_type:1][commit_id/from_sub_id:8][crc32:4].
@@ -463,7 +624,22 @@ namespace services::wal {
 
         const char* payload = ptr;
 
-        switch (rec.record_type) {
+        if (rec.is_part()) {
+            if (payload_size < PART_PREFIX_BYTES) {
+                rec.is_corrupt = true;
+                return rec;
+            }
+            rec.part_index = read_le32(payload);
+            rec.part_count = read_le32(payload + 4);
+            if (rec.part_count < 2 || rec.part_index >= rec.part_count) {
+                rec.is_corrupt = true;
+                return rec;
+            }
+            payload += PART_PREFIX_BYTES;
+            payload_size -= static_cast<uint32_t>(PART_PREFIX_BYTES);
+        }
+
+        switch (whole_record_type(rec.record_type)) {
             case wal_record_type::PHYSICAL_INSERT: {
                 uint32_t attoid_bytes = deserialize_attoids(payload, payload_size, &rec.physical_attoids);
                 if (attoid_bytes == 0) {
@@ -552,6 +728,76 @@ namespace services::wal {
         }
 
         return rec;
+    }
+
+    combined_records_t combine_record_parts(std::vector<record_t>&& records) {
+        using group_key_t = std::tuple<id_t, uint64_t, uint32_t, uint8_t>;
+        const auto key_of = [](const record_t& record) {
+            return group_key_t{record.id,
+                               record.transaction_id,
+                               static_cast<uint32_t>(record.table_oid),
+                               static_cast<uint8_t>(record.record_type)};
+        };
+        std::map<group_key_t, std::vector<std::size_t>> groups;
+        for (std::size_t index = 0; index < records.size(); ++index) {
+            if (records[index].is_part()) {
+                groups[key_of(records[index])].push_back(index);
+            }
+        }
+
+        // Whole: as many parts as each names, every index once, all valid and of one shape.
+        const auto whole = [&records](std::vector<std::size_t>& members) {
+            const auto& first = records[members.front()];
+            if (members.size() != first.part_count) {
+                return false;
+            }
+            std::sort(members.begin(), members.end(), [&records](std::size_t left, std::size_t right) {
+                return records[left].part_index < records[right].part_index;
+            });
+            for (std::size_t position = 0; position < members.size(); ++position) {
+                const auto& part = records[members[position]];
+                if (!part.is_valid() || part.part_index != position || part.part_count != first.part_count ||
+                    part.sub_id != first.sub_id || part.physical_attoids != first.physical_attoids) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        combined_records_t combined;
+        combined.records.reserve(records.size());
+        for (std::size_t index = 0; index < records.size(); ++index) {
+            if (!records[index].is_part()) {
+                combined.records.push_back(std::move(records[index]));
+                continue;
+            }
+            auto group = groups.find(key_of(records[index]));
+            if (group == groups.end()) {
+                continue; // already joined, or dropped, at its first part
+            }
+            auto members = std::move(group->second);
+            groups.erase(group);
+            if (!whole(members)) {
+                ++combined.dropped_groups;
+                continue;
+            }
+            record_t joined = std::move(records[members.front()]);
+            for (std::size_t position = 1; position < members.size(); ++position) {
+                auto& part = records[members[position]];
+                for (auto& chunk : part.physical_data) {
+                    joined.physical_data.push_back(std::move(chunk));
+                }
+                joined.physical_row_ids.insert(joined.physical_row_ids.end(),
+                                               part.physical_row_ids.begin(),
+                                               part.physical_row_ids.end());
+                joined.physical_row_count += part.physical_row_count;
+            }
+            joined.record_type = whole_record_type(joined.record_type);
+            joined.part_index = 0;
+            joined.part_count = 1;
+            combined.records.push_back(std::move(joined));
+        }
+        return combined;
     }
 
     crc32_t extract_crc(const buffer_t& buffer) { return extract_crc(buffer.data(), buffer.size()); }

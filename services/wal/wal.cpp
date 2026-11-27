@@ -233,35 +233,44 @@ namespace services::wal {
                                    shape_columns(chunks, attoids.size()));
         }
 
-        encode_buf_.clear();
-        // last_crc_ only takes the crc once append() accepts the record, so a refused write can't leave the chain
-        // naming a record never journaled.
-        const auto record_crc = encode_insert(encode_buf_,
-                                              this->resource(),
-                                              last_crc_,
-                                              wal_id,
-                                              txn_id,
-                                              sub_id,
-                                              table_oid,
-                                              attoids,
-                                              chunks,
-                                              row_start,
-                                              row_count);
-
-        if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
-            co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
-        }
-        if (auto append_error = writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
-            append_error.contains_error()) {
+        auto operation = cut_into_parts(chunks, attoids.size(), false, wal_part_payload_bytes(), this->resource());
+        if (operation.has_error()) {
             error(log_,
-                  "wal_worker::write_physical_insert , wal_id : {} , txn : {} , the record did NOT reach the "
-                  "journal: {}",
+                  "wal_worker::write_physical_insert , wal_id : {} , txn : {} , the record was refused: {}",
                   wal_id,
                   txn_id,
-                  append_error.what);
-            co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
+                  operation.error().what);
+            co_return core::result_wrapper_t<wal::id_t>{operation.error()};
         }
-        last_crc_ = record_crc;
+        const auto& parts = operation.value().parts;
+        for (std::size_t part = 0; part < parts.size(); ++part) {
+            encode_buf_.clear();
+            // last_crc_ only takes the crc once append() accepts the record, so a refused write can't leave the
+            // chain naming a record never journaled.
+            const auto record_crc = encode_insert_part(encode_buf_,
+                                                       last_crc_,
+                                                       wal_id,
+                                                       txn_id,
+                                                       sub_id,
+                                                       table_oid,
+                                                       attoids,
+                                                       operation.value(),
+                                                       part,
+                                                       row_start,
+                                                       row_count);
+            if (auto append_error = append_record(wal_id); append_error.contains_error()) {
+                error(log_,
+                      "wal_worker::write_physical_insert , wal_id : {} , txn : {} , part {} of {} did NOT reach the "
+                      "journal, so the operation journals nothing: {}",
+                      wal_id,
+                      txn_id,
+                      part + 1,
+                      parts.size(),
+                      append_error.what);
+                co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
+            }
+            last_crc_ = record_crc;
+        }
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
@@ -330,33 +339,51 @@ namespace services::wal {
                                    shape_columns(new_chunks, attoids.size()));
         }
 
-        encode_buf_.clear();
-        const auto record_crc = encode_update(encode_buf_,
-                                              this->resource(),
-                                              last_crc_,
-                                              wal_id,
-                                              txn_id,
-                                              sub_id,
-                                              table_oid,
-                                              row_ids.data(),
-                                              attoids,
-                                              new_chunks,
-                                              count);
-
-        if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
-            co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
-        }
-        if (auto append_error = writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
-            append_error.contains_error()) {
+        auto operation = cut_into_parts(new_chunks, attoids.size(), true, wal_part_payload_bytes(), this->resource());
+        if (operation.has_error()) {
             error(log_,
-                  "wal_worker::write_physical_update , wal_id : {} , txn : {} , the record did NOT reach the "
-                  "journal: {}",
+                  "wal_worker::write_physical_update , wal_id : {} , txn : {} , the record was refused: {}",
                   wal_id,
                   txn_id,
-                  append_error.what);
-            co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
+                  operation.error().what);
+            co_return core::result_wrapper_t<wal::id_t>{operation.error()};
         }
-        last_crc_ = record_crc;
+        const auto& parts = operation.value().parts;
+        // A part carries its chunks' row ids, so a split update needs exactly one id per row.
+        if (parts.size() > 1 && (count != row_ids.size() || count != parts.back().first_row + parts.back().row_count)) {
+            co_return core::result_wrapper_t<wal::id_t>{core::error_t(
+                core::error_code_t::internal_error,
+                std::pmr::string{"wal_worker::write_physical_update: " + std::to_string(count) + " row id(s) for " +
+                                     std::to_string(parts.back().first_row + parts.back().row_count) +
+                                     " updated row(s); nothing was journaled",
+                                 this->resource()})};
+        }
+        for (std::size_t part = 0; part < parts.size(); ++part) {
+            encode_buf_.clear();
+            const auto record_crc = encode_update_part(encode_buf_,
+                                                       last_crc_,
+                                                       wal_id,
+                                                       txn_id,
+                                                       sub_id,
+                                                       table_oid,
+                                                       row_ids.data(),
+                                                       attoids,
+                                                       operation.value(),
+                                                       part,
+                                                       count);
+            if (auto append_error = append_record(wal_id); append_error.contains_error()) {
+                error(log_,
+                      "wal_worker::write_physical_update , wal_id : {} , txn : {} , part {} of {} did NOT reach the "
+                      "journal, so the operation journals nothing: {}",
+                      wal_id,
+                      txn_id,
+                      part + 1,
+                      parts.size(),
+                      append_error.what);
+                co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
+            }
+            last_crc_ = record_crc;
+        }
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
@@ -392,15 +419,23 @@ namespace services::wal {
         }
 
         encode_buf_.clear();
-        const auto record_crc = encode_add_column(encode_buf_,
-                                                  last_crc_,
-                                                  wal_id,
-                                                  txn_id,
-                                                  sub_id,
-                                                  table_oid,
-                                                  attoids,
-                                                  *schema_chunk,
-                                                  first_position);
+        auto encoded = encode_add_column(encode_buf_,
+                                         last_crc_,
+                                         wal_id,
+                                         txn_id,
+                                         sub_id,
+                                         table_oid,
+                                         attoids,
+                                         *schema_chunk,
+                                         first_position);
+        if (encoded.has_error()) {
+            error(log_,
+                  "wal_worker::write_physical_add_column , wal_id : {} , txn : {} , the record was refused: {}",
+                  wal_id,
+                  txn_id,
+                  encoded.error().what);
+            co_return core::result_wrapper_t<wal::id_t>{encoded.error()};
+        }
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -415,7 +450,7 @@ namespace services::wal {
                   append_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
         }
-        last_crc_ = record_crc;
+        last_crc_ = encoded.value();
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
@@ -688,9 +723,18 @@ namespace services::wal {
             }
         }
 
+        auto combined = combine_record_parts(std::move(all_records));
+        if (combined.dropped_groups > 0) {
+            error(log_,
+                  "wal_worker::load , db_oid={} , {} operation(s) whose parts did not all reach the journal are not "
+                  "answered: a write that did not finish journals nothing",
+                  static_cast<unsigned>(database_oid_),
+                  combined.dropped_groups);
+        }
+
         // filter_committed_records must stay the one shared filter with bootstrap replay, or a recycled txn id's
         // backfill could pass uncommitted.
-        std::vector<record_t> result = filter_committed_records(std::move(all_records));
+        std::vector<record_t> result = filter_committed_records(std::move(combined.records));
 
         std::sort(result.begin(), result.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
@@ -838,8 +882,9 @@ namespace services::wal {
             if (records.has_error()) {
                 return records.error();
             }
+            // >=: the parts of one operation share its id, and the chain ends at the last of them.
             for (const auto& r : records.value()) {
-                if (r.is_valid() && r.id > last_readable_id) {
+                if (r.is_valid() && r.id >= last_readable_id) {
                     last_readable_id = r.id;
                     recovered_crc = r.crc32;
                 }
@@ -875,6 +920,11 @@ namespace services::wal {
               last_readable_id,
               current_segment_index_);
         return core::error_t::no_error();
+    }
+
+    core::error_t wal_worker_t::append_record(wal::id_t wal_id) {
+        RETURN_IF_ERROR(ensure_writer());
+        return writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
     }
 
     core::error_t wal_worker_t::ensure_writer() {

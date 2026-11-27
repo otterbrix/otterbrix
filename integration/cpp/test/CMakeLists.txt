@@ -117,6 +117,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_alter_rename_column_collisions.cpp
         test_alter_missing_column.cpp
         test_wal_nested_payload_replay.cpp
+        test_wal_operation_parts.cpp
         test_type_spec_write_gate.cpp
         test_wide_integer_literal.cpp
         test_decimal_literal_exactness.cpp

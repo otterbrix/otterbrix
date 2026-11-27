@@ -214,6 +214,9 @@ namespace services::wal {
         /// Rotates when full; refuses if the segment can't open or the pre-rotation flush missed disk.
         [[nodiscard]] core::error_t ensure_writer();
 
+        /// ensure_writer, then appends the record encode_buf_ holds.
+        [[nodiscard]] core::error_t append_record(wal::id_t wal_id);
+
         /// Unlink one segment, reporting a failed unlink instead of discarding it.
         void remove_segment(const std::filesystem::path& seg_path);
 

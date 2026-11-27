@@ -76,17 +76,18 @@ TEST_CASE("wal_binary::encode_decode_insert") {
 
     buffer_t buffer(&resource);
     auto attoids = attoids_for(chunk);
-    encode_insert(buffer,
-                  &resource,
-                  /*last_crc32=*/0,
-                  /*wal_id=*/1,
-                  /*txn_id=*/100,
-                  /*sub_id=*/0,
-                  kTestTableOid,
-                  attoids,
-                  to_chunk_batch(chunk),
-                  /*row_start=*/0,
-                  /*row_count=*/10);
+    REQUIRE_FALSE(encode_insert(buffer,
+                                &resource,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/1,
+                                /*txn_id=*/100,
+                                /*sub_id=*/0,
+                                kTestTableOid,
+                                attoids,
+                                to_chunk_batch(chunk),
+                                /*row_start=*/0,
+                                /*row_count=*/10)
+                      .has_error());
 
     REQUIRE(buffer.size() > 0);
 
@@ -149,17 +150,18 @@ TEST_CASE("wal_binary::encode_decode_update") {
 
     buffer_t buffer(&resource);
     auto attoids = attoids_for(new_data);
-    encode_update(buffer,
-                  &resource,
-                  /*last_crc32=*/0,
-                  /*wal_id=*/3,
-                  /*txn_id=*/102,
-                  /*sub_id=*/0,
-                  kTestTableOid,
-                  row_ids.data(),
-                  attoids,
-                  to_chunk_batch(new_data),
-                  /*count=*/5);
+    REQUIRE_FALSE(encode_update(buffer,
+                                &resource,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/3,
+                                /*txn_id=*/102,
+                                /*sub_id=*/0,
+                                kTestTableOid,
+                                row_ids.data(),
+                                attoids,
+                                to_chunk_batch(new_data),
+                                /*count=*/5)
+                      .has_error());
 
     REQUIRE(buffer.size() > 0);
 
@@ -211,17 +213,18 @@ TEST_CASE("wal_binary::crc32_corruption") {
     auto chunk = gen_data_chunk(10, &resource);
 
     buffer_t buffer(&resource);
-    encode_insert(buffer,
-                  &resource,
-                  /*last_crc32=*/0,
-                  /*wal_id=*/1,
-                  /*txn_id=*/100,
-                  /*sub_id=*/0,
-                  kTestTableOid,
-                  attoids_for(chunk),
-                  to_chunk_batch(chunk),
-                  /*row_start=*/0,
-                  /*row_count=*/10);
+    REQUIRE_FALSE(encode_insert(buffer,
+                                &resource,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/1,
+                                /*txn_id=*/100,
+                                /*sub_id=*/0,
+                                kTestTableOid,
+                                attoids_for(chunk),
+                                to_chunk_batch(chunk),
+                                /*row_start=*/0,
+                                /*row_count=*/10)
+                      .has_error());
 
     REQUIRE(buffer.size() > 29);
 
@@ -237,22 +240,85 @@ TEST_CASE("wal_binary::truncated_input") {
     auto chunk = gen_data_chunk(10, &resource);
 
     buffer_t buffer(&resource);
-    encode_insert(buffer,
-                  &resource,
-                  /*last_crc32=*/0,
-                  /*wal_id=*/1,
-                  /*txn_id=*/100,
-                  /*sub_id=*/0,
-                  kTestTableOid,
-                  attoids_for(chunk),
-                  to_chunk_batch(chunk),
-                  /*row_start=*/0,
-                  /*row_count=*/10);
+    REQUIRE_FALSE(encode_insert(buffer,
+                                &resource,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/1,
+                                /*txn_id=*/100,
+                                /*sub_id=*/0,
+                                kTestTableOid,
+                                attoids_for(chunk),
+                                to_chunk_batch(chunk),
+                                /*row_start=*/0,
+                                /*row_count=*/10)
+                      .has_error());
 
     buffer_t truncated(buffer.data(), buffer.size() / 2, &resource);
 
     auto record = decode_record(truncated, &resource);
     REQUIRE((record.is_corrupt || record.size == 0));
+}
+
+// VALIDITY (physically BIT) has a type spec but no payload rule: the chunk is refused, at any row count, and
+// nothing is written.
+TEST_CASE("wal_binary::uncarriable_column") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.emplace_back(logical_type::VALIDITY, "bits");
+
+    for (const uint64_t rows : {uint64_t{0}, uint64_t{3}}) {
+        INFO("rows: " << rows);
+        data_chunk_t chunk(&resource, types, 4);
+        for (uint64_t row = 0; row < rows; ++row) {
+            chunk.data[0].set_value(row, static_cast<int64_t>(row));
+        }
+        chunk.set_cardinality(rows);
+
+        DYNAMIC_SECTION("serialize_binary, rows " << rows) {
+            buffer_t buffer("prefix", &resource);
+            CHECK(serialize_binary(chunk, buffer).contains_error());
+            CHECK(buffer == "prefix");
+        }
+
+        DYNAMIC_SECTION("encode_insert, rows " << rows) {
+            // Moved, not copied: vector_ops::copy has no rule for a BIT vector either.
+            const auto attoids = attoids_for(chunk);
+            std::pmr::vector<data_chunk_t> batch(&resource);
+            batch.emplace_back(std::move(chunk));
+            buffer_t buffer(&resource);
+            CHECK(encode_insert(buffer,
+                                &resource,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/1,
+                                /*txn_id=*/100,
+                                /*sub_id=*/0,
+                                kTestTableOid,
+                                attoids,
+                                batch,
+                                /*row_start=*/0,
+                                /*row_count=*/rows)
+                      .has_error());
+            CHECK(buffer.empty());
+        }
+    }
+}
+
+// Older builds wrote such a column as spec_size 0 (and data_size 0); a journal holding one is refused on read.
+TEST_CASE("wal_binary::poisoned_column_from_an_older_build") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 4);
+    buffer_t buffer(&resource);
+    const uint16_t columns = 1;
+    const uint32_t zero = 0;
+    buffer.append(reinterpret_cast<const char*>(&columns), sizeof(columns));
+    buffer.append(reinterpret_cast<const char*>(&zero), sizeof(zero)); // rows
+    buffer.append(reinterpret_cast<const char*>(&zero), sizeof(zero)); // null mask size
+    buffer.append(reinterpret_cast<const char*>(&zero), sizeof(zero)); // spec_size
+    buffer.append(reinterpret_cast<const char*>(&zero), sizeof(zero)); // data_size
+
+    bool ok = true;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+    CHECK_FALSE(ok);
 }
 
 TEST_CASE("wal_binary::data_chunk_binary_mixed_types") {
@@ -270,7 +336,7 @@ TEST_CASE("wal_binary::data_chunk_binary_mixed_types") {
     REQUIRE(chunk.size() == 8);
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     REQUIRE(buffer.size() > 0);
 
@@ -305,7 +371,7 @@ TEST_CASE("wal_binary::data_chunk_binary_with_nulls") {
     }
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     REQUIRE(buffer.size() > 0);
 
@@ -359,7 +425,7 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
     }
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
     REQUIRE(buffer.size() > 0);
 
     bool ok = false;
@@ -420,7 +486,7 @@ TEST_CASE("wal_binary::data_chunk_binary_array_payload_roundtrip") {
     REQUIRE(elem_null(chunk.data[1], 3, 1));
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     bool ok = false;
     auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
@@ -483,7 +549,7 @@ TEST_CASE("wal_binary::data_chunk_binary_list_payload_roundtrip") {
     }
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     bool ok = false;
     auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
@@ -518,7 +584,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_string_payload_is_not_read") {
     reinterpret_cast<std::string_view*>(chunk.data[0].data())[1] = marker;
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
 
@@ -554,7 +620,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_list_element_string_payload_is_not
     reinterpret_cast<std::string_view*>(child.data())[3] = marker;
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
 
@@ -595,8 +661,8 @@ TEST_CASE("wal_binary::data_chunk_binary_null_list_row_entry_is_not_read") {
     auto dirty = make_chunk(5);
     buffer_t clean_buffer(&resource);
     buffer_t dirty_buffer(&resource);
-    serialize_binary(clean, clean_buffer);
-    serialize_binary(dirty, dirty_buffer);
+    REQUIRE_FALSE(serialize_binary(clean, clean_buffer).contains_error());
+    REQUIRE_FALSE(serialize_binary(dirty, dirty_buffer).contains_error());
 
     CHECK(dirty_buffer.size() == clean_buffer.size());
 
@@ -632,7 +698,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_fixed_width_payload_is_not_read") 
     }
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     CHECK_FALSE(buffer_contains(buffer, kBytes.substr(0, 4)));
 
@@ -673,7 +739,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_struct_row_children_are_not_read")
     REQUIRE(chunk.data[0].entries()[1]->validity().row_is_valid(1));
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
     CHECK_FALSE(buffer_contains(buffer, bigint_marker));
@@ -707,7 +773,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_array_row_elements_are_not_read") 
     REQUIRE(chunk.data[0].entry().validity().row_is_valid(2));
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
 
@@ -754,7 +820,7 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_payload_roundtrip") {
     REQUIRE_FALSE(chunk.data[1].entries()[1]->validity().row_is_valid(2));
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     bool ok = false;
     auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
@@ -826,7 +892,7 @@ TEST_CASE("wal_binary::data_chunk_binary_second_level_nesting_roundtrip") {
     }
 
     buffer_t buffer(&resource);
-    serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(serialize_binary(chunk, buffer).contains_error());
 
     bool ok = false;
     auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
@@ -885,17 +951,18 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
     }
 
     buffer_t buffer(&resource);
-    encode_insert(buffer,
-                  &resource,
-                  /*last_crc32=*/0,
-                  /*wal_id=*/7,
-                  /*txn_id=*/42,
-                  /*sub_id=*/0,
-                  kTestTableOid,
-                  attoids_for(chunk),
-                  to_chunk_batch(chunk),
-                  /*row_start=*/0,
-                  /*row_count=*/3);
+    REQUIRE_FALSE(encode_insert(buffer,
+                                &resource,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/7,
+                                /*txn_id=*/42,
+                                /*sub_id=*/0,
+                                kTestTableOid,
+                                attoids_for(chunk),
+                                to_chunk_batch(chunk),
+                                /*row_start=*/0,
+                                /*row_count=*/3)
+                      .has_error());
 
     auto record = decode_record(buffer, &resource);
     REQUIRE(record.is_valid());
@@ -1047,5 +1114,151 @@ TEST_CASE("wal_binary::savepoints") {
             kept.push_back(record.id);
         }
         REQUIRE(kept == std::vector<services::wal::id_t>{1, 4, 5, 6, 7});
+    }
+}
+
+namespace {
+    // The records a buffer of back-to-back records holds, decoded.
+    std::vector<record_t> decode_all(const buffer_t& buffer, std::pmr::memory_resource* resource) {
+        std::vector<record_t> records;
+        size_t offset = 0;
+        while (offset < buffer.size()) {
+            auto record = decode_record(buffer.data() + offset, buffer.size() - offset, resource);
+            REQUIRE(record.is_valid());
+            offset += record.size;
+            records.push_back(std::move(record));
+        }
+        return records;
+    }
+
+    // Rows 0..2347 over three chunks, the last one short.
+    std::pmr::vector<data_chunk_t> operation_chunks(std::pmr::memory_resource* resource) {
+        std::pmr::vector<data_chunk_t> chunks(resource);
+        chunks.push_back(gen_data_chunk(1024, 0, wal_test_types(resource), resource));
+        chunks.push_back(gen_data_chunk(1024, 1024, wal_test_types(resource), resource));
+        chunks.push_back(gen_data_chunk(300, 2048, wal_test_types(resource), resource));
+        return chunks;
+    }
+
+    void check_same_chunks(const std::pmr::vector<data_chunk_t>& joined,
+                           const std::pmr::vector<data_chunk_t>& written) {
+        REQUIRE(joined.size() == written.size());
+        for (size_t index = 0; index < written.size(); ++index) {
+            REQUIRE(joined[index].size() == written[index].size());
+            for (uint64_t column = 0; column < written[index].column_count(); ++column) {
+                for (uint64_t row = 0; row < written[index].size(); ++row) {
+                    REQUIRE(cells_equal(joined[index].data[column], row, written[index].data[column], row));
+                }
+            }
+        }
+    }
+} // namespace
+
+// An operation past the part budget is a group of *_PART records under its one wal id; the reader joins a whole
+// group into the record one write would have made, and drops a group missing a part.
+TEST_CASE("wal_binary::operation_parts") {
+    core::pmr::otterbrix_resource resource;
+    const auto chunks = operation_chunks(&resource);
+    const auto attoids = attoids_for(chunks.front());
+    constexpr uint64_t row_start = 5;
+    constexpr uint64_t rows = 2348;
+
+    SECTION("an insert that fits") {
+        auto operation = cut_into_parts(chunks, attoids.size(), false, WAL_PART_PAYLOAD_BYTES, &resource);
+        REQUIRE_FALSE(operation.has_error());
+        CHECK(operation.value().parts.size() == 1);
+        buffer_t from_parts(&resource);
+        buffer_t whole(&resource);
+        encode_insert_part(from_parts, 0, 9, 100, 0, kTestTableOid, attoids, operation.value(), 0, row_start, rows);
+        REQUIRE_FALSE(
+            encode_insert(whole, &resource, 0, 9, 100, 0, kTestTableOid, attoids, chunks, row_start, rows).has_error());
+        CHECK(from_parts == whole);
+    }
+
+    // A budget of one byte: every chunk is a part of its own.
+    auto operation = cut_into_parts(chunks, attoids.size(), false, 1, &resource);
+    REQUIRE_FALSE(operation.has_error());
+    REQUIRE(operation.value().parts.size() == 3);
+    buffer_t buffer(&resource);
+    crc32_t crc = 0;
+    for (size_t part = 0; part < 3; ++part) {
+        crc = encode_insert_part(buffer,
+                                 crc,
+                                 9,
+                                 100,
+                                 0,
+                                 kTestTableOid,
+                                 attoids,
+                                 operation.value(),
+                                 part,
+                                 row_start,
+                                 rows);
+    }
+    crc = encode_commit(buffer, crc, 10, 100, 77);
+    auto records = decode_all(buffer, &resource);
+    REQUIRE(records.size() == 4);
+    for (size_t part = 0; part < 3; ++part) {
+        CHECK(records[part].record_type == wal_record_type::PHYSICAL_INSERT_PART);
+    }
+
+    auto check_joined = [&](combined_records_t combined) {
+        CHECK(combined.dropped_groups == 0);
+        REQUIRE(combined.records.size() == 2);
+        const auto& joined = combined.records[0];
+        CHECK(joined.record_type == wal_record_type::PHYSICAL_INSERT);
+        CHECK(joined.id == 9);
+        CHECK(joined.physical_row_start == row_start);
+        CHECK(joined.physical_row_count == rows);
+        CHECK(joined.physical_attoids == attoids);
+        check_same_chunks(joined.physical_data, chunks);
+        CHECK(combined.records[1].is_commit_marker());
+    };
+
+    SECTION("the parts of an insert") { check_joined(combine_record_parts(std::move(records))); }
+
+    SECTION("the parts of an insert, read in reverse order") {
+        std::swap(records[0], records[2]);
+        check_joined(combine_record_parts(std::move(records)));
+    }
+
+    SECTION("an insert missing its middle part") {
+        records.erase(records.begin() + 1);
+        auto combined = combine_record_parts(std::move(records));
+        CHECK(combined.dropped_groups == 1);
+        REQUIRE(combined.records.size() == 1);
+        CHECK(combined.records[0].is_commit_marker());
+    }
+
+    SECTION("the parts of an update") {
+        std::vector<int64_t> row_ids(rows);
+        for (uint64_t row = 0; row < rows; ++row) {
+            row_ids[row] = static_cast<int64_t>(row * 2);
+        }
+        auto update = cut_into_parts(chunks, attoids.size(), true, 1, &resource);
+        REQUIRE_FALSE(update.has_error());
+        REQUIRE(update.value().parts.size() == 3);
+        buffer_t update_buffer(&resource);
+        crc32_t update_crc = 0;
+        for (size_t part = 0; part < 3; ++part) {
+            update_crc = encode_update_part(update_buffer,
+                                            update_crc,
+                                            11,
+                                            101,
+                                            0,
+                                            kTestTableOid,
+                                            row_ids.data(),
+                                            attoids,
+                                            update.value(),
+                                            part,
+                                            rows);
+        }
+        auto combined = combine_record_parts(decode_all(update_buffer, &resource));
+        CHECK(combined.dropped_groups == 0);
+        REQUIRE(combined.records.size() == 1);
+        const auto& joined = combined.records[0];
+        CHECK(joined.record_type == wal_record_type::PHYSICAL_UPDATE);
+        CHECK(joined.physical_row_count == rows);
+        CHECK(std::vector<int64_t>(joined.physical_row_ids.begin(), joined.physical_row_ids.end()) == row_ids);
+        check_same_chunks(joined.physical_data, chunks);
     }
 }

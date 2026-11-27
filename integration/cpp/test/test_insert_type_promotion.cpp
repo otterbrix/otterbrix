@@ -383,13 +383,15 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::values_across_chunks") 
         INFO("rows before the tail: " << lead);
         const std::string t = "c.t" + std::to_string(lead);
 
-        DYNAMIC_SECTION(lead << " rows, " <<"integers, then a fraction, into double precision") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "integers, then a fraction, into double precision") {
             exec("CREATE TABLE " + t + " (x double precision);");
             exec("INSERT INTO " + t + " VALUES " + values_list("%d", lead, {"2.5"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = 2.5;") == 1);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"NULLs, then values") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "NULLs, then values") {
             for (const std::string type : {"integer", "text", "decimal(10,2)", "date"}) {
                 INFO("column type: " << type);
                 const std::string first = type == "date" ? "DATE '2024-01-02'" : type == "text" ? "'v'" : "1";
@@ -401,56 +403,63 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::values_across_chunks") 
             }
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"two columns, one of which widens") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "two columns, one of which widens") {
             exec("CREATE TABLE " + t + " (a bigint, b double precision);");
-            exec("INSERT INTO " + t + " VALUES " + values_list("%d, 0", lead, {std::to_string(lead) + ", 0.1"}) +
-                 ";");
+            exec("INSERT INTO " + t + " VALUES " + values_list("%d, 0", lead, {std::to_string(lead) + ", 0.1"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + " WHERE a = " + std::to_string(lead) + " AND b = 0.1;") == 1);
             CHECK(number("SELECT count(*) FROM " + t + " WHERE a = 7 AND b = 0;") == 1);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"fractions, then an integer, into integer") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "fractions, then an integer, into integer") {
             exec("CREATE TABLE " + t + " (x integer);");
             exec("INSERT INTO " + t + " VALUES " + values_list("2.0", lead, {"7"}) + ";");
             CHECK(number("SELECT min(x) FROM " + t + ";") == 2);
             CHECK(number("SELECT max(x) FROM " + t + ";") == 7);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"fractions, then an integer, into decimal") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "fractions, then an integer, into decimal") {
             exec("CREATE TABLE " + t + " (x decimal(10,2));");
             exec("INSERT INTO " + t + " VALUES " + values_list("1.25", lead, {"7"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = 7;") == 1);
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = 1.25;") == lead);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"integers, then a typed decimal") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "integers, then a typed decimal") {
             exec("CREATE TABLE " + t + " (x decimal(10,2));");
             exec("INSERT INTO " + t + " VALUES " + values_list("1", lead, {"CAST('2.50' AS DECIMAL(10,2))"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = 2.5;") == 1);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"integers, then a string, into text") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "integers, then a string, into text") {
             exec("CREATE TABLE " + t + " (x text);");
             exec("INSERT INTO " + t + " VALUES " + values_list("%d", lead, {"'abc'"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = 'abc';") == 1);
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = '7';") == 1);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"values of the column's type, then another") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "values of the column's type, then another") {
             exec("CREATE TABLE " + t + " (d double precision, s text, day date);");
             exec("INSERT INTO " + t + " VALUES " +
                  values_list("0.5, 'a', DATE '2024-01-01'", lead, {"7, 5, '2024-01-02'"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + " WHERE d = 7 AND s = '5' AND day = DATE '2024-01-02';") == 1);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"quoted dates, then a DATE literal") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "quoted dates, then a DATE literal") {
             exec("CREATE TABLE " + t + " (x date);");
             exec("INSERT INTO " + t + " VALUES " + values_list("'2024-01-01'", lead, {"DATE '2024-01-02'"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = DATE '2024-01-02';") == 1);
             CHECK(number("SELECT count(*) FROM " + t + " WHERE x = DATE '2024-01-01';") == lead);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"strings, then a number") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "strings, then a number") {
             exec("CREATE TABLE " + t + " (s text, n integer);");
             exec("INSERT INTO " + t + " VALUES " + values_list("'b', '2'", lead, {"7, 7", "'z', '9'"}) + ";");
             CHECK(number("SELECT count(*) FROM " + t + ";") == lead + 2);
@@ -458,16 +467,16 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::values_across_chunks") 
             CHECK(number("SELECT sum(n) FROM " + t + ";") == 2 * lead + 16);
         }
 
-        DYNAMIC_SECTION(lead << " rows, " <<"a parameter after the first chunk") {
+        DYNAMIC_SECTION(lead << " rows, "
+                             << "a parameter after the first chunk") {
             exec("CREATE TABLE " + t + " (id bigint, s text);");
             auto* resource = dispatcher->resource();
             std::vector<std::pair<size_t, components::vector::vector_t>> params;
             params.emplace_back(1, components::vector::make_scalar(resource, int64_t{99}));
-            auto insert =
-                dispatcher->execute_sql_with_params(otterbrix::session_id_t(),
-                                                    "INSERT INTO " + t + " (s) VALUES " +
-                                                        values_list("'i'", lead, {"$1", "13"}) + ";",
-                                                    params);
+            auto insert = dispatcher->execute_sql_with_params(otterbrix::session_id_t(),
+                                                              "INSERT INTO " + t + " (s) VALUES " +
+                                                                  values_list("'i'", lead, {"$1", "13"}) + ";",
+                                                              params);
             INFO("error: " << (insert->is_error() ? insert->get_error().what.c_str() : "none"));
             REQUIRE(insert->is_success());
             CHECK(number("SELECT count(*) FROM " + t + " WHERE s = '99';") == 1);
@@ -490,12 +499,12 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::insert_binding") {
                                       std::pmr::vector<catalog::oid_t>{resource},
                                       std::pmr::vector<operators::projected_column_t>{resource});
     logical_plan::insert_column_bindings_t bindings(resource);
-    bindings.push_back(logical_plan::insert_column_binding_t{
-        .target_index = 0,
-        .target_name = std::pmr::string{"x", resource},
-        .target_type = types::complex_logical_type{types::logical_type::BIGINT},
-        .source_type = types::complex_logical_type{types::logical_type::BIGINT},
-        .cast = {}});
+    bindings.push_back(
+        logical_plan::insert_column_binding_t{.target_index = 0,
+                                              .target_name = std::pmr::string{"x", resource},
+                                              .target_type = types::complex_logical_type{types::logical_type::BIGINT},
+                                              .source_type = types::complex_logical_type{types::logical_type::BIGINT},
+                                              .cast = {}});
     insert.set_column_bindings(std::move(bindings));
 
     SECTION("a column of another type than the binding was resolved for") {

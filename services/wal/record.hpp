@@ -17,7 +17,22 @@ namespace services::wal {
         PHYSICAL_DELETE = 11,
         PHYSICAL_UPDATE = 12,
         PHYSICAL_ADD_COLUMN = 13,
+        // INSERT / UPDATE too large for one record. All parts share the operation's wal id
+        PHYSICAL_INSERT_PART = 14,
+        PHYSICAL_UPDATE_PART = 15,
     };
+
+    // The record type a part completes; any other type is its own.
+    [[nodiscard]] constexpr wal_record_type whole_record_type(wal_record_type type) noexcept {
+        switch (type) {
+            case wal_record_type::PHYSICAL_INSERT_PART:
+                return wal_record_type::PHYSICAL_INSERT;
+            case wal_record_type::PHYSICAL_UPDATE_PART:
+                return wal_record_type::PHYSICAL_UPDATE;
+            default:
+                return type;
+        }
+    }
 
     struct record_t final {
         // Resource must arrive at construction: pmr move-assignment doesn't adopt the source's
@@ -47,6 +62,9 @@ namespace services::wal {
         std::pmr::vector<int64_t> physical_row_ids;
         uint64_t physical_row_start{0};
         uint64_t physical_row_count{0};
+        // A *_PART record: its place in the operation's group (part_count >= 2). A whole record has 0 of 1.
+        uint32_t part_index{0};
+        uint32_t part_count{1};
         core::date::timezone_offset_t session_tz{};
 
         bool is_corrupt{false};
@@ -57,8 +75,9 @@ namespace services::wal {
         bool is_physical() const {
             return record_type == wal_record_type::PHYSICAL_INSERT || record_type == wal_record_type::PHYSICAL_DELETE ||
                    record_type == wal_record_type::PHYSICAL_UPDATE ||
-                   record_type == wal_record_type::PHYSICAL_ADD_COLUMN;
+                   record_type == wal_record_type::PHYSICAL_ADD_COLUMN || is_part();
         }
+        bool is_part() const { return record_type != whole_record_type(record_type); }
     };
 
 } // namespace services::wal

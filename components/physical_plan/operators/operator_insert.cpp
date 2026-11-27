@@ -83,14 +83,13 @@ namespace components::operators {
                 const auto& binding = column_bindings_[i];
                 // The cast reads the bits of the type it was resolved from; another type would be reinterpreted.
                 if (input.data[i].type() != binding.source_type) {
-                    return core::error_t(core::error_code_t::internal_error,
-                                         std::pmr::string{"INSERT: column '" + std::string(binding.target_name) +
-                                                              "' arrives as " +
-                                                              catalog::describe_type(input.data[i].type()) +
-                                                              ", not as the " +
-                                                              catalog::describe_type(binding.source_type) +
-                                                              " its assignment was resolved for",
-                                                          resource_});
+                    return core::error_t(
+                        core::error_code_t::internal_error,
+                        std::pmr::string{"INSERT: column '" + std::string(binding.target_name) + "' arrives as " +
+                                             catalog::describe_type(input.data[i].type()) + ", not as the " +
+                                             catalog::describe_type(binding.source_type) +
+                                             " its assignment was resolved for",
+                                         resource_});
                 }
                 if (!binding.cast) {
                     input.data[i].set_type_alias(std::string(binding.target_name));

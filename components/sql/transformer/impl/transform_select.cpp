@@ -154,10 +154,13 @@ namespace components::sql::transform {
                 const bool unqualified =
                     written.database.t.empty() && written.schema.t.empty() && written.connection.t.empty();
                 if (unqualified) {
-                    if (auto cte = cte_queries_.find(written.collection.t); cte != cte_queries_.end()) {
+                    if (const auto* cte = visible_cte(written.collection.t); cte != nullptr) {
                         slot_name.collection = written.collection.t;
                         auto agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
-                        VALUE_OR_RETURN(auto body, transform_select(*cte->second, plan));
+                        hidden_ctes_.push_back(hidden_ctes_t{cte->clause, cte->position});
+                        auto transformed = transform_select(*cte->body, plan);
+                        hidden_ctes_.pop_back();
+                        VALUE_OR_RETURN(auto body, std::move(transformed));
                         agg->append_child(std::move(body));
                         agg->children().back()->set_result_alias(visible);
                         return agg;
@@ -386,11 +389,23 @@ namespace components::sql::transform {
         return agg;
     }
 
-    core::error_t transformer::register_with_ctes(WithClause* with_clause) {
+    transformer::with_scope_t::with_scope_t(transformer* owner)
+        : owner_(owner)
+        , names_(owner->resource_) {}
+
+    transformer::with_scope_t::~with_scope_t() {
+        for (const auto name : names_) {
+            owner_->cte_queries_.erase(name);
+            owner_->recursive_cte_queries_.erase(std::string(name));
+        }
+    }
+
+    core::error_t transformer::register_with_ctes(WithClause* with_clause, with_scope_t* scope) {
         if (!with_clause) {
             return core::error_t::no_error();
         }
         std::pmr::unordered_set<std::string_view> this_clause{resource_};
+        const size_t clause = with_clause_counter_++;
         for (const auto& item : with_clause->ctes->lst) {
             auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
             if (nodeTag(cte->ctequery) != T_SelectStmt) {
@@ -411,13 +426,29 @@ namespace components::sql::transform {
                 return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
             }
             this_clause.emplace(cte->ctename);
+            scope->names_.push_back(cte->ctename);
             if (with_clause->recursive) {
                 recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
             } else {
-                cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+                cte_queries_.emplace(
+                    cte->ctename,
+                    cte_definition_t{pg_ptr_cast<SelectStmt>(cte->ctequery), clause, this_clause.size() - 1});
             }
         }
         return core::error_t::no_error();
+    }
+
+    const transformer::cte_definition_t* transformer::visible_cte(std::string_view name) const {
+        const auto found = cte_queries_.find(name);
+        if (found == cte_queries_.end()) {
+            return nullptr;
+        }
+        for (const auto& hidden : hidden_ctes_) {
+            if (hidden.clause == found->second.clause && found->second.position >= hidden.from_position) {
+                return nullptr;
+            }
+        }
+        return &found->second;
     }
 
     core::result_wrapper_t<logical_plan::node_ptr>
@@ -588,7 +619,8 @@ namespace components::sql::transform {
 
         if (node.op == SETOP_UNION) {
             // WITH must be registered before the arms so both can see the CTEs.
-            RETURN_IF_ERROR(register_with_ctes(node.withClause));
+            with_scope_t with_scope{this};
+            RETURN_IF_ERROR(register_with_ctes(node.withClause, &with_scope));
             VALUE_OR_RETURN(auto left, transform_select(*node.larg, plan));
             VALUE_OR_RETURN(auto right, transform_select(*node.rarg, plan));
             logical_plan::node_ptr union_node =
@@ -664,7 +696,8 @@ namespace components::sql::transform {
                     "SELECT set operations (INTERSECT / EXCEPT) are not yet supported by the SQL transformer",
                     resource_});
         }
-        RETURN_IF_ERROR(register_with_ctes(node.withClause));
+        with_scope_t with_scope{this};
+        RETURN_IF_ERROR(register_with_ctes(node.withClause, &with_scope));
         RETURN_IF_ERROR(pull_up_sublinks(node));
         logical_plan::node_aggregate_ptr agg = nullptr;
         name_collection_t names;

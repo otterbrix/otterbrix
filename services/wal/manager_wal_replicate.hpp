@@ -104,6 +104,9 @@ namespace services::wal {
 
         unique_future<core::result_wrapper_t<wal::id_t>> current_wal_id(session_id_t session);
 
+        // The lowest record id any worker still holds; the id_t maximum when the journal holds none.
+        unique_future<core::result_wrapper_t<wal::id_t>> oldest_retained_wal_id(session_id_t session);
+
         // Self-sent by commit_txn when WAL growth trips the threshold; fire-and-forget.
         unique_future<void> run_auto_checkpoint(session_id_t session);
 
@@ -168,6 +171,7 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::rollback_to,
                                                        &manager_wal_replicate_t::truncate_before,
                                                        &manager_wal_replicate_t::current_wal_id,
+                                                       &manager_wal_replicate_t::oldest_retained_wal_id,
                                                        &manager_wal_replicate_t::run_auto_checkpoint,
                                                        &manager_wal_replicate_t::stop_auto_checkpoint,
                                                        &manager_wal_replicate_t::write_physical_insert,

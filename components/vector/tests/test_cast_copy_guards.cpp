@@ -73,7 +73,7 @@ TEST_CASE("deserialize_binary: a null mask shorter than the chunk is a refusal")
     chunk.data[1].set_null(3, true); // forces the writer to emit the top-level null mask
 
     std::pmr::string buffer(&resource);
-    vector::serialize_binary(chunk, buffer);
+    REQUIRE_FALSE(vector::serialize_binary(chunk, buffer).contains_error());
 
     // Header: [cols:2][rows:4][null_mask_size:4][mask...].
     REQUIRE(read_le32_at(buffer, 6) == 2);

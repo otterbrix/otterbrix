@@ -57,6 +57,7 @@ namespace services::index {
                                                                         components::catalog::oid_t table_oid,
                                                                         components::catalog::oid_t index_oid,
                                                                         uint64_t flush_threshold,
+                                                                        uint64_t memory_limit,
                                                                         log_t& log);
 
         // btree_t::load() is void and cannot fail, so the store opens directly in the initializer
@@ -66,6 +67,7 @@ namespace services::index {
                             components::catalog::oid_t table_oid,
                             components::catalog::oid_t index_oid,
                             uint64_t flush_threshold,
+                            uint64_t memory_limit,
                             log_t& log);
         ~btree_index_agent_t();
 

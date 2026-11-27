@@ -192,6 +192,7 @@ TEST_CASE("services::index::btree_index_agent_t rebuild clear keeps other transa
                                                     kTableOid,
                                                     kIndexOid,
                                                     /*flush_threshold=*/1000,
+                                                    /*memory_limit=*/std::numeric_limits<uint64_t>::max(),
                                                     log);
     REQUIRE_FALSE(agent_result.has_error());
     auto agent = std::move(agent_result.value());

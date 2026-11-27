@@ -26,6 +26,7 @@ target_link_libraries(
         absl::crc32c
         otterbrix::types
         otterbrix::file
+        otterbrix::pmr
 )
 
 target_include_directories(

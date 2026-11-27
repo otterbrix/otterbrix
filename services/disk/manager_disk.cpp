@@ -34,6 +34,7 @@ namespace services::disk {
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::reclaim_oids>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_many>,
@@ -174,6 +175,32 @@ namespace services::disk {
 #ifdef DEV_MODE
         capture_clean_fingerprint();
 #endif
+    }
+
+    // A refused table_storage has no table_: the adapter stays null and the caller reads construction_failed().
+    collection_storage_entry_t::collection_storage_entry_t(std::pmr::memory_resource* resource,
+                                                           std::vector<components::table::column_definition_t> columns,
+                                                           const std::filesystem::path& otbx_path_in,
+                                                           bool is_computed_create)
+        : table_storage(resource, std::move(columns), otbx_path_in)
+        , otbx_path(otbx_path_in)
+        , is_computed(is_computed_create) {
+        if (!table_storage.construction_failed()) {
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource);
+        }
+    }
+
+    collection_storage_entry_t::collection_storage_entry_t(
+        std::pmr::memory_resource* resource,
+        const std::filesystem::path& otbx_path_in,
+        std::vector<components::table::column_definition_t> catalog_columns,
+        bool is_computed_load)
+        : table_storage(resource, otbx_path_in, std::move(catalog_columns), is_computed_load)
+        , otbx_path(otbx_path_in)
+        , is_computed(is_computed_load) {
+        if (!table_storage.construction_failed()) {
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource);
+        }
     }
 
 #ifdef DEV_MODE
@@ -492,6 +519,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::vacuum_all, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::reclaim_oids>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::reclaim_oids, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>: {

@@ -2,6 +2,7 @@
 
 #include "agent_disk.hpp"
 #include "disk_contract.hpp"
+#include "oid_free_set.hpp"
 #include <actor-zeta/actor/basic_actor.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
@@ -168,21 +169,13 @@ namespace services::disk {
         collection_storage_entry_t(std::pmr::memory_resource* resource,
                                    std::vector<components::table::column_definition_t> columns,
                                    const std::filesystem::path& otbx_path_in,
-                                   bool is_computed_create)
-            : table_storage(resource, std::move(columns), otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
-            , otbx_path(otbx_path_in)
-            , is_computed(is_computed_create) {}
+                                   bool is_computed_create);
 
         /// Load existing table.otbx; `catalog_columns` overlays a never-checkpointed schema, ignored otherwise.
         collection_storage_entry_t(std::pmr::memory_resource* resource,
                                    const std::filesystem::path& otbx_path_in,
                                    std::vector<components::table::column_definition_t> catalog_columns,
-                                   bool is_computed_load = false)
-            : table_storage(resource, otbx_path_in, std::move(catalog_columns), is_computed_load)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
-            , otbx_path(otbx_path_in)
-            , is_computed(is_computed_load) {}
+                                   bool is_computed_load = false);
 
         /// Recreates the storage adapter too — its data_table_t& would dangle after the rebuild.
         void add_column(components::table::column_definition_t& col, std::pmr::memory_resource* res) {
@@ -329,7 +322,8 @@ namespace services::disk {
                       components::catalog::oid_t source_oid,
                       components::catalog::oid_t target_oid);
 
-        unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
+        unique_future<std::vector<components::catalog::oid_t>>
+        allocate_oids_batch(components::table::transaction_data txn, std::size_t count);
 
         unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
         append_pg_catalog_row(execution_context_t ctx,
@@ -425,6 +419,11 @@ namespace services::disk {
         checkpoint_all(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
         // Fans cleanup_versions to every agent; renumbers nothing, so VACUUM owes no index rebuild.
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
+
+        unique_future<core::error_t> reclaim_oids(session_id_t session,
+                                                  wal::id_t current_wal_id,
+                                                  wal::id_t oldest_retained_wal_id,
+                                                  uint64_t lowest_active_start_time);
         unique_future<void> maybe_cleanup_many(execution_context_t ctx,
                                                std::pmr::vector<components::catalog::oid_t> table_oids,
                                                uint64_t compact_watermark);
@@ -553,6 +552,7 @@ namespace services::disk {
                                                        &manager_disk_t::storage_release_block,
                                                        &manager_disk_t::checkpoint_all,
                                                        &manager_disk_t::vacuum_all,
+                                                       &manager_disk_t::reclaim_oids,
                                                        &manager_disk_t::maybe_cleanup_many,
                                                        &manager_disk_t::resolve_function_by_name,
                                                        &manager_disk_t::find_cast_oid,
@@ -738,6 +738,12 @@ namespace services::disk {
         std::pmr::vector<agent_disk_ptr> agents_{resource_};
         components::catalog::oid_generator oid_gen_;
         components::catalog::oid_t oid_reserved_until_{components::catalog::INVALID_OID};
+        // What VACUUM found nothing names; persisted before any of it is handed out.
+        oid_free_set_t oid_free_{resource_};
+        // Taken out of oid_free_ (and its file) but not handed out yet; lowest last.
+        std::pmr::vector<components::catalog::oid_t> oid_claimed_{resource_};
+        // Handed out, with the start time of the transaction that took each
+        std::pmr::unordered_map<components::catalog::oid_t, std::uint64_t> oid_outstanding_{resource_};
         components::catalog::session_catalog_t stored_catalog_;
         loop_thread_t loop_thread_;
 

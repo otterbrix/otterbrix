@@ -759,8 +759,11 @@ TEST_CASE("services::index::index_disk::the_tree_holds_no_descriptor_per_leaf_at
         for (int i = 1; i <= 1500; ++i) {
             auto record = services::index::tests::key_bytes(&resource, make_scalar(&resource, int64_t{i}));
             components::index::codec::append_le<int64_t>(record, int64_t{i});
-            index.insert_bulk_unchecked(
-                core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())});
+            REQUIRE_FALSE(
+                index
+                    .insert_bulk_unchecked(
+                        core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())})
+                    .contains_error());
         }
         REQUIRE_FALSE(index.force_flush().contains_error());
 
@@ -813,6 +816,72 @@ TEST_CASE("services::index::index_disk::rotated_segments_are_read_through_held_d
     INFO("200 probes over ~3 rotated segments performed " << opens << " descriptor opens");
     // What this catches: one open per rotated-key probe.
     REQUIRE(opens <= 8);
+
+    std::filesystem::remove_all(path);
+}
+
+TEST_CASE("services::index::index_disk::btree_inserts_past_its_memory_limit") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::filesystem::path path{index_fixture_path("btree_memory_limit")};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    INFO("room for the first leaf's header, not for its block");
+    auto index = btree_index_disk_t(path,
+                                    &resource,
+                                    btree_index_disk_t::default_flush_threshold_,
+                                    core::b_plus_tree::segment_tree_t::header_size + 4096);
+    auto record = services::index::tests::key_bytes(&resource, make_scalar(&resource, int64_t{7}));
+    components::index::codec::append_le<int64_t>(record, int64_t{7});
+    const core::b_plus_tree::btree_t::item_data item{record.data(), static_cast<uint32_t>(record.size())};
+
+    CHECK(index.insert_bulk_unchecked(item).contains_error());
+    INFO("a record that is not there is not an error");
+    CHECK_FALSE(index.remove_bulk_unchecked(item).contains_error());
+
+    btree_index_disk_t::result found(&resource);
+    CHECK_FALSE(services::index::tests::find(index, make_scalar(&resource, int64_t{7}), found).contains_error());
+    CHECK(found.empty());
+    CHECK_FALSE(index.force_flush().contains_error());
+
+    std::filesystem::remove_all(path);
+}
+
+TEST_CASE("services::index::index_disk::btree_reopened_under_a_limit_its_load_does_not_fit") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::filesystem::path path{index_fixture_path("btree_load_past_memory_limit")};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+    constexpr int64_t keys = 50;
+
+    {
+        auto index = btree_index_disk_t(path, &resource);
+        for (int64_t key = 0; key < keys; key++) {
+            services::index::tests::put(index, make_scalar(&resource, key), key);
+        }
+        REQUIRE_FALSE(index.force_flush().contains_error());
+    }
+
+    {
+        auto index = btree_index_disk_t(path, &resource, btree_index_disk_t::default_flush_threshold_, 4096);
+        auto record = services::index::tests::key_bytes(&resource, make_scalar(&resource, int64_t{keys}));
+        components::index::codec::append_le<int64_t>(record, int64_t{keys});
+        const core::b_plus_tree::btree_t::item_data item{record.data(), static_cast<uint32_t>(record.size())};
+
+        CHECK(index.insert_bulk_unchecked(item).contains_error());
+        CHECK(index.remove_bulk_unchecked(item).contains_error());
+        btree_index_disk_t::result found(&resource);
+        CHECK(services::index::tests::find(index, make_scalar(&resource, int64_t{0}), found).contains_error());
+        CHECK(index.force_flush().contains_error());
+    }
+
+    auto index = btree_index_disk_t(path, &resource);
+    for (int64_t key = 0; key < keys; key++) {
+        btree_index_disk_t::result found(&resource);
+        REQUIRE_FALSE(services::index::tests::find(index, make_scalar(&resource, key), found).contains_error());
+        REQUIRE(found.size() == 1);
+        CHECK(found.front() == key);
+    }
 
     std::filesystem::remove_all(path);
 }

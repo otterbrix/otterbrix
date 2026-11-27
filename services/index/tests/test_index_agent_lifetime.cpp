@@ -118,6 +118,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
+                                                      /*btree_memory_limit=*/std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 

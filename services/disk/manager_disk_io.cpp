@@ -2,7 +2,10 @@
 
 #include <core/file/list_dir.hpp>
 
+#include <algorithm>
 #include <cassert>
+#include <charconv>
+#include <filesystem>
 
 namespace services::disk {
 
@@ -139,6 +142,90 @@ namespace services::disk {
 
         trace(log_, "manager_disk_t::vacuum_all complete");
         co_return;
+    }
+
+    namespace {
+
+        // A directory named by a number: a database, table or index directory, or what a crash left of one.
+        [[nodiscard]] core::error_t collect_named_directories(const std::filesystem::path& directory,
+                                                              int depth,
+                                                              std::pmr::vector<components::catalog::oid_t>& out,
+                                                              std::pmr::memory_resource* resource) {
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
+                if (!it->is_directory(ec) || ec) {
+                    continue;
+                }
+                const auto name = it->path().filename().string();
+                std::uint32_t number = 0;
+                const auto [last, parsed] = std::from_chars(name.data(), name.data() + name.size(), number);
+                if (parsed == std::errc{} && last == name.data() + name.size()) {
+                    out.push_back(components::catalog::oid_t{number});
+                }
+                if (depth > 1) {
+                    RETURN_IF_ERROR(collect_named_directories(it->path(), depth - 1, out, resource));
+                }
+            }
+            if (ec) {
+                return core::error_t{core::error_code_t::io_error,
+                                     std::pmr::string{"the directory " + directory.string() +
+                                                          " could not be listed, so the oids its entries name are "
+                                                          "unknown: " +
+                                                          ec.message(),
+                                                      resource}};
+            }
+            return core::error_t::no_error();
+        }
+
+    } // namespace
+
+    manager_disk_t::unique_future<core::error_t> manager_disk_t::reclaim_oids(session_id_t session,
+                                                                              wal::id_t current_wal_id,
+                                                                              wal::id_t oldest_retained_wal_id,
+                                                                              uint64_t lowest_active_start_time) {
+        std::pmr::vector<unique_future<std::pmr::vector<components::catalog::oid_t>>> agent_futures{resource()};
+        agent_futures.reserve(agents_.size());
+        for (auto& agent_ptr : agents_) {
+            auto [needs_sched, fut] =
+                actor_zeta::otterbrix::send(agent_ptr->address(), &agent_disk_t::oids_in_use_inner, session);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent_ptr.get());
+            }
+            agent_futures.emplace_back(std::move(fut));
+        }
+        std::pmr::vector<components::catalog::oid_t> in_use{resource()};
+        for (auto& f : agent_futures) {
+            auto named = co_await std::move(f);
+            in_use.insert(in_use.end(), named.begin(), named.end());
+        }
+        // <path>/<database>/<table>/table.otbx and <path>/<table>/<index>/
+        if (!config_.path.empty()) {
+            if (auto listed = collect_named_directories(config_.path, 2, in_use, resource()); listed.contains_error()) {
+                co_return listed;
+            }
+        }
+
+        // Nothing below awaits, so no oid is handed out between the scans above and the install.
+        // a transaction that started before the oldest active one has ended: what it named is in the scans above
+        std::erase_if(oid_outstanding_, [lowest_active_start_time](const auto& entry) {
+            return entry.second < lowest_active_start_time;
+        });
+        for (const auto& [oid, start_time] : oid_outstanding_) {
+            in_use.push_back(oid);
+        }
+        in_use.insert(in_use.end(), oid_claimed_.begin(), oid_claimed_.end());
+        std::sort(in_use.begin(), in_use.end());
+        in_use.erase(std::unique(in_use.begin(), in_use.end()), in_use.end());
+
+        oid_free_set_t next{resource()};
+        next.assign(std::pmr::vector<oid_span_t>(oid_free_.spans(), resource()));
+        next.rebuild(in_use, components::catalog::FIRST_USER_OID, oid_gen_.peek(), current_wal_id);
+        next.release(oldest_retained_wal_id);
+        if (auto persisted = persist_oid_free_set(resource(), config_.path, next.spans()); persisted.contains_error()) {
+            co_return persisted;
+        }
+        oid_free_ = std::move(next);
+        co_return core::error_t::no_error();
     }
 
     manager_disk_t::unique_future<void>

@@ -82,17 +82,18 @@ namespace {
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_INSERT;
         buffer_t buf;
-        services::wal::encode_insert(buf,
-                                     std::pmr::get_default_resource(),
-                                     last_crc,
-                                     wal_id,
-                                     txn_id,
-                                     /*sub_id=*/0,
-                                     table_oid,
-                                     wal_test::attoids_for(chunk),
-                                     to_chunk_batch(chunk),
-                                     row_start,
-                                     row_count);
+        REQUIRE_FALSE(services::wal::encode_insert(buf,
+                                                   std::pmr::get_default_resource(),
+                                                   last_crc,
+                                                   wal_id,
+                                                   txn_id,
+                                                   /*sub_id=*/0,
+                                                   table_oid,
+                                                   wal_test::attoids_for(chunk),
+                                                   to_chunk_batch(chunk),
+                                                   row_start,
+                                                   row_count)
+                          .has_error());
         info.data = buffer_to_vec(buf);
         return info;
     }
@@ -125,17 +126,18 @@ namespace {
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_UPDATE;
         buffer_t buf;
-        services::wal::encode_update(buf,
-                                     std::pmr::get_default_resource(),
-                                     last_crc,
-                                     wal_id,
-                                     txn_id,
-                                     /*sub_id=*/0,
-                                     table_oid,
-                                     row_ids.data(),
-                                     wal_test::attoids_for(chunk),
-                                     to_chunk_batch(chunk),
-                                     count);
+        REQUIRE_FALSE(services::wal::encode_update(buf,
+                                                   std::pmr::get_default_resource(),
+                                                   last_crc,
+                                                   wal_id,
+                                                   txn_id,
+                                                   /*sub_id=*/0,
+                                                   table_oid,
+                                                   row_ids.data(),
+                                                   wal_test::attoids_for(chunk),
+                                                   to_chunk_batch(chunk),
+                                                   count)
+                          .has_error());
         info.data = buffer_to_vec(buf);
         return info;
     }

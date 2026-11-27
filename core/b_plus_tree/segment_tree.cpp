@@ -88,7 +88,12 @@ namespace core::b_plus_tree {
     }
     void segment_tree_t::iterator::load_block() {
         if (metadata_ < seg_tree_->metadata_end_ && metadata_ >= seg_tree_->metadata_begin_) {
-            seg_tree_->ensure_loaded_(metadata_);
+            // one block per step
+            seg_tree_->begin_operation_();
+            if (!seg_tree_->try_load_(metadata_)) {
+                block_ = nullptr;
+                return;
+            }
             block_ = seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block.get();
         } else {
             assert(false && "segment_tree::iterator: out of range");
@@ -123,7 +128,11 @@ namespace core::b_plus_tree {
     }
     void segment_tree_t::r_iterator::load_block() {
         if (metadata_ < seg_tree_->metadata_end_ && metadata_ >= seg_tree_->metadata_begin_) {
-            seg_tree_->ensure_loaded_(metadata_);
+            seg_tree_->begin_operation_();
+            if (!seg_tree_->try_load_(metadata_)) {
+                block_ = nullptr;
+                return;
+            }
             block_ = seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block.get();
         } else {
             assert(false && "segment_tree::r_iterator: out of range");
@@ -195,6 +204,10 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::append(const index_t& index, item_data item) {
+        if (abandoned()) {
+            return false;
+        }
+        begin_operation_();
         mark_dirty_();
         if (segments_.empty()) {
             segments_.reserve(2);
@@ -219,17 +232,21 @@ namespace core::b_plus_tree {
             bool index_exists = false;
             for (block_metadata* meta = range.begin; meta <= range.end && meta != metadata_end_; meta++) {
                 it node = segments_.begin() + (meta - metadata_begin_);
-                ensure_loaded_(meta);
+                if (!try_load_(meta)) {
+                    return false; // nothing changed yet
+                }
                 index_exists |= node->block->contains_index(index);
                 if (node->block->contains(index, item)) {
                     return false;
                 }
             }
-            header_->unique_id_count_ += !index_exists;
             metadata = range.begin - (range.begin == metadata_end_);
             append_node = segments_.begin() + (metadata - metadata_begin_);
 
-            ensure_loaded_(metadata);
+            if (!try_load_(metadata)) {
+                return false;
+            }
+            header_->unique_id_count_ += !index_exists;
 
             if (append_node->block->is_memory_available(item.size)) {
                 append_node->block->append(index, item);
@@ -252,7 +269,10 @@ namespace core::b_plus_tree {
                             return false;
                         }
                     } else {
-                        ensure_loaded_(metadata);
+                        if (!try_load_(metadata)) {
+                            header_->unique_id_count_ -= !index_exists;
+                            return false;
+                        }
                         if (append_node->block->is_memory_available(item.size)) {
                             append_node->block->append(index, item);
                             append_node->last_used = std::chrono::system_clock::now();
@@ -285,7 +305,10 @@ namespace core::b_plus_tree {
                         --append_node;
                         --metadata;
 
-                        ensure_loaded_(metadata);
+                        if (!try_load_(metadata)) {
+                            header_->unique_id_count_ -= !index_exists;
+                            return false;
+                        }
                         if (append_node->block->is_memory_available(item.size)) {
                             append_node->block->append(index, item);
                             append_node->last_used = std::chrono::system_clock::now();
@@ -372,6 +395,7 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::remove(const index_t& index, item_data item) {
+        begin_operation_();
         mark_dirty_();
         if (segments_.empty()) {
             return false;
@@ -385,7 +409,9 @@ namespace core::b_plus_tree {
             if (range.begin == metadata_end_) {
                 return false;
             } else {
-                ensure_loaded_(metadata);
+                if (!try_load_(metadata)) {
+                    return false;
+                }
                 if (!remove_node->block->contains_index(index)) {
                     return false;
                 } else {
@@ -408,25 +434,33 @@ namespace core::b_plus_tree {
         for (auto meta = range.begin; meta != range.end; meta++) {
             metadata = meta;
             remove_node = segments_.begin() + (meta - metadata_begin_);
-            ensure_loaded_(metadata);
+            if (!try_load_(metadata)) {
+                return false; // earlier blocks were only read
+            }
 
             if (remove_node->block->contains(index, item)) { // items are unique; other blocks need no check
                 bool last_copy_in_block = remove_node->block->item_count(index) == 1;
-                remove_node->block->remove(index, item);
+                // a key straddling several blocks decrements unique_id_count_ only once it's gone from all of
+                // them; asked before the removal, so a block that will not load leaves the leaf as it was
+                bool index_still_present = false;
                 if (last_copy_in_block) {
-                    // a key straddling several blocks decrements unique_id_count_ only once it's gone from all of them
-                    bool index_still_present = false;
                     for (block_metadata* probe = range.begin; probe != range.end; probe++) {
+                        if (probe == meta) {
+                            continue;
+                        }
                         it node = segments_.begin() + (probe - metadata_begin_);
-                        ensure_loaded_(probe);
+                        if (!try_load_(probe)) {
+                            return false;
+                        }
                         if (node->block->contains_index(index)) {
                             index_still_present = true;
                             break;
                         }
                     }
-                    if (!index_still_present) {
-                        header_->unique_id_count_--;
-                    }
+                }
+                remove_node->block->remove(index, item);
+                if (last_copy_in_block && !index_still_present) {
+                    header_->unique_id_count_--;
                 }
 
                 if (remove_node->block->count() == 0) {
@@ -448,11 +482,12 @@ namespace core::b_plus_tree {
             it left = remove_node == segments_.begin() ? segments_.end() : remove_node - 1;
             it right = remove_node + 1;
 
-            if (left != segments_.end()) {
-                ensure_loaded_(metadata - 1);
+            // the item is already gone; a neighbour that will not load just leaves this merge undone
+            if (left != segments_.end() && !try_load_(metadata - 1)) {
+                left = segments_.end();
             }
-            if (right != segments_.end()) {
-                ensure_loaded_(metadata + 1);
+            if (right != segments_.end() && !try_load_(metadata + 1)) {
+                right = segments_.end();
             }
 
             if (right != segments_.end() && remove_node->block->available_memory() >= right->block->occupied_memory()) {
@@ -473,6 +508,7 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::remove_index(const index_t& index) {
+        begin_operation_();
         mark_dirty_();
         if (segments_.empty()) {
             return false;
@@ -484,10 +520,19 @@ namespace core::b_plus_tree {
         }
         block_metadata* metadata = range.begin;
         it remove_node = segments_.begin() + (metadata - metadata_begin_);
-        ensure_loaded_(metadata);
+        if (!try_load_(metadata)) {
+            return false;
+        }
 
         if (!remove_node->block->contains_index(index)) {
             return false;
+        }
+        // every block of the range is read below (the ends to trim, the middles to count), so all of them
+        // are brought in before anything changes
+        for (block_metadata* meta = range.begin + 1; meta < range.end; meta++) {
+            if (!try_load_(meta)) {
+                return false;
+            }
         }
 
         // only the first and last block of the range may keep other indices; middles are deleted whole
@@ -507,8 +552,6 @@ namespace core::b_plus_tree {
         if (range.end - range.begin > 1) {
             metadata = range.end - 1;
             remove_node = segments_.begin() + (metadata - metadata_begin_);
-            // only the range's first block is loaded above; skipping this second load null-derefs under lazy_load()
-            ensure_loaded_(metadata);
             if (remove_node->block->unique_indices_count() == 1) {
                 // keep in delete range
             } else {
@@ -523,8 +566,6 @@ namespace core::b_plus_tree {
 
         for (block_metadata* meta = delete_range.begin; meta != delete_range.end && meta < metadata_end_; meta++) {
             it node = segments_.begin() + (meta - metadata_begin_);
-
-            ensure_loaded_(meta);
             count += node->block->count();
         }
 
@@ -549,6 +590,8 @@ namespace core::b_plus_tree {
     segment_tree_t::split_into_(std::unique_ptr<segment_tree_t> splited_tree) {
         assert(metadata_begin_ != metadata_end_);
         assert(header_->unique_id_count_ > 1);
+        begin_operation_();
+        splited_tree->begin_operation_();
 
         size_t split_size = header_->unique_id_count_ / 2;
         index_t prev_index{};
@@ -556,10 +599,9 @@ namespace core::b_plus_tree {
         splited_tree->string_storage_.reserve(string_storage_.size());
         for (auto metadata = metadata_end_ - 1; metadata >= metadata_begin_; metadata--) {
             it node = segments_.begin() + (metadata - metadata_begin_);
-            ensure_loaded_(metadata);
-
+            // a block that will not load ends the walk: what moved so far is a whole, consistent split
             // an unread stand-in answers unique_indices_count()==0; the subtraction below would wrap
-            if (!node->block || node->unreadable || node->block->unique_indices_count() == 0) {
+            if (!try_load_(metadata) || node->unreadable || node->block->unique_indices_count() == 0) {
                 break;
             }
 
@@ -569,7 +611,10 @@ namespace core::b_plus_tree {
                 prev_index = node->block->min_index();
                 size_t item_count = node->block->count();
                 node->modified = true;
-                if (!splited_tree->insert_segment_(splited_tree->segments_.begin(), std::move(*node))) {
+                if (!splited_tree->insert_segment_(
+                        splited_tree->segments_.begin(),
+                        std::move(*node),
+                        std::move(string_storage_[static_cast<size_t>(metadata - metadata_begin_)]))) {
                     break; // destination leaf is full and poisoned itself; this side's bytes stay readable
                 }
                 remove_segment_(node);
@@ -613,6 +658,8 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::balance_with(std::unique_ptr<segment_tree_t>& other) {
+        begin_operation_();
+        other->begin_operation_();
         mark_dirty_(); // both this leaf and the neighbour it trades blocks with change
         other->mark_dirty_();
         assert(min_index() > other->max_index() || max_index() < other->min_index());
@@ -628,9 +675,7 @@ namespace core::b_plus_tree {
             index_t prev_index{};
             for (block_metadata* metadata = other->metadata_end_ - 1; metadata >= other->metadata_begin_; metadata--) {
                 it node = other->segments_.begin() + (metadata - other->metadata_begin_);
-                other->ensure_loaded_(metadata);
-
-                if (!node->block || node->unreadable || node->block->unique_indices_count() == 0) {
+                if (!other->try_load_(metadata) || node->unreadable || node->block->unique_indices_count() == 0) {
                     break; // same stand-in hazard as the walk in split() above
                 }
 
@@ -640,7 +685,11 @@ namespace core::b_plus_tree {
                     prev_index = node->block->min_index();
                     size_t item_count = node->block->count();
                     node->modified = true;
-                    if (!insert_segment_(segments_.begin(), std::move(*node))) {
+                    if (!insert_segment_(
+                            segments_.begin(),
+                            std::move(*node),
+                            std::move(
+                                other->string_storage_[static_cast<size_t>(metadata - other->metadata_begin_)]))) {
                         break;
                     }
                     other->remove_segment_(node);
@@ -685,9 +734,7 @@ namespace core::b_plus_tree {
             index_t prev_index{};
             for (block_metadata* metadata = other->metadata_begin_; metadata < other->metadata_end_;) {
                 it node = other->segments_.begin() + (metadata - other->metadata_begin_);
-                other->ensure_loaded_(metadata);
-
-                if (!node->block || node->unreadable || node->block->unique_indices_count() == 0) {
+                if (!other->try_load_(metadata) || node->unreadable || node->block->unique_indices_count() == 0) {
                     break; // same stand-in hazard as the walk in split() above
                 }
 
@@ -697,7 +744,11 @@ namespace core::b_plus_tree {
                     prev_index = node->block->max_index();
                     size_t item_count = node->block->count();
                     node->modified = true;
-                    if (!insert_segment_(segments_.end(), std::move(*node))) {
+                    if (!insert_segment_(
+                            segments_.end(),
+                            std::move(*node),
+                            std::move(
+                                other->string_storage_[static_cast<size_t>(metadata - other->metadata_begin_)]))) {
                         break;
                     }
                     other->remove_segment_(node);
@@ -756,6 +807,14 @@ namespace core::b_plus_tree {
             report_failure_(load_failure_t::capacity_exceeded);
             return false;
         }
+        begin_operation_();
+        other->begin_operation_();
+        // all or nothing extends to loading: every block that moves is brought in before the first one does
+        for (block_metadata* metadata = other->metadata_begin_; metadata < other->metadata_end_; metadata++) {
+            if (!other->try_load_(metadata)) {
+                return false;
+            }
+        }
 
         mark_dirty_();
         other->mark_dirty_();
@@ -769,9 +828,10 @@ namespace core::b_plus_tree {
             header_->unique_id_count_ += other->header_->unique_id_count_;
             header_->item_count_ += other->header_->item_count_;
             while (!other->segments_.empty()) {
-                other->ensure_loaded_(other->metadata_end_ - 1);
                 // cannot refuse: room reserved, neither side poisoned — the only two things insert_segment_() checks
-                const bool moved = insert_segment_(segments_.begin(), std::move(*(other->segments_.end() - 1)));
+                const bool moved = insert_segment_(segments_.begin(),
+                                                   std::move(*(other->segments_.end() - 1)),
+                                                   std::move(other->string_storage_.back()));
                 assert(moved && "merge was cleared and then refused anyway");
                 if (!moved) {
                     return false;
@@ -781,9 +841,10 @@ namespace core::b_plus_tree {
             }
         } else {
             while (!other->segments_.empty()) {
-                other->ensure_loaded_(other->metadata_begin_);
                 other->segments_.begin()->modified = true;
-                const bool moved = insert_segment_(segments_.end(), std::move(*(other->segments_.begin())));
+                const bool moved = insert_segment_(segments_.end(),
+                                                   std::move(*(other->segments_.begin())),
+                                                   std::move(other->string_storage_.front()));
                 assert(moved && "merge was cleared and then refused anyway");
                 if (!moved) {
                     return false;
@@ -796,14 +857,17 @@ namespace core::b_plus_tree {
         return true;
     }
 
+    // Readers answer "nothing" for a block that will not load; out_of_memory on the channel says the answer is void.
     bool segment_tree_t::contains_index(const index_t& index) {
+        begin_operation_();
         metadata_range range = find_range_(index);
         if (range.begin == metadata_end_) {
             return false;
         }
         auto node = segments_.begin() + (range.begin - metadata_begin_);
-        ensure_loaded_(range.begin);
-
+        if (!try_load_(range.begin)) {
+            return false;
+        }
         return node->block->contains_index(index);
     }
 
@@ -813,19 +877,23 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::contains(const index_t& index, item_data item) {
+        begin_operation_();
         metadata_range range = find_range_(index);
         if (range.begin == metadata_end_) {
             return false;
         }
         if (range.begin == range.end) {
             auto node = segments_.begin() + (range.begin - metadata_begin_);
-            ensure_loaded_(range.begin);
-
+            if (!try_load_(range.begin)) {
+                return false;
+            }
             return node->block->contains(index, item);
         }
         for (auto it = range.begin; it != range.end; it++) {
             auto node = segments_.begin() + (it - metadata_begin_);
-            ensure_loaded_(range.begin);
+            if (!try_load_(it)) {
+                return false;
+            }
             if (node->block->contains(index, item)) {
                 return true;
             }
@@ -834,41 +902,49 @@ namespace core::b_plus_tree {
     }
 
     size_t segment_tree_t::item_count(const index_t& index) {
+        begin_operation_();
         metadata_range range = find_range_(index);
         if (range.begin == metadata_end_) {
             return 0;
         }
         if (range.begin == range.end) {
             auto node = segments_.begin() + (range.begin - metadata_begin_);
-            ensure_loaded_(range.begin);
-
+            if (!try_load_(range.begin)) {
+                return 0;
+            }
             return node->block->item_count(index);
         }
         size_t total = 0;
         for (auto it = range.begin; it != range.end; it++) {
             auto node = segments_.begin() + (it - metadata_begin_);
-            ensure_loaded_(range.begin);
+            if (!try_load_(it)) {
+                return 0; // a partial count would read as a real one
+            }
             total += node->block->item_count(index);
         }
         return total;
     }
 
     segment_tree_t::item_data segment_tree_t::get_item(const index_t& index, size_t position) {
+        begin_operation_();
         metadata_range range = find_range_(index);
         if (range.begin == metadata_end_) {
             return item_data();
         }
         if (range.begin == range.end) {
             auto node = segments_.begin() + (range.begin - metadata_begin_);
-            ensure_loaded_(range.begin);
-
+            if (!try_load_(range.begin)) {
+                return item_data();
+            }
             return node->block->get_item(index, static_cast<uint32_t>(position));
         }
         size_t skipped_count = 0;
         size_t current_count = 0;
         for (auto it = range.begin; it != range.end; it++) {
             auto node = segments_.begin() + (it - metadata_begin_);
-            ensure_loaded_(range.begin);
+            if (!try_load_(it)) {
+                return item_data();
+            }
             current_count = node->block->item_count(index);
             if (skipped_count + current_count > position) {
                 return node->block->get_item(index,
@@ -880,28 +956,31 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::get_items(std::vector<item_data>& result, const index_t& index) {
+        begin_operation_();
         metadata_range range = find_range_(index);
         if (range.begin == metadata_end_) {
             return;
         }
         if (range.begin == range.end) {
             auto node = segments_.begin() + (range.begin - metadata_begin_);
-            ensure_loaded_(range.begin);
-
+            if (!try_load_(range.begin)) {
+                return;
+            }
             return node->block->get_items(result, index);
         }
 
+        // all of the range is brought in before any item is handed out, so a refusal adds nothing
         size_t total_size = 0;
         for (auto it = range.begin; it != range.end; it++) {
             auto node = segments_.begin() + (it - metadata_begin_);
-            ensure_loaded_(range.begin);
+            if (!try_load_(it)) {
+                return;
+            }
             total_size += node->block->item_count(index);
         }
         result.reserve(total_size);
         for (auto it = range.begin; it != range.end; it++) {
-            auto node = segments_.begin() + (it - metadata_begin_);
-            ensure_loaded_(range.begin); // re-check: loading total_size could have unloaded the first batch
-            node->block->get_items(result, index);
+            segments_[static_cast<size_t>(it - metadata_begin_)].block->get_items(result, index);
         }
     }
 
@@ -1042,7 +1121,84 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::clean_load() {
-        using components::types::physical_type;
+        clean_load_();
+        recount_layout_();
+    }
+
+    void segment_tree_t::lazy_load() {
+        lazy_load_();
+        recount_layout_();
+    }
+
+    void segment_tree_t::recount_layout_() noexcept {
+        size_t stored = 0;
+        size_t largest = 0;
+        bool view = false;
+        for (const block_metadata* metadata = metadata_begin_; metadata < metadata_end_; metadata++) {
+            stored += metadata->size;
+            largest = std::max(largest, metadata->size);
+            view = view || metadata->min_index.is_view() || metadata->max_index.is_view();
+        }
+        stored_bytes_.store(stored, std::memory_order_relaxed);
+        largest_block_.store(largest, std::memory_order_relaxed);
+        view_keyed_.store(view, std::memory_order_relaxed);
+    }
+
+    size_t segment_tree_t::key_copy_bytes_(const block_t& block) {
+        size_t result = 0;
+        for (const index_t& key : {block.min_index(), block.max_index()}) {
+            if (key.is_view()) {
+                result += key.view_bytes().size() + 1; // + the terminator std::pmr::string keeps
+            }
+        }
+        return result;
+    }
+
+    size_t segment_tree_t::unloaded_bytes() const {
+        size_t result = 0;
+        const block_metadata* metadata = metadata_begin_;
+        for (const auto& segment : segments_) {
+            if (!segment.block || segment.unreadable) { // a stand-in keeps its buffer; the reload asks for a new one
+                result += metadata->size;
+            }
+            metadata++;
+        }
+        return result;
+    }
+
+    size_t segment_tree_t::evict() {
+        auto file = lease_file_();
+        if (!file) { // nothing can be written out, so nothing may leave memory
+            report_failure_(load_failure_t::io_error);
+            return 0;
+        }
+        size_t freed = 0;
+        bool wrote = false;
+        block_metadata* metadata = metadata_begin_;
+        for (auto& segment : segments_) {
+            block_metadata* current = metadata++;
+            if (!segment.block || segment.unreadable) {
+                continue; // a stand-in is empty; writing it would overwrite rows still on the device
+            }
+            if (segment.modified) {
+                segment.block->recalculate_checksum();
+                if (!file->write(segment.block->internal_buffer(), current->size, current->file_offset)) {
+                    report_failure_(load_failure_t::io_error);
+                    continue; // write didn't land: keep resident and modified
+                }
+                wrote = true;
+            }
+            freed += segment.block->block_size();
+            segment.block = nullptr;
+            segment.modified = false;
+        }
+        if (wrote) {
+            mark_dirty_(); // blocks went out without the header write and fsync flush() does
+        }
+        return freed;
+    }
+
+    void segment_tree_t::clean_load_() {
         segments_.clear();
         string_storage_.clear();
         unreadable_segments_.store(0, std::memory_order_release);
@@ -1068,15 +1224,14 @@ namespace core::b_plus_tree {
         string_storage_.reserve(header_->segments_count_);
         // TODO: it would be faster to load blocks in offset order, instead of their id (especially on hard drives)
         for (block_metadata* metadata = metadata_begin_; metadata < metadata_end_; metadata++) {
-            // a block is the only thing that makes a TEXT-typed metadata entry usable — see abandon_leaf_()
-            const bool string_keyed =
-                metadata->min_index.type() == physical_type::TEXT || metadata->max_index.type() == physical_type::TEXT;
+            // a block is the only thing that makes a view-keyed metadata entry usable — see abandon_leaf_()
+            const bool view_keyed = metadata->min_index.is_view() || metadata->max_index.is_view();
             segments_.emplace_back(node_t{nullptr, std::chrono::system_clock::now(), false});
             string_storage_.emplace_back();
             segments_.back().block = create_initialize(resource_, key_func_, static_cast<uint32_t>(metadata->size));
             if (!segments_.back().block) {
                 // no room: not corruption, but a caller that asked for a clean load didn't get one
-                if (string_keyed) {
+                if (view_keyed) {
                     abandon_leaf_(load_failure_t::out_of_memory);
                     return;
                 }
@@ -1084,7 +1239,7 @@ namespace core::b_plus_tree {
                 continue;
             }
             if (!file->read(segments_.back().block->internal_buffer(), metadata->size, metadata->file_offset)) {
-                if (string_keyed) {
+                if (view_keyed) {
                     abandon_leaf_(load_failure_t::io_error);
                     return;
                 }
@@ -1092,7 +1247,7 @@ namespace core::b_plus_tree {
                 continue;
             }
             if (!segments_.back().block->varify_checksum()) {
-                if (string_keyed) {
+                if (view_keyed) {
                     abandon_leaf_(load_failure_t::data_corruption);
                     return;
                 }
@@ -1101,17 +1256,16 @@ namespace core::b_plus_tree {
             }
             segments_.back().block->restore_block();
             assert(segments_.back().block->count() != 0 && "block is empty");
-            if (metadata->min_index.type() == physical_type::TEXT) {
-                auto min_index = segments_.back().block->min_index();
-                string_storage_.back().first =
-                    std::make_unique<std::pmr::string>(min_index.value<physical_type::TEXT>(), resource_);
-                metadata->min_index = index_t(*string_storage_.back().first);
+            const auto copies = resource_->try_reserve(view_keyed ? key_copy_bytes_(*segments_.back().block) : 0);
+            if (!copies) {
+                abandon_leaf_(load_failure_t::out_of_memory);
+                return;
             }
-            if (metadata->max_index.type() == physical_type::TEXT) {
-                auto max_index = segments_.back().block->max_index();
-                string_storage_.back().second =
-                    std::make_unique<std::pmr::string>(max_index.value<physical_type::TEXT>(), resource_);
-                metadata->max_index = index_t(*string_storage_.back().second);
+            if (metadata->min_index.is_view()) {
+                metadata->min_index = owned_key_(segments_.back().block->min_index(), string_storage_.back().first);
+            }
+            if (metadata->max_index.is_view()) {
+                metadata->max_index = owned_key_(segments_.back().block->max_index(), string_storage_.back().second);
             }
         }
 
@@ -1119,8 +1273,7 @@ namespace core::b_plus_tree {
         dirty_.store(false, std::memory_order_release);
     }
 
-    void segment_tree_t::lazy_load() {
-        using components::types::physical_type;
+    void segment_tree_t::lazy_load_() {
         segments_.clear();
         string_storage_.clear();
         unreadable_segments_.store(0, std::memory_order_release);
@@ -1147,12 +1300,16 @@ namespace core::b_plus_tree {
         for (block_metadata* metadata = metadata_begin_; metadata < metadata_end_; metadata++) {
             segments_.emplace_back(node_t{nullptr, std::chrono::system_clock::now(), false});
             string_storage_.emplace_back();
-            if (metadata->min_index.type() == physical_type::TEXT ||
-                metadata->max_index.type() == physical_type::TEXT) {
+            if (metadata->min_index.is_view() || metadata->max_index.is_view()) {
                 load_segment_(metadata);
                 // an unread stand-in's min/max_index() are the range's extremes, not this block's
                 if (!segments_.back().block || segments_.back().unreadable) {
                     abandon_leaf_(last_failure_of_this_leaf_());
+                    return;
+                }
+                const auto copies = resource_->try_reserve(key_copy_bytes_(*segments_.back().block));
+                if (!copies) {
+                    abandon_leaf_(load_failure_t::out_of_memory);
                     return;
                 }
                 update_metadata_(segments_.end() - 1, metadata);
@@ -1186,6 +1343,7 @@ namespace core::b_plus_tree {
         }
         for (auto it = range.begin; it != range.end; it++) {
             gap_tracker_.remove_gap({it->file_offset, it->size});
+            stored_bytes_.fetch_sub(it->size, std::memory_order_relaxed);
         }
         gap_tracker_.clean_gaps();
         std::memmove(range.begin, range.end, static_cast<size_t>(metadata_end_ - range.end) * block_metadata_size);
@@ -1224,7 +1382,7 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::poison_segment_(it node, load_failure_t failure) {
-        // a valid block holding nothing, so callers behind ensure_loaded_() never test for null
+        // a valid block holding nothing, so callers behind try_load_() never test for null
         node->block->reset();
         if (!node->unreadable) {
             node->unreadable = true;
@@ -1243,12 +1401,14 @@ namespace core::b_plus_tree {
         }
     }
 
-    void segment_tree_t::ensure_loaded_(block_metadata* metadata) {
+    bool segment_tree_t::try_load_(block_metadata* metadata) {
         it node = segments_.begin() + (metadata - metadata_begin_);
+        node->operation = operation_; // stamped before loading: the load's own eviction must not take it
         // a refused read leaves a non-null, empty stand-in; checking only `!block` would never retry it
         if (!node->block || node->unreadable) {
             load_segment_(metadata);
         }
+        return node->block != nullptr;
     }
 
     bool segment_tree_t::reserve_segments_(size_t count) noexcept {
@@ -1262,7 +1422,7 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::abandon_leaf_(load_failure_t failure) {
-        // a TEXT min/max index is a pointer into this process; find_range_() must not dereference it stale
+        // a view min/max index is a pointer into this process; find_range_() must not dereference it stale
         segments_.clear();
         string_storage_.clear();
         std::memset(static_cast<void*>(header_), 0, header_size);
@@ -1277,15 +1437,16 @@ namespace core::b_plus_tree {
         it node = segments_.begin() + (metadata - metadata_begin_);
 
         const auto block_size = static_cast<uint32_t>(metadata->size);
-        node->block = create_initialize(resource_, key_func_, block_size);
-        if (!node->block) {
+        std::unique_ptr<block_t> fresh = create_initialize(resource_, key_func_, block_size);
+        if (!fresh) {
             unload_old_segments_();
-            node->block = create_initialize(resource_, key_func_, block_size);
+            fresh = create_initialize(resource_, key_func_, block_size);
         }
-        if (!node->block) { // leave the segment UNLOADED, the same state lazy_load() leaves it in
+        if (!fresh) { // the node stays as it was: unloaded, or still its stand-in
             report_failure_(load_failure_t::out_of_memory);
             return;
         }
+        node->block = std::move(fresh);
 
         auto file = lease_file_();
         if (!file) { // no handle is the read that never happened: poison as a refused read would
@@ -1316,7 +1477,8 @@ namespace core::b_plus_tree {
         std::vector<std::pair<std::chrono::time_point<std::chrono::system_clock>, size_t>> blocks_to_unload;
         blocks_to_unload.reserve(segments_.size());
         for (size_t i = 0; i < segments_.size(); i++) {
-            if (segments_[i].block.get() != nullptr) {
+            // a block the running operation loaded is still in its hands
+            if (segments_[i].block.get() != nullptr && segments_[i].operation != operation_) {
                 blocks_to_unload.emplace_back(segments_[i].last_used, i);
             }
         }
@@ -1350,7 +1512,7 @@ namespace core::b_plus_tree {
         }
     }
 
-    bool segment_tree_t::insert_segment_(it pos, node_t&& node) {
+    bool segment_tree_t::insert_segment_(it pos, node_t&& node, key_copies_t&& keys) {
         if (node.unreadable) {
             return false; // flag travels with the EMPTY stand-in, or a clean destination would flush it over real rows
         }
@@ -1360,13 +1522,18 @@ namespace core::b_plus_tree {
         }
         mark_dirty_();
         node.last_used = std::chrono::system_clock::now();
+        node.operation = operation_; // a block arriving mid-operation is in that operation's hands too
         auto index = pos - segments_.begin();
         block_metadata* metadata = metadata_begin_ + index;
         std::memmove(metadata + 1, metadata, (segments_.size() - static_cast<size_t>(index)) * block_metadata_size);
         metadata->file_offset = gap_tracker_.find_gap(node.block->block_size());
         metadata->size = node.block->block_size();
+        stored_bytes_.fetch_add(metadata->size, std::memory_order_relaxed);
+        if (metadata->size > largest_block_.load(std::memory_order_relaxed)) {
+            largest_block_.store(metadata->size, std::memory_order_relaxed);
+        }
         segments_.insert(pos, std::move(node));
-        string_storage_.emplace(string_storage_.begin() + index);
+        string_storage_.emplace(string_storage_.begin() + index, std::move(keys));
         update_metadata_(pos, metadata);
         metadata_end_++;
         header_->segments_count_ = segments_.size();
@@ -1379,6 +1546,7 @@ namespace core::b_plus_tree {
         auto index = pos - segments_.begin();
         block_metadata* metadata = metadata_begin_ + index;
         gap_tracker_.remove_gap({metadata->file_offset, metadata->size});
+        stored_bytes_.fetch_sub(metadata->size, std::memory_order_relaxed);
         std::memmove(metadata, metadata + 1, (segments_.size() - static_cast<size_t>(index)) * block_metadata_size);
         metadata_end_--;
 
@@ -1387,29 +1555,27 @@ namespace core::b_plus_tree {
         header_->segments_count_ = segments_.size();
     }
 
+    segment_tree_t::index_t segment_tree_t::owned_key_(const index_t& key, std::unique_ptr<std::pmr::string>& copy) {
+        if (!key.is_view()) {
+            return key;
+        }
+        view_keyed_.store(true, std::memory_order_relaxed);
+        // an unchanged key keeps its copy: btree_t's estimate counts only copies of keys that change
+        if (!copy || *copy != key.view_bytes()) {
+            copy = std::make_unique<std::pmr::string>(key.view_bytes(), resource_);
+        }
+        return key.rebased(copy->data()); // the block's bytes can leave memory; the copy stays
+    }
+
     void segment_tree_t::update_metadata_(it pos, block_metadata* metadata) {
         mark_dirty_();
-        using components::types::physical_type;
-        index_t min_index = pos->block->min_index();
         auto index_storage = string_storage_.begin() + (pos - segments_.begin());
-        if (min_index.type() == physical_type::TEXT) {
-            index_storage->first =
-                std::make_unique<std::pmr::string>(min_index.value<physical_type::TEXT>(), resource_);
-            metadata->min_index = index_t(*index_storage->first); //change reference to internal storage
-        } else {
-            metadata->min_index = min_index;
-        }
-        index_t max_index = pos->block->max_index();
-        if (max_index.type() == physical_type::TEXT) {
-            index_storage->second =
-                std::make_unique<std::pmr::string>(max_index.value<physical_type::TEXT>(), resource_);
-            metadata->max_index = index_t(*index_storage->second); //change reference to internal storage
-        } else {
-            metadata->max_index = max_index;
-        }
+        metadata->min_index = owned_key_(pos->block->min_index(), index_storage->first);
+        metadata->max_index = owned_key_(pos->block->max_index(), index_storage->second);
     }
 
     void segment_tree_t::close_gaps_() {
+        begin_operation_(); // a block read to move must still be in memory when its offset changes
         gap_tracker_.clean_gaps();
         auto& gaps = gap_tracker_.empty_spaces();
         while (gaps.size() > 1) {
@@ -1422,8 +1588,7 @@ namespace core::b_plus_tree {
             // pass if one won't come — else its relocated metadata points where nothing is written
             for (block_metadata* it = metadata_begin_; it < metadata_end_; it++, i++) {
                 if (it->file_offset > gaps.front().offset) {
-                    ensure_loaded_(it);
-                    if (!segments_[i].block || segments_[i].unreadable) {
+                    if (!try_load_(it) || segments_[i].unreadable) {
                         return;
                     }
                 }

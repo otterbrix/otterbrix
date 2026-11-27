@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -145,14 +146,14 @@ namespace {
             return std::move(fut);
         }
 
-        auto send_commit(uint64_t txn_id, wal_sync_mode mode) {
+        auto send_commit(uint64_t txn_id, wal_sync_mode mode, uint64_t commit_id = 0) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
                                                          &manager_wal_replicate_t::commit_txn,
                                                          session_id_t::generate_uid(),
                                                          txn_id,
                                                          mode,
                                                          kMainDb,
-                                                         uint64_t{0});
+                                                         commit_id);
             return std::move(fut);
         }
 
@@ -219,6 +220,65 @@ TEST_CASE("wal::refusal::a_failed_fsync_under_full_sync_refuses_the_commit") {
     REQUIRE(commit_result.has_error());
     REQUIRE(commit_result.error().type == core::error_code_t::io_error);
     REQUIRE(fault.plan.syncs_seen >= 1);
+}
+
+// A refused COMMIT marker is an abort the journal agrees with: neither the written-but-unsynced page nor the page
+// still buffered after a refused write may bring the transaction back on reopen.
+TEST_CASE("wal::refusal::a_refused_commit_marker_is_not_replayed") {
+    struct scenario_t {
+        const char* name;
+        bool fsync_refused;
+        bool later_commit;
+    };
+    for (const auto& scenario : {scenario_t{"fsync_alone", true, false},
+                                 scenario_t{"fsync_then_commit", true, true},
+                                 scenario_t{"write_alone", false, false},
+                                 scenario_t{"write_then_commit", false, true}}) {
+        INFO(scenario.name);
+        const auto path = base_path() / (std::string("refused_marker_") + scenario.name);
+        {
+            wal_fault_scope_t fault;
+            fault.faulty_marker = "wal_";
+            wal_env_t env(path);
+
+            auto insert_fut = env.send_insert(/*txn_id=*/200, /*rows=*/4);
+            REQUIRE_FALSE(await_ready(insert_fut).has_error());
+            if (scenario.fsync_refused) {
+                fault.plan.fail_syncs_from = 1;
+            } else {
+                fault.plan.fail_writes_from = fault.plan.writes_seen + 1;
+            }
+            auto refused_fut = env.send_commit(/*txn_id=*/200, wal_sync_mode::FULL, /*commit_id=*/10);
+            REQUIRE(await_ready(refused_fut).has_error());
+            fault.plan.fail_syncs_from = 0;
+            fault.plan.fail_writes_from = 0;
+
+            if (scenario.later_commit) {
+                auto later_insert_fut = env.send_insert(/*txn_id=*/201, /*rows=*/3);
+                REQUIRE_FALSE(await_ready(later_insert_fut).has_error());
+                auto later_commit_fut = env.send_commit(/*txn_id=*/201, wal_sync_mode::FULL, /*commit_id=*/11);
+                REQUIRE_FALSE(await_ready(later_commit_fut).has_error());
+            }
+        }
+
+        auto log = make_test_log();
+        core::pmr::otterbrix_resource resource;
+        configuration::config_wal config(path);
+        wal_reader_t reader(&resource, config, log);
+        std::set<std::uint64_t> commit_ids;
+        auto records = reader.read_committed_records(&commit_ids);
+        REQUIRE_FALSE(records.has_error());
+        CHECK_FALSE(commit_ids.contains(10));
+        CHECK(commit_ids.contains(11) == scenario.later_commit);
+        bool refused_replayed = false;
+        bool later_replayed = false;
+        for (const auto& record : records.value()) {
+            refused_replayed = refused_replayed || record.transaction_id == 200;
+            later_replayed = later_replayed || (record.transaction_id == 201 && record.is_physical());
+        }
+        CHECK_FALSE(refused_replayed);
+        CHECK(later_replayed == scenario.later_commit);
+    }
 }
 
 // Truncation must refuse a segment it cannot read, not delete it: "unreadable" and "empty" both

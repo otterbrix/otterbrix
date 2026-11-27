@@ -31,15 +31,22 @@ namespace services::wal {
         ///
         /// REFUSES when a segment cannot be opened — an empty list would be indistinguishable from
         /// "nothing to replay" (see base_spaces.cpp's caller for why that stops startup).
+        ///
+        /// When txn_id_high_water_out is non-null, it receives the highest transaction id of ANY record read,
+        /// committed or not: an id the journal still holds must never be issued again, or that transaction's
+        /// COMMIT marker would vouch for the uncommitted records filed under the same id.
         core::result_wrapper_t<std::vector<record_t>>
-        read_committed_records(std::set<std::uint64_t>* committed_out = nullptr);
+        read_committed_records(std::set<std::uint64_t>* committed_out = nullptr,
+                               std::uint64_t* txn_id_high_water_out = nullptr);
 
     private:
         core::error_t listing_refused(const std::filesystem::path& dir, const std::error_code& ec);
 
-        /// committed_out, when non-null, receives this database's committed COMMIT IDS.
+        /// committed_out, when non-null, receives this database's committed COMMIT IDS; txn_id_high_water_out, when
+        /// non-null, is raised to the highest transaction id of any record read.
         core::result_wrapper_t<std::vector<record_t>> read_database_segments(const std::filesystem::path& db_dir,
-                                                                             std::set<std::uint64_t>* committed_out);
+                                                                             std::set<std::uint64_t>* committed_out,
+                                                                             std::uint64_t* txn_id_high_water_out);
 
         std::pmr::memory_resource* resource_;
         configuration::config_wal config_;

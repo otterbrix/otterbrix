@@ -8,7 +8,9 @@
 #include <components/table/test/block_reachability_walker.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <unistd.h>
@@ -479,6 +481,65 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
         REQUIRE(reopened_round.ok);
         CHECK(reopened_round.unexplained.empty());
         CHECK(file_size_or_zero(path) <= size_after_drop);
+    }
+
+    cleanup_test_dir();
+}
+
+TEST_CASE("services::disk::table_storage::refused_file") {
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
+    core::pmr::otterbrix_resource resource;
+    const auto otbx_path = std::filesystem::path(test_dir()) / "refused.otbx";
+
+    auto write_valid_file = [&] {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("value", logical_type::BIGINT);
+        table_storage_t ts(&resource, std::move(columns), otbx_path);
+        REQUIRE_FALSE(ts.construction_failed());
+        append_int64_data(ts.table(), &resource, 10);
+        REQUIRE_FALSE(ts.checkpoint().has_error());
+    };
+    auto overwrite_at = [&](std::streamoff offset, std::uint32_t value) {
+        std::fstream file(otbx_path, std::ios::binary | std::ios::in | std::ios::out);
+        REQUIRE(file.is_open());
+        file.seekp(offset);
+        file.write(reinterpret_cast<const char*>(&value), sizeof(value));
+        REQUIRE(file.good());
+    };
+    auto load = [&] {
+        collection_storage_entry_t entry(&resource, otbx_path, std::vector<column_definition_t>{});
+        REQUIRE(entry.table_storage.construction_failed());
+        REQUIRE(entry.storage == nullptr);
+    };
+
+    SECTION("another format version") {
+        write_valid_file();
+        using components::table::storage::main_header_t;
+        overwrite_at(offsetof(main_header_t, version), main_header_t::CURRENT_VERSION + 1);
+        load();
+    }
+
+    SECTION("bad magic") {
+        write_valid_file();
+        overwrite_at(offsetof(components::table::storage::main_header_t, magic), 0xDEADBEEF);
+        load();
+    }
+
+    SECTION("a directory in place of the file") {
+        std::filesystem::create_directories(otbx_path);
+        load();
+    }
+
+    SECTION("create in a missing directory") {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("value", logical_type::BIGINT);
+        collection_storage_entry_t entry(&resource,
+                                         std::move(columns),
+                                         std::filesystem::path(test_dir()) / "missing" / "refused.otbx",
+                                         false);
+        REQUIRE(entry.table_storage.construction_failed());
+        REQUIRE(entry.storage == nullptr);
     }
 
     cleanup_test_dir();

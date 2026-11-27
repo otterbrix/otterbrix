@@ -96,6 +96,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_check_row_without_expression.cpp
         test_hand_built_constraints.cpp
         test_created_oid.cpp
+        test_oid_reuse.cpp
         test_fk_cascade_unknown_action.cpp
         test_fk_cascade_parent_index_width.cpp
         test_constraint_unresolvable_target.cpp
@@ -116,6 +117,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_alter_rename_column_collisions.cpp
         test_alter_missing_column.cpp
         test_wal_nested_payload_replay.cpp
+        test_wal_operation_parts.cpp
         test_type_spec_write_gate.cpp
         test_wide_integer_literal.cpp
         test_decimal_literal_exactness.cpp
@@ -167,6 +169,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_create_index_backfill_addressing.cpp
         test_index_stale_marker_crash.cpp
         test_row_id_reuse_crash.cpp
+        test_txn_id_reuse_replay.cpp
         test_correctness_bugs.cpp
         test_order_by_expressions.cpp
         test_order_by_nulls.cpp

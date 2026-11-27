@@ -73,9 +73,16 @@ namespace services::index {
                                 components::catalog::oid_t table_oid,
                                 components::catalog::oid_t index_oid,
                                 uint64_t flush_threshold,
+                                uint64_t memory_limit,
                                 log_t& log) {
         // Unlike bitcask, the tree opens in the ctor initializer list: btree_t::load() has no recoverable failure.
-        return actor_zeta::spawn<btree_index_agent_t>(resource, path_db, table_oid, index_oid, flush_threshold, log);
+        return actor_zeta::spawn<btree_index_agent_t>(resource,
+                                                      path_db,
+                                                      table_oid,
+                                                      index_oid,
+                                                      flush_threshold,
+                                                      memory_limit,
+                                                      log);
     }
 
     btree_index_agent_t::btree_index_agent_t(std::pmr::memory_resource* resource,
@@ -83,12 +90,13 @@ namespace services::index {
                                              components::catalog::oid_t table_oid,
                                              components::catalog::oid_t index_oid,
                                              uint64_t flush_threshold,
+                                             uint64_t memory_limit,
                                              log_t& log)
         : actor_zeta::basic_actor<btree_index_agent_t>(resource)
         , log_(log.clone())
         , table_oid_(table_oid)
         // Loaded in place; see the ctor comment in the header for why no deferred open.
-        , store_(index_directory(path_db, table_oid, index_oid), resource, flush_threshold)
+        , store_(index_directory(path_db, table_oid, index_oid), resource, flush_threshold, memory_limit)
         , pending_inserts_(resource)
         , pending_deletes_(resource) {
 #ifdef DEV_MODE
@@ -217,9 +225,8 @@ namespace services::index {
                 offset += rows;
                 RETURN_IF_ERROR(for_each_key_bytes(keys, rows, &record_buffer, [&](size_t row, std::string_view) {
                     record_buffer.append(reinterpret_cast<const char*>(ids + row), sizeof(int64_t));
-                    apply(core::b_plus_tree::btree_t::item_data{record_buffer.data(),
-                                                                static_cast<uint32_t>(record_buffer.size())});
-                    return core::error_t::no_error();
+                    return apply(core::b_plus_tree::btree_t::item_data{record_buffer.data(),
+                                                                       static_cast<uint32_t>(record_buffer.size())});
                 }));
             }
             buckets.erase(it);
@@ -245,7 +252,7 @@ namespace services::index {
                 std::pmr::string{"btree_index_agent_t::commit_inserts: the index has been dropped", resource()}};
         }
         co_return publish_buckets(pending_inserts_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
-            store_.insert_bulk_unchecked(record);
+            return store_.insert_bulk_unchecked(record);
         });
     }
 
@@ -262,7 +269,7 @@ namespace services::index {
                 std::pmr::string{"btree_index_agent_t::commit_deletes: the index has been dropped", resource()}};
         }
         co_return publish_buckets(pending_deletes_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
-            store_.remove_bulk_unchecked(record);
+            return store_.remove_bulk_unchecked(record);
         });
     }
 

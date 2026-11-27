@@ -55,17 +55,18 @@ TEST_CASE("services::wal::decode_record::an INSERT payload lives on the arena th
 
     auto chunk = gen_data_chunk(8, 0, residency_types(&arena), &arena);
     buffer_t buffer(&arena);
-    encode_insert(buffer,
-                  &arena,
-                  /*last_crc32=*/0,
-                  /*wal_id=*/1,
-                  /*txn_id=*/100,
-                  /*sub_id=*/0,
-                  kResidencyTableOid,
-                  wal_test::attoids_for(chunk),
-                  one_chunk_batch(chunk),
-                  /*row_start=*/0,
-                  /*row_count=*/8);
+    REQUIRE_FALSE(encode_insert(buffer,
+                                &arena,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/1,
+                                /*txn_id=*/100,
+                                /*sub_id=*/0,
+                                kResidencyTableOid,
+                                wal_test::attoids_for(chunk),
+                                one_chunk_batch(chunk),
+                                /*row_start=*/0,
+                                /*row_count=*/8)
+                      .has_error());
     REQUIRE(buffer.size() > 0);
 
     auto& probe = process_default_probe();
@@ -137,17 +138,18 @@ TEST_CASE("services::wal::decode_record::an UPDATE carries both payloads on the 
     auto new_data = gen_data_chunk(4, 0, residency_types(&arena), &arena);
     const std::vector<int64_t> row_ids = {0, 2, 4, 6};
     buffer_t buffer(&arena);
-    encode_update(buffer,
-                  &arena,
-                  /*last_crc32=*/0,
-                  /*wal_id=*/3,
-                  /*txn_id=*/102,
-                  /*sub_id=*/0,
-                  kResidencyTableOid,
-                  row_ids.data(),
-                  wal_test::attoids_for(new_data),
-                  one_chunk_batch(new_data),
-                  row_ids.size());
+    REQUIRE_FALSE(encode_update(buffer,
+                                &arena,
+                                /*last_crc32=*/0,
+                                /*wal_id=*/3,
+                                /*txn_id=*/102,
+                                /*sub_id=*/0,
+                                kResidencyTableOid,
+                                row_ids.data(),
+                                wal_test::attoids_for(new_data),
+                                one_chunk_batch(new_data),
+                                row_ids.size())
+                      .has_error());
     REQUIRE(buffer.size() > 0);
 
     auto& probe = process_default_probe();

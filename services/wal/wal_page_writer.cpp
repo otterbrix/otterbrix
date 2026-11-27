@@ -253,4 +253,30 @@ namespace services::wal {
         has_data_ = false;
     }
 
+    void wal_page_writer_t::mark() {
+        mark_ = mark_t{file_size_, current_offset_, num_records_, page_lsn_, page_end_lsn_, page_flags_, has_data_};
+        std::memcpy(mark_page_, current_page_, current_offset_);
+    }
+
+    core::error_t wal_page_writer_t::retract_to_mark() {
+        if (!file_) {
+            return open_error_.contains_error() ? open_error_ : io_failure("wal segment is not open for writing");
+        }
+        // A refused write may still have landed some bytes past file_size_, so the cut is made whatever it moved.
+        if (!file_->truncate(static_cast<int64_t>(mark_.file_size))) {
+            return io_failure("wal segment could not be cut back to the last durable record");
+        }
+        file_size_ = mark_.file_size;
+        std::memset(current_page_, 0, PAGE_SIZE);
+        std::memcpy(current_page_, mark_page_, mark_.offset);
+        current_offset_ = mark_.offset;
+        num_records_ = mark_.num_records;
+        page_lsn_ = mark_.page_lsn;
+        page_end_lsn_ = mark_.page_end_lsn;
+        page_flags_ = mark_.page_flags;
+        has_data_ = mark_.has_data;
+        torn_tail_ = false;
+        return core::error_t::no_error();
+    }
+
 } // namespace services::wal

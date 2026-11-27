@@ -81,8 +81,11 @@ namespace services::index::tests {
             for_each_key_bytes(key, 1, &record, [](size_t, std::string_view) { return core::error_t::no_error(); });
         REQUIRE_FALSE(error.contains_error());
         record.append(reinterpret_cast<const char*>(&row_id), sizeof(row_id));
-        store.insert_bulk_unchecked(
-            core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())});
+        REQUIRE_FALSE(
+            store
+                .insert_bulk_unchecked(
+                    core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())})
+                .contains_error());
     }
 
     inline void take(btree_index_disk_t& store, const components::vector::vector_t& key, int64_t row_id) {
@@ -91,8 +94,11 @@ namespace services::index::tests {
             for_each_key_bytes(key, 1, &record, [](size_t, std::string_view) { return core::error_t::no_error(); });
         REQUIRE_FALSE(error.contains_error());
         record.append(reinterpret_cast<const char*>(&row_id), sizeof(row_id));
-        store.remove_bulk_unchecked(
-            core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())});
+        REQUIRE_FALSE(
+            store
+                .remove_bulk_unchecked(
+                    core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())})
+                .contains_error());
     }
 
     // A TEXT physical_value is a VIEW into the encoded key, so the probe owns the bytes it views.

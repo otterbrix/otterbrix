@@ -754,7 +754,9 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     fixture fx;
 
     constexpr std::size_t N = 4;
-    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{N + 1});
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                          components::table::transaction_data::committed(),
+                          std::size_t{N + 1});
     REQUIRE(oids.size() == N + 1);
 
     std::vector<catalog::oid_t> targets(oids.begin(), oids.begin() + N);
@@ -870,7 +872,9 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
     fixture fx;
 
     constexpr std::size_t N = 3;
-    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{N + 1});
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                          components::table::transaction_data::committed(),
+                          std::size_t{N + 1});
     REQUIRE(oids.size() == N + 1);
     std::vector<catalog::oid_t> targets(oids.begin(), oids.begin() + N);
     const catalog::oid_t survivor = oids[N];

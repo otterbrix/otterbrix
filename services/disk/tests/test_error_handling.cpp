@@ -108,7 +108,9 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     auto a = test_create_namespace(fx, "dup");
     REQUIRE(a >= FIRST_USER_OID);
 
-    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                          components::table::transaction_data::committed(),
+                          std::size_t{1});
     auto writes = catalog::build_create_namespace_writes(&fx.resource,
                                                          std::string("dup"),
                                                          oids[0],
@@ -133,7 +135,9 @@ TEST_CASE("services::disk::error::duplicate_column_name_refused_at_write") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     const auto table_oid = test_create_table(fx, ns_oid, "t", std::move(cols));
 
-    auto attoids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    auto attoids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                             components::table::transaction_data::committed(),
+                             std::size_t{1});
     auto row = catalog::build_pg_attribute_row(&fx.resource,
                                                attoids[0],
                                                table_oid,

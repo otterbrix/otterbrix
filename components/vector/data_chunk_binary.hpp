@@ -11,7 +11,7 @@ namespace components::vector {
     ///   [null_mask_size : 4 LE]          // 0 when every cell is valid
     ///   [null_mask     : null_mask_size bytes]   // 1-bit-per-cell, row-major, TOP LEVEL only
     ///   Per column:
-    ///     [spec_size     : 4 LE]         // canonical types::encode_type_spec; 0 = poison
+    ///     [spec_size     : 4 LE]         // canonical types::encode_type_spec; never 0
     ///     [type_spec     : spec_size bytes]
     ///     [data_size     : 4 LE]
     ///     [payload       : data_size bytes]
@@ -26,9 +26,9 @@ namespace components::vector {
     /// [validity] is [mask_size:4 LE][mask bytes], 0 meaning all-valid; nested only, a column's
     /// own validity is the chunk-wide mask above.
     ///
-    /// A column this codec has no rule for is poisoned (spec_size 0) rather than written short,
-    /// so the reader refuses the record instead of replaying a column of zeroes.
-    void serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer);
+    /// A column this codec has no rule for, at any row count, is refused: the error names it and
+    /// \p buffer is left as it was. The reader still refuses spec_size 0, which older builds wrote.
+    [[nodiscard]] core::error_t serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer);
 
     /// Payload only, not WAL framing; on failure \p ok is false (discard the returned chunk), else true.
     data_chunk_t deserialize_binary(const char* data, size_t len, std::pmr::memory_resource* resource, bool& ok);

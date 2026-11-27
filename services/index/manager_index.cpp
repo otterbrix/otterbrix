@@ -264,6 +264,7 @@ namespace services::index {
                                      uint64_t bitcask_flush_threshold,
                                      uint64_t bitcask_segment_record_limit,
                                      uint64_t btree_flush_threshold,
+                                     uint64_t btree_memory_limit,
                                      configuration::pump_intervals_t pump)
         : actor_zeta::actor::actor_mixin<manager_index_t>()
         , resource_(resource)
@@ -273,6 +274,7 @@ namespace services::index {
         , bitcask_flush_threshold_(bitcask_flush_threshold)
         , bitcask_segment_record_limit_(bitcask_segment_record_limit)
         , btree_flush_threshold_(btree_flush_threshold)
+        , btree_memory_limit_(btree_memory_limit)
         , indexes_per_oid_(resource)
         , dropped_table_agents_(resource)
         , deferred_deletes_(resource)
@@ -716,8 +718,13 @@ namespace services::index {
                                    bitcask_index_agent_t::index_type_v,
                                    bitcask_index_agent_t::supports_ordered_probe_v};
         }
-        auto agent =
-            btree_index_agent_t::create(resource_, path_db_, table_oid, index_oid, btree_flush_threshold_, log_);
+        auto agent = btree_index_agent_t::create(resource_,
+                                                 path_db_,
+                                                 table_oid,
+                                                 index_oid,
+                                                 btree_flush_threshold_,
+                                                 btree_memory_limit_,
+                                                 log_);
         if (agent.has_error()) {
             return agent.error();
         }

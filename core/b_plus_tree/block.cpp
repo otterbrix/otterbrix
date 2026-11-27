@@ -145,10 +145,9 @@ namespace core::b_plus_tree {
         buffer_ += item.size;
         available_memory_ -= item.size + metadata_size;
 
-        if (index.type() == components::types::physical_type::TEXT) {
-            auto sv = index.value<components::types::physical_type::TEXT>();
-            range.begin->index = index_t(internal_buffer_ + range.begin->offset + (sv.data() - item.data),
-                                         static_cast<uint32_t>(sv.size()));
+        if (index.is_view()) {
+            range.begin->index =
+                index.rebased(internal_buffer_ + range.begin->offset + (index.view_bytes().data() - item.data));
         } else {
             range.begin->index = index;
         }
@@ -192,9 +191,8 @@ namespace core::b_plus_tree {
                 for (auto it_ = last_metadata_; it_ != end_; it_++) {
                     if (it_->offset > offset) {
                         it_->offset -= chunk_size;
-                        if (it_->index.type() == components::types::physical_type::TEXT) {
-                            auto sv = it_->index.value<components::types::physical_type::TEXT>();
-                            it_->index = index_t(sv.data() - chunk_size, static_cast<uint32_t>(sv.size()));
+                        if (it_->index.is_view()) {
+                            it_->index = it_->index.rebased(it_->index.view_bytes().data() - chunk_size);
                         }
                     }
                 }
@@ -320,7 +318,7 @@ namespace core::b_plus_tree {
         buffer_ = internal_buffer_ + header_size;
         for (auto it = last_metadata_; it < end_; it++) {
             buffer_ += it->size;
-            if (it->index.type() == components::types::physical_type::TEXT) {
+            if (it->index.is_view()) {
                 it->index = key_func_({internal_buffer_ + it->offset, it->size});
             }
         }
@@ -516,11 +514,10 @@ namespace core::b_plus_tree {
             for (size_t i = 0; i < other->count(); i++) {
                 uint32_t old_offset = (--last_metadata_)->offset;
                 last_metadata_->offset += delta_offset;
-                if (last_metadata_->index.type() == components::types::physical_type::TEXT) {
-                    auto sv = last_metadata_->index.value<components::types::physical_type::TEXT>();
-                    last_metadata_->index = index_t(internal_buffer_ + last_metadata_->offset +
-                                                        (sv.data() - (other->internal_buffer_ + old_offset)),
-                                                    static_cast<uint32_t>(sv.size()));
+                if (last_metadata_->index.is_view()) {
+                    last_metadata_->index = last_metadata_->index.rebased(
+                        internal_buffer_ + last_metadata_->offset +
+                        (last_metadata_->index.view_bytes().data() - (other->internal_buffer_ + old_offset)));
                 }
             }
             available_memory_ -= additional_offset + metadata_size * other->count();
@@ -534,20 +531,18 @@ namespace core::b_plus_tree {
             buffer_ += additional_offset;
             std::memcpy(last_metadata_ - other->count(), last_metadata_, metadata_size * other->count());
             for (metadata* it = last_metadata_ - other->count(); it != end_ - other->count(); it++) {
-                if (it->index.type() == components::types::physical_type::TEXT) {
-                    auto sv = it->index.value<components::types::physical_type::TEXT>();
-                    it->index = index_t(sv.data() - metadata_size * other->count(), static_cast<uint32_t>(sv.size()));
+                if (it->index.is_view()) {
+                    it->index = it->index.rebased(it->index.view_bytes().data() - metadata_size * other->count());
                 }
             }
             std::memcpy(last_metadata_, other->last_metadata_, metadata_size * other->count());
             for (metadata* it = last_metadata_; it < end_; it++) {
                 uint32_t old_offset = it->offset;
                 it->offset += delta_offset;
-                if (it->index.type() == components::types::physical_type::TEXT) {
-                    auto sv = it->index.value<components::types::physical_type::TEXT>();
+                if (it->index.is_view()) {
                     it->index =
-                        index_t(internal_buffer_ + it->offset + (sv.data() - (other->internal_buffer_ + old_offset)),
-                                static_cast<uint32_t>(sv.size()));
+                        it->index.rebased(internal_buffer_ + it->offset +
+                                          (it->index.view_bytes().data() - (other->internal_buffer_ + old_offset)));
                 }
             }
             last_metadata_ -= other->count();
@@ -632,9 +627,8 @@ namespace core::b_plus_tree {
             for (metadata* meta = last_metadata_; meta != end_; meta++) {
                 if (meta->offset >= next_it->first && meta->offset < next_it->first + next_it->second) {
                     meta->offset -= required_offset;
-                    if (meta->index.type() == components::types::physical_type::TEXT) {
-                        auto sv = meta->index.value<components::types::physical_type::TEXT>();
-                        meta->index = index_t(sv.data() - required_offset, static_cast<uint32_t>(sv.size()));
+                    if (meta->index.is_view()) {
+                        meta->index = meta->index.rebased(meta->index.view_bytes().data() - required_offset);
                     }
                 }
             }

@@ -468,7 +468,9 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
 
     const auto* cls_def = find_system_table(well_known_oid::pg_class_table);
     REQUIRE(cls_def != nullptr);
-    auto orphan_oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    auto orphan_oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                                 components::table::transaction_data::committed(),
+                                 std::size_t{1});
     REQUIRE(orphan_oids.size() == 1);
     const catalog::oid_t orphan = orphan_oids[0];
     {
@@ -1277,7 +1279,9 @@ TEST_CASE("services::disk::open::an_unknown_indtype_refuses_the_start_instead_of
     open_fixture fx(base);
     REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
 
-    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                          components::table::transaction_data::committed(),
+                          std::size_t{2});
     auto bad_row = catalog::build_pg_index_row(&fx.resource, oids[0], oids[1], "1", true, 'z');
     disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
                                            disk_test_helpers::auto_ctx(),
@@ -1303,7 +1307,9 @@ TEST_CASE("services::disk::open::a_null_indtype_refuses_the_start_instead_of_kil
     open_fixture fx(base);
     REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
 
-    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                          components::table::transaction_data::committed(),
+                          std::size_t{2});
     auto bad_row = catalog::build_pg_index_row(&fx.resource, oids[0], oids[1], "1", true, 'b');
     bad_row.data[4].validity().set_invalid(0);
     disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,

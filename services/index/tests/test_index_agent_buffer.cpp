@@ -138,8 +138,13 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_btree");
 
-    auto agent_result =
-        btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
+    auto agent_result = btree_index_agent_t::create(&resource,
+                                                    path,
+                                                    kTableOid,
+                                                    kIndexOid,
+                                                    /*flush_threshold=*/1000,
+                                                    std::numeric_limits<uint64_t>::max(),
+                                                    log);
     REQUIRE_FALSE(agent_result.has_error());
     auto agent = std::move(agent_result.value());
 
@@ -240,8 +245,13 @@ TEST_CASE("services::index::btree_index_agent_t answers every predicate over sta
     auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_btree_predicates");
 
-    auto agent_result =
-        btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
+    auto agent_result = btree_index_agent_t::create(&resource,
+                                                    path,
+                                                    kTableOid,
+                                                    kIndexOid,
+                                                    /*flush_threshold=*/1000,
+                                                    std::numeric_limits<uint64_t>::max(),
+                                                    log);
     REQUIRE_FALSE(agent_result.has_error());
     auto agent = std::move(agent_result.value());
 
@@ -403,8 +413,13 @@ TEST_CASE("services::index::btree_index_agent_t answers the null tests over NULL
     auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_btree");
 
-    auto agent_result =
-        btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
+    auto agent_result = btree_index_agent_t::create(&resource,
+                                                    path,
+                                                    kTableOid,
+                                                    kIndexOid,
+                                                    /*flush_threshold=*/1000,
+                                                    std::numeric_limits<uint64_t>::max(),
+                                                    log);
     REQUIRE_FALSE(agent_result.has_error());
     auto agent = std::move(agent_result.value());
 
@@ -490,8 +505,13 @@ TEST_CASE("services::index::btree_index_agent_t matches no row to a NULL key in 
     auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_probe_btree");
 
-    auto agent_result =
-        btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
+    auto agent_result = btree_index_agent_t::create(&resource,
+                                                    path,
+                                                    kTableOid,
+                                                    kIndexOid,
+                                                    /*flush_threshold=*/1000,
+                                                    std::numeric_limits<uint64_t>::max(),
+                                                    log);
     REQUIRE_FALSE(agent_result.has_error());
     auto agent = std::move(agent_result.value());
 
@@ -526,8 +546,13 @@ TEST_CASE("services::index::a NULL key is indexed properly") {
     auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_ranges");
 
-    auto agent_result =
-        btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
+    auto agent_result = btree_index_agent_t::create(&resource,
+                                                    path,
+                                                    kTableOid,
+                                                    kIndexOid,
+                                                    /*flush_threshold=*/1000,
+                                                    std::numeric_limits<uint64_t>::max(),
+                                                    log);
     REQUIRE_FALSE(agent_result.has_error());
     auto agent = std::move(agent_result.value());
 

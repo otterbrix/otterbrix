@@ -109,10 +109,25 @@ namespace components::sql::transform {
         // SELECT limit (integer / bound parameter). DML has NO OFFSET (grammar-enforced).
         core::result_wrapper_t<logical_plan::node_limit_ptr> build_dml_limit(Node* limit_count,
                                                                              logical_plan::execution_plan_t* plan);
+        // The CTEs of one WITH are visible only within the query that declares it: they are unregistered
+        // when the scope ends.
+        class with_scope_t {
+        public:
+            explicit with_scope_t(transformer* owner);
+            with_scope_t(const with_scope_t&) = delete;
+            with_scope_t& operator=(const with_scope_t&) = delete;
+            ~with_scope_t();
+
+        private:
+            friend class transformer;
+            transformer* owner_;
+            std::pmr::vector<std::string_view> names_;
+        };
         // Register a statement's WITH (CTE) definitions into cte_queries_ / recursive_cte_queries_ so the
-        // body can reference them. Shared by SELECT (simple + UNION) and DML (DELETE/UPDATE/INSERT). A
-        // data-modifying CTE (ctequery not a SELECT) is rejected cleanly (deferred). No-op on null.
-        core::error_t register_with_ctes(WithClause* with_clause);
+        // body can reference them, for as long as `scope` lives. Shared by SELECT (simple + UNION) and DML
+        // (DELETE/UPDATE/INSERT). A data-modifying CTE (ctequery not a SELECT) is rejected cleanly (deferred).
+        // No-op on null.
+        core::error_t register_with_ctes(WithClause* with_clause, with_scope_t* scope);
         core::result_wrapper_t<logical_plan::node_ptr> transform_update(UpdateStmt& node,
                                                                         logical_plan::execution_plan_t* plan);
         core::result_wrapper_t<logical_plan::node_ptr> transform_insert(InsertStmt& node,
@@ -409,7 +424,21 @@ namespace components::sql::transform {
         size_t aggregate_counter_{0};
         expressions::source_element_id_t source_element_counter_{expressions::NO_SOURCE_ELEMENT};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
-        std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
+        // A non-recursive CTE sees only the siblings before it (PostgreSQL 18 parse_cte.c).
+        struct cte_definition_t {
+            SelectStmt* body;
+            size_t clause;
+            size_t position;
+        };
+        // While a body is expanded, it and the later siblings of its clause are hidden.
+        struct hidden_ctes_t {
+            size_t clause;
+            size_t from_position;
+        };
+        const cte_definition_t* visible_cte(std::string_view name) const;
+        std::pmr::unordered_map<std::string_view, cte_definition_t> cte_queries_{resource_};
+        std::pmr::vector<hidden_ctes_t> hidden_ctes_{resource_};
+        size_t with_clause_counter_{0};
         std::pmr::unordered_map<std::string, SelectStmt*> recursive_cte_queries_{resource_};
         bool transforming_recursive_member_{false};
         // The data of COPY ... FROM STDIN, when the statement came with it (transform_copy).

@@ -86,7 +86,9 @@ namespace disk_test_helpers {
 
     template<typename Fx>
     catalog::oid_t test_create_namespace(Fx& fx, const std::string& name) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t ns_oid = oids[0];
         auto writes =
             catalog::build_create_namespace_writes(&fx.resource, name, ns_oid, catalog::well_known_oid::main_database);
@@ -108,7 +110,9 @@ namespace disk_test_helpers {
                                      std::vector<components::table::column_definition_t>* stamped_out = nullptr) {
         // A table's row type and its array type take two oids more.
         const std::size_t row_type_oids = relkind_char == catalog::relkind::regular ? 2 : 0;
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + row_type_oids + cols.size()});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1 + row_type_oids + cols.size()});
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
@@ -146,7 +150,9 @@ namespace disk_test_helpers {
 
     template<typename Fx>
     catalog::oid_t test_create_computing_table(Fx& fx, catalog::oid_t ns_oid, const std::string& name) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
@@ -175,7 +181,9 @@ namespace disk_test_helpers {
                       const std::string& index_name,
                       const std::vector<std::string>& /*col_names*/, // dropped from build_create_index_writes
                       const std::vector<catalog::oid_t>& col_attoids) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t index_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
@@ -223,7 +231,9 @@ namespace disk_test_helpers {
 
     template<typename Fx>
     catalog::oid_t test_create_type(Fx& fx, catalog::oid_t ns_oid, const std::string& type_name) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{2});
         const catalog::oid_t type_oid = oids[0];
         auto writes =
             catalog::build_create_type_writes(&fx.resource,
@@ -252,7 +262,9 @@ namespace disk_test_helpers {
                                         std::int64_t min_val = 1,
                                         std::int64_t max_val = std::numeric_limits<std::int64_t>::max(),
                                         bool cycle = false) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t seq_oid = oids[0];
         auto writes = catalog::build_create_sequence_writes(&fx.resource,
                                                             name,
@@ -275,7 +287,9 @@ namespace disk_test_helpers {
     template<typename Fx>
     catalog::oid_t
     test_create_view(Fx& fx, catalog::oid_t ns_oid, const std::string& name, const std::string& body_sql = "") {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{4});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{4});
         const catalog::oid_t view_oid = oids[0];
         const catalog::oid_t rule_oid = oids[1];
         // Catalog rows only: no output columns, bindings or dependencies.
@@ -313,7 +327,9 @@ namespace disk_test_helpers {
     template<typename Fx>
     catalog::oid_t
     test_create_macro(Fx& fx, catalog::oid_t ns_oid, const std::string& name, const std::string& body_sql = "") {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{2});
         const catalog::oid_t macro_oid = oids[0];
         const catalog::oid_t rule_oid = oids[1];
         auto writes = catalog::build_create_macro_writes(&fx.resource, name, ns_oid, macro_oid, rule_oid, body_sql);
@@ -334,7 +350,9 @@ namespace disk_test_helpers {
                                         std::int64_t prouid = 0,
                                         const std::string& proargmatchers = "",
                                         const std::string& prorettype = "") {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t fn_oid = oids[0];
         auto writes = catalog::build_create_function_writes(&fx.resource,
                                                             name,
@@ -365,7 +383,9 @@ namespace disk_test_helpers {
                                           char fk_del_action = 'a',
                                           char fk_upd_action = 'a',
                                           const std::string& check_expr = "") {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t con_oid = oids[0];
         auto writes_r = catalog::build_create_constraint_writes(&fx.resource,
                                                                 name,
@@ -477,7 +497,9 @@ namespace disk_test_helpers {
                                                const std::string& field_name,
                                                catalog::oid_t type_oid,
                                                std::int64_t attversion = 1) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t attoid = oids[0];
         constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
         auto row = catalog::build_pg_computed_column_row(&fx.resource,
@@ -541,7 +563,9 @@ namespace disk_test_helpers {
             return catalog::INVALID_OID;
         }
 
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t attoid = oids[0];
         const std::int64_t new_version = is_new ? std::int64_t{0} : (max_version + 1);
 
@@ -630,7 +654,9 @@ namespace disk_test_helpers {
     template<typename Fx>
     catalog::oid_t
     test_add_column(Fx& fx, catalog::oid_t table_oid, components::table::column_definition_t col, std::int32_t attnum) {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch,
+                              components::table::transaction_data::committed(),
+                              std::size_t{1});
         const catalog::oid_t attoid = oids[0];
         constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
         std::string col_name(col.name());

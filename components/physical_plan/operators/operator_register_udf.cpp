@@ -103,6 +103,7 @@ namespace components::operators {
                 }
                 auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::allocate_oids_batch,
+                                                              ctx->txn,
                                                               std::size_t{1});
                 auto allocated = co_await std::move(oaf);
                 if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_udf", oid);

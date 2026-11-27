@@ -31,7 +31,8 @@ namespace services::index {
 
         btree_index_disk_t(const path_t& path,
                            std::pmr::memory_resource* resource,
-                           uint64_t flush_threshold = default_flush_threshold_);
+                           uint64_t flush_threshold = default_flush_threshold_,
+                           uint64_t memory_limit = std::numeric_limits<uint64_t>::max());
         ~btree_index_disk_t();
 
         btree_index_disk_t(const btree_index_disk_t&) = delete;
@@ -74,8 +75,9 @@ namespace services::index {
         [[nodiscard]] core::error_t force_flush();
 
         // Byte-identical records are dropped by the tree (block_t::append); no flush happens per call.
-        void insert_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
-        void remove_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
+        // out_of_memory: the tree's memory limit cannot hold the change, and nothing was changed.
+        [[nodiscard]] core::error_t insert_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
+        [[nodiscard]] core::error_t remove_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
 
     private:
         [[nodiscard]] bool should_flush() const noexcept { return ops_since_flush_ >= flush_threshold_; }
@@ -91,13 +93,15 @@ namespace services::index {
         [[nodiscard]] core::error_t flush_if_needed();
 
         std::pmr::memory_resource* resource_;
-        core::pmr::budget_resource_t tree_budget_{resource_, std::numeric_limits<uint64_t>::max()};
+        core::pmr::budget_resource_t tree_budget_;
         uint64_t flush_threshold_;
         bool dirty_{false};
         uint64_t ops_since_flush_{0};
         std::filesystem::path path_;
         core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::b_plus_tree::btree_t> db_;
+        // why the last load() built nothing
+        core::b_plus_tree::memory_shortfall_t load_shortfall_;
     };
 
 } // namespace services::index

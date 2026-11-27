@@ -25,6 +25,7 @@ set(${PROJECT_NAME}_SOURCES
     test_checkpoint_dirty.cpp
     test_open_refusals.cpp
     test_document_decimal_routing.cpp
+    test_oid_free_set.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

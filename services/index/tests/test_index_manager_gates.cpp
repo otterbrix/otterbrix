@@ -147,6 +147,7 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
                                                       1000,
                                                       100,
                                                       1000,
+                                                      std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
@@ -184,6 +185,7 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
                                                       1000,
                                                       100,
                                                       1000,
+                                                      std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
@@ -227,6 +229,7 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
                                                       1000,
                                                       100,
                                                       1000,
+                                                      std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
 
     const auto session = session_id_t::generate_uid();
@@ -289,6 +292,7 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
                                                       1000,
                                                       100,
                                                       1000,
+                                                      std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
@@ -359,6 +363,7 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
                                                       1000,
                                                       100,
                                                       1000,
+                                                      std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
@@ -433,6 +438,7 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
                                                       1000,
                                                       100,
                                                       1000,
+                                                      std::numeric_limits<uint64_t>::max(),
                                                       configuration::pump_intervals_t{});
     manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 

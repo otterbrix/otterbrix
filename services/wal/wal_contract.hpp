@@ -41,6 +41,8 @@ namespace services::wal {
 
         actor_zeta::unique_future<core::result_wrapper_t<id_t>> current_wal_id(session_id_t session);
 
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>> oldest_retained_wal_id(session_id_t session);
+
         // Auto-checkpoint orchestration triggered by commit_txn when WAL growth
         // since the last checkpoint trips auto_checkpoint_threshold_bytes. The WAL
         // manager self-sends this fire-and-forget so the checkpoint never sits on
@@ -116,6 +118,7 @@ namespace services::wal {
                                                             &wal_contract::rollback_to,
                                                             &wal_contract::truncate_before,
                                                             &wal_contract::current_wal_id,
+                                                            &wal_contract::oldest_retained_wal_id,
                                                             &wal_contract::run_auto_checkpoint,
                                                             &wal_contract::stop_auto_checkpoint,
                                                             &wal_contract::write_physical_insert,

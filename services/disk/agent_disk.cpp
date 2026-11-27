@@ -291,6 +291,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::vacuum_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::oids_in_use_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::oids_in_use_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::maybe_cleanup_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::maybe_cleanup_inner, msg);
                 break;
@@ -2237,6 +2241,54 @@ namespace services::disk {
             table.cleanup_versions(lowest_active_start_time);
         }
         co_return;
+    }
+
+    agent_disk_t::unique_future<std::pmr::vector<components::catalog::oid_t>>
+    agent_disk_t::oids_in_use_inner(session_id_t /*session*/) {
+        std::pmr::vector<components::catalog::oid_t> in_use(resource());
+        for (const auto& dropped : dropped_storages_) {
+            in_use.push_back(dropped.oid);
+        }
+        for (auto& [table_oid, entry] : storages_) {
+            in_use.push_back(table_oid);
+            if (entry == nullptr || components::catalog::find_system_table(table_oid) == nullptr) {
+                continue;
+            }
+            auto& table = entry->table_storage.table();
+            if (table.calculate_size() == 0) {
+                continue;
+            }
+            std::vector<components::table::storage_index_t> columns;
+            std::pmr::vector<components::types::complex_logical_type> types(resource());
+            for (std::size_t column = 0; column < table.column_count(); ++column) {
+                if (table.columns()[column].type().type() == components::types::logical_type::OID) {
+                    columns.emplace_back(static_cast<int64_t>(column));
+                    types.push_back(table.columns()[column].type());
+                }
+            }
+            if (columns.empty()) {
+                continue;
+            }
+            components::table::table_scan_state scan_state(resource());
+            table.initialize_scan(scan_state, columns, components::table::transaction_data::committed());
+            while (true) {
+                components::vector::data_chunk_t chunk(resource(), types, components::vector::DEFAULT_VECTOR_CAPACITY);
+                // COMMITTED_ROWS reads past versions: a row some snapshot or an open transaction still sees counts
+                if (!table.create_index_scan(scan_state, chunk, components::table::table_scan_type::COMMITTED_ROWS)) {
+                    break;
+                }
+                for (std::size_t column = 0; column < columns.size(); ++column) {
+                    for (uint64_t row = 0; row < chunk.size(); ++row) {
+                        if (!chunk.is_null(column, row)) {
+                            in_use.push_back(chunk.get_value<components::catalog::oid_t>(column, row));
+                        }
+                    }
+                }
+            }
+        }
+        std::sort(in_use.begin(), in_use.end());
+        in_use.erase(std::unique(in_use.begin(), in_use.end()), in_use.end());
+        co_return in_use;
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,

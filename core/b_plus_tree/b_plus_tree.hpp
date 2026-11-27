@@ -27,6 +27,14 @@ namespace core::b_plus_tree {
     [[nodiscard]] size_t max_leaf_nodes() noexcept;
 #endif
 
+    // A budget that could not hold an operation even with every evictable block offloaded.
+    struct memory_shortfall_t {
+        uint64_t needed = 0;
+        uint64_t used = 0;
+        uint64_t reserved = 0;
+        uint64_t limit = 0;
+    };
+
     class btree_t {
     public:
         using index_t = segment_tree_t::index_t;
@@ -43,6 +51,7 @@ namespace core::b_plus_tree {
             void lock_shared();
             void unlock_shared();
             void lock_exclusive();
+            [[nodiscard]] bool try_lock_exclusive();
             void unlock_exclusive();
             virtual size_t count() const = 0;
             virtual size_t unique_entry_count() const = 0;
@@ -111,6 +120,13 @@ namespace core::b_plus_tree {
                 segment_tree_->set_failure_channel(channel);
             }
             [[nodiscard]] bool poisoned() const noexcept { return segment_tree_->poisoned(); }
+            [[nodiscard]] bool abandoned() const noexcept { return segment_tree_->abandoned(); }
+
+            [[nodiscard]] size_t stored_bytes() const noexcept { return segment_tree_->stored_bytes(); }
+            [[nodiscard]] size_t largest_block() const noexcept { return segment_tree_->largest_block(); }
+            [[nodiscard]] bool view_keyed() const noexcept { return segment_tree_->view_keyed(); }
+            [[nodiscard]] size_t unloaded_bytes() const { return segment_tree_->unloaded_bytes(); }
+            size_t evict() { return segment_tree_->evict(); }
 
             segment_tree_t::iterator begin() const { return segment_tree_->begin(); }
             segment_tree_t::iterator end() const { return segment_tree_->end(); }
@@ -239,9 +255,26 @@ namespace core::b_plus_tree {
         [[nodiscard]] load_failure_t take_load_failure() noexcept { return failures_.take(); }
         void reset_load_failure() noexcept { failures_.clear(); }
 
+        // Why the last append/remove/remove_index answered false without changing anything, or load() built
+        [[nodiscard]] memory_shortfall_t take_memory_shortfall() noexcept {
+            return std::exchange(shortfall_, memory_shortfall_t{});
+        }
+
     private:
         leaf_node_t* find_leaf_node_(const index_t& index);
         void release_locks_(std::deque<base_node_t*>& modified_nodes) const;
+
+        // Upper estimates of what an operation allocates
+        [[nodiscard]] size_t append_estimate_(const leaf_node_t* leaf, const index_t& index, item_data item) const;
+        [[nodiscard]] size_t leaf_split_estimate_(const leaf_node_t* leaf, const index_t& index, item_data item) const;
+        [[nodiscard]] size_t remove_estimate_(const leaf_node_t* leaf, const index_t& index, bool restructures) const;
+
+        [[nodiscard]] size_t inner_splits_(const std::deque<base_node_t*>& locked_chain) const;
+        [[nodiscard]] size_t inner_node_bytes_() const noexcept;
+
+        // Held until the operation returns
+        [[nodiscard]] core::pmr::budget_resource_t::reservation_t reserve_(size_t bytes, const base_node_t* target);
+        void record_shortfall_(size_t needed) noexcept;
         uint64_t get_unique_id_();
 
         filesystem::local_file_system_t& fs_;
@@ -261,6 +294,9 @@ namespace core::b_plus_tree {
         std::atomic<size_t> leaf_nodes_count_{0};
         std::queue<uint64_t> missed_ids_;
         failure_channel_t failures_;
+        // Set while what load() dropped is not rebuilt: writing this tree out would replace what is on disk.
+        std::atomic<bool> load_refused_{false};
+        memory_shortfall_t shortfall_; // written under the exclusive tree lock
         static constexpr std::string_view metadata_file_name_ = "metadata";
     };
 

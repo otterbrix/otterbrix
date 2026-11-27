@@ -169,6 +169,7 @@ namespace components::operators {
 
             auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                           &services::disk::manager_disk_t::allocate_oids_batch,
+                                                          ctx->txn,
                                                           std::size_t{1});
             auto oid_batch = co_await std::move(oaf);
             if (oid_batch.empty()) {

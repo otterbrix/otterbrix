@@ -4116,3 +4116,31 @@ TEST_CASE("integration::cpp::correctness_bugs::non_recursive_cte_sees_only_earli
                  "SELECT x.id FROM a x JOIN a y ON x.id = y.id;") == 6);
     CHECK(sum_of("WITH a AS (WITH b AS (SELECT id + 100 AS id FROM org) SELECT id FROM b) SELECT id FROM b;") == 7);
 }
+
+TEST_CASE("integration::cpp::correctness_bugs::select_without_from_filtered_by_where") {
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/select_where_no_from"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    const auto rows_of = [&](const std::string& sql) -> std::size_t {
+        auto cur = test_helpers::exec(dispatcher, sql);
+        INFO(sql << " error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return cur->size();
+    };
+    CHECK(rows_of("SELECT 1 WHERE true;") == 1);
+    CHECK(rows_of("SELECT 1 AS a WHERE 1 = 1;") == 1);
+    CHECK(rows_of("SELECT 1 WHERE false;") == 0);
+    CHECK(rows_of("SELECT 1 WHERE 1 = 2;") == 0);
+    CHECK(rows_of("SELECT 1 WHERE NULL;") == 0);
+    CHECK(rows_of("SELECT 1 WHERE EXISTS (SELECT 1);") == 1);
+    // An aggregate answers one row even when the WHERE keeps none (PostgreSQL 18).
+    auto counted = test_helpers::exec(dispatcher, "SELECT count(*) WHERE false;");
+    INFO("error: " << (counted->is_error() ? counted->get_error().what : "none"));
+    REQUIRE(counted->is_success());
+    REQUIRE(counted->size() == 1);
+    auto count = counted->get<int64_t>(0, 0);
+    REQUIRE_FALSE(count.has_error());
+    CHECK(count.value() == 0);
+}

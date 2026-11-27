@@ -86,6 +86,8 @@ namespace services::planner::impl {
         };
 
         components::operators::operator_ptr match_op;
+        // A WHERE over no table (no FROM, or a FROM the plan never resolved) filters input it does not read itself.
+        bool match_reads_a_table = false;
         components::operators::operator_ptr group_op;
         const components::logical_plan::node_t* group_node = nullptr;
         components::operators::operator_ptr having_op;
@@ -98,6 +100,7 @@ namespace services::planner::impl {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t: {
+                    match_reads_a_table = context.has_table_oid(child->table_oid());
                     // A refused WHERE refuses the aggregate: the no-table sentinel transfer_scan below would
                     // FABRICATE a synthetic row for a table that does not exist.
                     VALUE_OR_RETURN(
@@ -158,7 +161,9 @@ namespace services::planner::impl {
             }
         } else {
             // The base scan comes from the declaration, not the oid: INVALID_OID means both no-FROM and unresolved.
-            if (!match_op) {
+            // A WHERE over no table is a filter without input: it reads the same base scan.
+            const bool reads_base_scan = !match_op || !match_reads_a_table;
+            if (reads_base_scan) {
                 switch (agg_node->source()) {
                     case components::logical_plan::match_source::none:
                         break;
@@ -170,20 +175,26 @@ namespace services::planner::impl {
                 }
             }
             std::vector<size_t> projected_cols = relkind_projected_cols(context, node, agg_node->projected_cols());
-            if (match_op) {
+            if (!reads_base_scan) {
                 executor = std::move(match_op);
             } else {
                 VALUE_OR_RETURN(auto types, page_types_of(context, node->table_oid(), projected_cols));
                 VALUE_OR_RETURN(auto address, storage_address_of(context, node->table_oid()));
-                auto scan = boost::intrusive_ptr(
-                    new components::operators::transfer_scan(plan_resource,
-                                                             node->table_oid(),
-                                                             std::move(address),
-                                                             full_name_of(context, node->table_oid()),
-                                                             agg_node->read_cap(),
-                                                             std::move(projected_cols)));
+                auto scan = boost::intrusive_ptr(new components::operators::transfer_scan(
+                    plan_resource,
+                    node->table_oid(),
+                    std::move(address),
+                    full_name_of(context, node->table_oid()),
+                    // Under the filter, a cap could starve it.
+                    match_op ? components::logical_plan::row_cap_t::uncapped() : agg_node->read_cap(),
+                    std::move(projected_cols)));
                 scan->set_page_types(std::move(types));
-                executor = std::move(scan);
+                if (match_op) {
+                    match_op->set_children(std::move(scan));
+                    executor = std::move(match_op);
+                } else {
+                    executor = std::move(scan);
+                }
             }
         }
         if (group_op) {
